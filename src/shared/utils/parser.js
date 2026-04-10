@@ -46,8 +46,24 @@ export const Parser = {
         continue;
       }
       if (ch === '"') {
-        inString = !inString;
-        result += ch;
+        if (inString) {
+          // Is this really the end of the string, or an unescaped quote inside it?
+          // Look ahead: if next non-whitespace char is a JSON structural char, it's the real end
+          let j = i + 1;
+          while (j < s.length && (s[j] === ' ' || s[j] === '\n' || s[j] === '\r' || s[j] === '\t')) j++;
+          const nextChar = s[j] || '';
+          if (':,}]'.includes(nextChar)) {
+            // Real end of string
+            inString = false;
+            result += ch;
+          } else {
+            // Unescaped quote inside string — escape it
+            result += '\\"';
+          }
+        } else {
+          inString = true;
+          result += ch;
+        }
         continue;
       }
       // Smart double quotes: \u201C \u201D \u201E \u201F \u2033 \u2036
