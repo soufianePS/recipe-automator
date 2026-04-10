@@ -1917,9 +1917,26 @@
         const resp = await fetch('/api/update/pull', { method: 'POST' });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error);
-        status.textContent = 'Updated! Restart the app to apply.';
+        status.textContent = 'Updated! Restarting...';
         status.style.color = '#4caf50';
-        toast('Update complete. Restart the app to apply changes.', 'success');
+        toast('Update complete. App is restarting...', 'success');
+        // Wait for server to come back after auto-restart
+        setTimeout(async () => {
+          status.textContent = 'Waiting for restart...';
+          for (let i = 0; i < 20; i++) {
+            try {
+              const r = await fetch('/api/settings');
+              if (r.ok) {
+                status.textContent = 'Restarted! Running latest version.';
+                toast('App restarted with latest code!', 'success');
+                return;
+              }
+            } catch {}
+            await new Promise(r => setTimeout(r, 1500));
+          }
+          status.textContent = 'Restart taking longer than expected. Refresh the page.';
+          status.style.color = '#ff9800';
+        }, 3000);
       } catch (e) {
         status.textContent = 'Update failed: ' + e.message;
         status.style.color = '#f44336';

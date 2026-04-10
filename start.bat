@@ -64,9 +64,10 @@ echo.
 :: Open dashboard in default browser
 start "" "http://localhost:3000"
 
-:: Start the server
+:: Start the server (auto-restart loop for updates)
+:startloop
 node src/server.js
-
 echo.
-echo Application stopped.
-pause
+echo [i] App stopped. Restarting in 3 seconds... (Ctrl+C to quit)
+timeout /t 3 /nobreak >nul
+goto startloop

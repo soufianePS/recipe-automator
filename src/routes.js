@@ -912,9 +912,19 @@ export function setupRoutes(app, ctx) {
 
       res.json({
         ok: true,
-        message: 'Update complete. Restart the app to apply changes.',
+        message: 'Update complete. Restarting in 2 seconds...',
         output: result.trim()
       });
+
+      // Auto-restart the process after sending response
+      Logger.info('[Update] Restarting app in 2 seconds...');
+      setTimeout(() => {
+        // Clean up browser before exit
+        try { if (ctx.browserContext) ctx.browserContext.close(); } catch {}
+        try { if (ctx.loginBrowserContext) ctx.loginBrowserContext.close(); } catch {}
+        // Exit with code 0 — start.bat or PM2 will restart the process
+        process.exit(0);
+      }, 2000);
     } catch (e) {
       Logger.error('[Update] Failed:', e.message);
       res.status(500).json({ error: e.message });
