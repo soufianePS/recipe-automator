@@ -1044,6 +1044,7 @@
         const settings = await resp.json();
         currentSettings = settings;
 
+        document.getElementById('sDiscordWebhook').value = settings.discordWebhook || '';
         document.getElementById('sSheetId').value = settings.sheetId || '';
         document.getElementById('sGeneratorSheetTab').value = settings.generatorSheetTab || 'single post';
         document.getElementById('sGeneratorTopicCol').value = settings.generatorTopicColumn || 'A';
@@ -1264,6 +1265,7 @@
 
     async function saveSettings() {
       const settings = {
+        discordWebhook: document.getElementById('sDiscordWebhook').value.trim(),
         sheetId: document.getElementById('sSheetId').value.trim(),
         generatorSheetTab: document.getElementById('sGeneratorSheetTab').value.trim() || 'single post',
         generatorTopicColumn: document.getElementById('sGeneratorTopicCol').value.trim() || 'A',
