@@ -471,9 +471,12 @@ export class ScraperOrchestrator extends BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, step.seo?.filename || FILENAMES.stepDefault(idx));
 
-    // Scraper mode: only original image as context
+    // Context: original scraped image + all previous generated steps
     const contextPaths = [];
     if (existsSync(origPath)) contextPaths.push(origPath);
+    const outputDir2 = this._getOutputDir(state, settings);
+    const prevStepPaths = this._collectStepContextPaths(state.steps, outputDir2, idx);
+    contextPaths.push(...prevStepPaths);
 
     const ok = await this._generateWithRateLimitRetry(() =>
       this.flow.generate(prompt, backgroundPath, contextPaths, settings.stepAspectRatio || 'PORTRAIT', outputPath)
