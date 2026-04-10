@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recipe Automator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Mobile menu toggle -->
+  <button class="menu-toggle" id="menuToggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+  <!-- ============================================================== -->
+  <!-- SIDEBAR                                                         -->
+  <!-- ============================================================== -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">R</div>
+      <div class="sidebar-logo-text">
+        Recipe Automator
+        <small>Control Panel</small>
+      </div>
+    </div>
+    <div class="site-selector" id="siteSelector">
+      <div class="site-selector-trigger" id="siteSelectorTrigger" onclick="toggleSiteDropdown()">
+        <div class="site-selector-dot"></div>
+        <div class="site-selector-info">
+          <span class="site-selector-name" id="siteSelectorName">Loading...</span>
+          <span class="site-selector-domain" id="siteSelectorDomain"></span>
+        </div>
+        <span class="site-selector-arrow">&#9662;</span>
+      </div>
+      <div class="site-dropdown" id="siteDropdown"></div>
+      <button class="site-manage-btn" onclick="location.hash='#sites'" title="Manage sites">+</button>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-item active" data-page="dashboard" href="#dashboard">
+        <span class="nav-icon">&#9632;</span> Dashboard
+      </a>
+      <a class="nav-item" data-page="generator" href="#generator">
+        <span class="nav-icon">&#9881;</span> Generator
+      </a>
+      <a class="nav-item" data-page="scraper" href="#scraper">
+        <span class="nav-icon">&#8623;</span> Scraper
+      </a>
+      <a class="nav-item" data-page="settings" href="#settings">
+        <span class="nav-icon">&#9881;</span> Settings
+      </a>
+      <a class="nav-item" data-page="sites" href="#sites">
+        <span class="nav-icon">&#127760;</span> Sites
+      </a>
+    </nav>
+    <div class="sidebar-status">
+      <div id="sidebarDot" class="status-dot idle"></div>
+      <span id="sidebarStatus">Idle</span>
+    </div>
+  </aside>
+
+  <!-- ============================================================== -->
+  <!-- MAIN CONTENT                                                    -->
+  <!-- ============================================================== -->
+  <div class="main">
+
+    <!-- Active site banner -->
+    <div class="active-site-banner" id="activeSiteBanner">
+      <div class="active-site-banner-dot"></div>
+      <span class="active-site-banner-text">Working on: <strong id="bannerSiteName">--</strong> <span id="bannerSiteDomain" class="active-site-banner-domain"></span></span>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- PAGE: DASHBOARD                                               -->
+    <!-- ============================================================ -->
+    <section id="page-dashboard" class="page-section active">
+      <div class="page-header">
+        <h1 class="page-title">Dashboard</h1>
+      </div>
+      <div class="page-content">
+
+        <!-- Stat cards -->
+        <div class="stat-grid">
+          <div class="stat-card blue">
+            <div class="stat-label">Total Posts</div>
+            <div class="stat-value" id="statPosts">--</div>
+          </div>
+          <div class="stat-card green">
+            <div class="stat-label">Total Images</div>
+            <div class="stat-value" id="statImages">--</div>
+          </div>
+          <div class="stat-card orange">
+            <div class="stat-label">Success Rate</div>
+            <div class="stat-value" id="statRate">--</div>
+          </div>
+          <div class="stat-card purple">
+            <div class="stat-label">Today</div>
+            <div class="stat-value" id="statToday">--</div>
+          </div>
+        </div>
+
+        <!-- Recent activity -->
+        <div class="card">
+          <div class="card-header">Recent Activity</div>
+          <div class="card-body" style="padding:0;">
+            <ul class="history-list" id="historyList">
+              <li class="history-item">
+                <div class="history-icon running">...</div>
+                <div class="history-title" style="color:#6a6a8a">Loading activity...</div>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PAGE: GENERATOR                                               -->
+    <!-- ============================================================ -->
+    <section id="page-generator" class="page-section">
+      <div class="page-header">
+        <h1 class="page-title">Generator</h1>
+        <span class="badge badge-generate">Generate Mode</span>
+      </div>
+      <div class="page-content">
+
+        <!-- Status card -->
+        <div class="card">
+          <div class="card-header">Status</div>
+          <div class="card-body">
+            <div class="status-grid">
+              <div>
+                <div class="status-row">
+                  <span class="status-label">State</span>
+                  <span id="genState" class="badge badge-idle">IDLE</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Recipe</span>
+                  <span id="genRecipe" class="status-value">--</span>
+                </div>
+              </div>
+              <div>
+                <div class="status-row">
+                  <span class="status-label">Phase</span>
+                  <span id="genPhase" class="status-value">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Current Step</span>
+                  <span id="genStep" class="status-value">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="progress-container">
+              <div class="progress-bar">
+                <div id="genProgress" class="progress-fill" style="width:0%"></div>
+              </div>
+              <div id="genProgressText" class="progress-text">0%</div>
+            </div>
+            <div id="genError" class="error-box"></div>
+
+            <!-- Google login -->
+            <div class="login-bar" id="genLoginBar">
+              <span class="login-status-text" id="genLoginStatus">Checking Google login...</span>
+              <button id="genBtnLogin" class="btn" onclick="doLogin('gen')" style="background:#4285f4;padding:6px 16px;font-size:13px;">Login to Google</button>
+              <button id="genBtnLoginDone" class="btn" onclick="doLoginDone('gen')" style="background:#00c853;color:#003300;padding:6px 16px;font-size:13px;display:none;">Done</button>
+              <button id="genBtnOpenBrowser" class="btn" onclick="openBrowser()" style="background:#ff9800;padding:6px 16px;font-size:13px;">Open Browser</button>
+              <button id="genBtnCloseBrowser" class="btn" onclick="closeBrowser()" style="background:#f44336;padding:6px 16px;font-size:13px;display:none;">Close Browser</button>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls">
+              <button id="genBtnStart" class="btn btn-start" onclick="doStart('generate')">Start</button>
+              <button id="genBtnPause" class="btn btn-pause" onclick="doPause()" disabled>Pause</button>
+              <button id="genBtnResume" class="btn btn-resume" onclick="doResume()" disabled>Resume</button>
+              <button id="genBtnReset" class="btn btn-reset" onclick="doReset()">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Batch Progress -->
+        <div class="card" id="genBatchCard" style="display:none;">
+          <div class="card-header">Batch Progress</div>
+          <div class="card-body">
+            <div id="genBatchProgress"></div>
+          </div>
+        </div>
+
+        <!-- Activity Feed -->
+        <div class="card">
+          <div class="card-header">
+            Activity
+            <button class="btn btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
+          </div>
+          <div class="card-body">
+            <div id="genActivityFeed" class="activity-feed">
+              <div class="activity-item activity-info">
+                <span class="time">--:--:--</span>
+                <span>Waiting for activity...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PAGE: SCRAPER                                                 -->
+    <!-- ============================================================ -->
+    <section id="page-scraper" class="page-section">
+      <div class="page-header">
+        <h1 class="page-title">Scraper</h1>
+        <span class="badge badge-scrape">Scrape Mode</span>
+      </div>
+      <div class="page-content">
+
+        <!-- Status card -->
+        <div class="card">
+          <div class="card-header">Status</div>
+          <div class="card-body">
+            <div class="status-grid">
+              <div>
+                <div class="status-row">
+                  <span class="status-label">State</span>
+                  <span id="scrState" class="badge badge-idle">IDLE</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Recipe</span>
+                  <span id="scrRecipe" class="status-value">--</span>
+                </div>
+              </div>
+              <div>
+                <div class="status-row">
+                  <span class="status-label">Phase</span>
+                  <span id="scrPhase" class="status-value">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Current Step</span>
+                  <span id="scrStep" class="status-value">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="progress-container">
+              <div class="progress-bar">
+                <div id="scrProgress" class="progress-fill" style="width:0%"></div>
+              </div>
+              <div id="scrProgressText" class="progress-text">0%</div>
+            </div>
+            <div id="scrError" class="error-box"></div>
+
+            <!-- Google login -->
+            <div class="login-bar" id="scrLoginBar">
+              <span class="login-status-text" id="scrLoginStatus">Checking Google login...</span>
+              <button id="scrBtnLogin" class="btn" onclick="doLogin('scr')" style="background:#4285f4;padding:6px 16px;font-size:13px;">Login to Google</button>
+              <button id="scrBtnLoginDone" class="btn" onclick="doLoginDone('scr')" style="background:#00c853;color:#003300;padding:6px 16px;font-size:13px;display:none;">Done</button>
+              <button id="scrBtnOpenBrowser" class="btn" onclick="openBrowser()" style="background:#ff9800;padding:6px 16px;font-size:13px;">Open Browser</button>
+              <button id="scrBtnCloseBrowser" class="btn" onclick="closeBrowser()" style="background:#f44336;padding:6px 16px;font-size:13px;display:none;">Close Browser</button>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls">
+              <button id="scrBtnStart" class="btn btn-start" onclick="doStart('scrape')">Start</button>
+              <button id="scrBtnPause" class="btn btn-pause" onclick="doPause()" disabled>Pause</button>
+              <button id="scrBtnResume" class="btn btn-resume" onclick="doResume()" disabled>Resume</button>
+              <button id="scrBtnReset" class="btn btn-reset" onclick="doReset()">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Batch Progress -->
+        <div class="card" id="scrBatchCard" style="display:none;">
+          <div class="card-header">Batch Progress</div>
+          <div class="card-body">
+            <div id="scrBatchProgress"></div>
+          </div>
+        </div>
+
+        <!-- Activity Feed -->
+        <div class="card">
+          <div class="card-header">
+            Activity
+            <button class="btn btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
+          </div>
+          <div class="card-body">
+            <div id="scrActivityFeed" class="activity-feed">
+              <div class="activity-item activity-info">
+                <span class="time">--:--:--</span>
+                <span>Waiting for activity...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PAGE: SETTINGS                                                -->
+    <!-- ============================================================ -->
+    <section id="page-settings" class="page-section">
+      <div class="page-header">
+        <h1 class="page-title">Settings</h1>
+      </div>
+      <div class="page-content">
+
+        <!-- Settings tabs -->
+        <div class="settings-tabs">
+          <div class="settings-tab active" data-stab="general">General</div>
+          <div class="settings-tab" data-stab="generator">Generator</div>
+          <div class="settings-tab" data-stab="scraper">Scraper</div>
+          <div class="settings-tab" data-stab="images">Images</div>
+          <div class="settings-tab" data-stab="layout">Post Layout</div>
+          <div class="settings-tab" data-stab="flow-accounts">Flow Accounts</div>
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- SETTINGS TAB: GENERAL                                     -->
+        <!-- ======================================================== -->
+        <div id="stab-general" class="settings-panel active">
+
+          <!-- App Update -->
+          <div class="card" style="border:1px solid #2a2a4a;">
+            <div class="card-header">App Update</div>
+            <div class="card-body">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <span id="updateStatus" style="font-size:13px;color:#aaa;">Click "Check" to look for updates</span>
+                <button class="btn" onclick="checkForUpdate()" style="background:#4285f4;padding:6px 16px;font-size:12px;">Check</button>
+                <button class="btn" id="updatePullBtn" onclick="pullUpdate()" style="background:#4caf50;padding:6px 16px;font-size:12px;display:none;">Update Now</button>
+              </div>
+              <div id="updateDetails" style="font-size:11px;color:#666;"></div>
+            </div>
+          </div>
+
+          <!-- Google Sheets (Shared) -->
+          <div class="card">
+            <div class="card-header">Google Sheets</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Sheet ID</label>
+                <input type="text" id="sSheetId" placeholder="From the Google Sheets URL" />
+              </div>
+              <div class="form-group">
+                <label>Apps Script URL</label>
+                <input type="text" id="sAppsScriptUrl" placeholder="https://script.google.com/macros/s/..." />
+              </div>
+              <div style="display:flex;gap:16px;margin-top:12px;">
+                <!-- Generator Sheet Settings -->
+                <div style="flex:1;padding:12px;background:#12122a;border:1px solid #2a2a4a;border-radius:8px;">
+                  <div style="font-size:12px;font-weight:600;color:#4285f4;margin-bottom:8px;">Generator</div>
+                  <div class="form-group">
+                    <label>Tab Name</label>
+                    <input type="text" id="sGeneratorSheetTab" placeholder="single post" />
+                  </div>
+                  <div class="form-row-3">
+                    <div class="form-group"><label>Topic Col</label><input type="text" id="sGeneratorTopicCol" placeholder="A" /></div>
+                    <div class="form-group"><label>Status Col</label><input type="text" id="sGeneratorStatusCol" placeholder="B" /></div>
+                    <div class="form-group"><label>Start Row</label><input type="number" id="sGeneratorStartRow" placeholder="2" /></div>
+                  </div>
+                </div>
+                <!-- Scraper Sheet Settings -->
+                <div style="flex:1;padding:12px;background:#12122a;border:1px solid #2a2a4a;border-radius:8px;">
+                  <div style="font-size:12px;font-weight:600;color:#ff9800;margin-bottom:8px;">Scraper</div>
+                  <div class="form-group">
+                    <label>Tab Name</label>
+                    <input type="text" id="sScraperSheetTab" placeholder="Scraping" />
+                  </div>
+                  <div class="form-row-3">
+                    <div class="form-group"><label>URL Col</label><input type="text" id="sScraperUrlCol" placeholder="A" /></div>
+                    <div class="form-group"><label>Status Col</label><input type="text" id="sScraperStatusCol" placeholder="B" /></div>
+                    <div class="form-group"><label>Start Row</label><input type="number" id="sScraperStartRow" placeholder="2" /></div>
+                  </div>
+                </div>
+              </div>
+              <button class="btn btn-test" onclick="testSheet()" style="margin-top:12px;">Test Sheet Connection</button>
+              <div id="sheetTestResult" class="test-result"></div>
+            </div>
+          </div>
+
+          <!-- WordPress -->
+          <div class="card">
+            <div class="card-header">WordPress</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Site URL</label>
+                <input type="text" id="sWpUrl" placeholder="https://yourblog.com" />
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Username</label>
+                  <input type="text" id="sWpUsername" placeholder="admin" />
+                </div>
+                <div class="form-group">
+                  <label>Application Password</label>
+                  <input type="password" id="sWpAppPassword" placeholder="xxxx xxxx xxxx xxxx xxxx xxxx" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Post Categories</label>
+                <input type="text" id="sWpCategories" placeholder="Breakfast, Lunch, Dinner, Dessert" />
+                <div class="prompt-hint">Comma-separated. ChatGPT picks the best match. Use <b>@categories</b> in your recipe prompt.</div>
+              </div>
+              <div class="form-group" style="margin-bottom:12px">
+                <label>Recipe Card Plugin</label>
+                <select id="sRecipeCardPlugin">
+                  <option value="wprm">WP Recipe Maker (WPRM)</option>
+                  <option value="tasty-recipes">Tasty Recipes</option>
+                  <option value="none">None (no recipe card)</option>
+                </select>
+                <div class="prompt-hint">
+                  <b>WPRM</b>: Built-in REST API, just install the plugin.<br/>
+                  <b>Tasty Recipes</b>: Install the <code>tasty-recipes-api.php</code> plugin from the <code>wordpress-plugins</code> folder.<br/>
+                  <b>None</b>: Recipe content in post only, no card.
+                </div>
+              </div>
+              <button class="btn btn-test" onclick="testWP()">Test WordPress Connection</button>
+              <div id="wpTestResult" class="test-result"></div>
+            </div>
+          </div>
+
+          <!-- SEO -->
+          <div class="card">
+            <div class="card-header">SEO Settings</div>
+            <div class="card-body">
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Author Name</label>
+                  <input type="text" id="sSeoAuthor" placeholder="Blog author name (for schema)" />
+                </div>
+                <div class="form-group">
+                  <label>Copyright</label>
+                  <input type="text" id="sSeoCopyright" placeholder="Copyright notice" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Output -->
+          <div class="card">
+            <div class="card-header">Output</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Download Folder (subfolder inside /output/)</label>
+                <input type="text" id="sDownloadFolder" placeholder="Leave empty for root output folder" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- SETTINGS TAB: GENERATOR                                   -->
+        <!-- ======================================================== -->
+        <div id="stab-generator" class="settings-panel">
+
+          <!-- Custom GPTs -->
+          <div class="card">
+            <div class="card-header">Custom GPTs</div>
+            <div class="card-body">
+              <div class="prompt-hint" style="margin-bottom:16px;">
+                Configure custom GPT URLs for each module. Leave empty to use vanilla ChatGPT with the full prompt templates below.<br/>
+                Create your GPTs at <a href="https://chatgpt.com/gpts/mine" target="_blank" style="color:#7b8cff;">chatgpt.com/gpts/mine</a>.
+                See <code>docs/</code> folder for system instructions to paste into each GPT.
+              </div>
+              <div class="form-group">
+                <label>Generator GPT URL</label>
+                <input type="text" id="sGeneratorGptUrl" placeholder="https://chatgpt.com/g/g-xxxxx-recipe-generator" />
+              </div>
+              <div class="form-group">
+                <label>Extraction GPT URL (Scraper)</label>
+                <input type="text" id="sExtractionGptUrl" placeholder="https://chatgpt.com/g/g-xxxxx-recipe-extractor" />
+              </div>
+              <div class="form-group">
+                <label>Rewrite GPT URL (Scraper)</label>
+                <input type="text" id="sRewriteGptUrl" placeholder="https://chatgpt.com/g/g-xxxxx-recipe-rewriter" />
+              </div>
+              <!-- Old rotation fields replaced by Intro Templates card above -->
+            </div>
+          </div>
+
+          <!-- Intro Templates Rotation -->
+          <div class="card">
+            <div class="card-header">Intro Templates (Rotation)</div>
+            <div class="card-body">
+              <div class="prompt-hint" style="margin-bottom:12px">
+                Write full intro paragraphs here. Each recipe uses the next template in rotation.<br/>
+                ChatGPT will <b>adapt your intro to match the recipe</b> while keeping the same tone, structure, and personality.
+              </div>
+              <div id="introTemplatesList"></div>
+              <div style="margin-top:12px">
+                <textarea id="introTemplateInput" rows="4" placeholder="Write a full intro (2-3 paragraphs). Example:&#10;&#10;There's something magical about a dish that fills your kitchen with the most incredible aroma. I stumbled onto this recipe on a lazy Sunday afternoon.&#10;&#10;The beauty of it is how simple the whole thing comes together. You don't need fancy equipment or hard-to-find ingredients.&#10;&#10;I've made this for family dinners and casual get-togethers. Every single time someone asks for the recipe."></textarea>
+                <button class="btn btn-start" onclick="addIntroTemplate()" style="padding:6px 16px;font-size:13px;margin-top:8px">+ Add Intro Template</button>
+              </div>
+              <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.4)">
+                Shared rotation index: <span id="templateRotationIdx">0</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Conclusion Templates Rotation -->
+          <div class="card">
+            <div class="card-header">Conclusion Templates (Rotation)</div>
+            <div class="card-body">
+              <div class="prompt-hint" style="margin-bottom:12px">
+                Write full conclusion paragraphs here. Rotates in sync with intro templates.<br/>
+                ChatGPT will <b>adapt your conclusion to match the recipe</b> while keeping the same tone and personality.
+              </div>
+              <div id="conclusionTemplatesList"></div>
+              <div style="margin-top:12px">
+                <textarea id="conclusionTemplateInput" rows="4" placeholder="Write a full conclusion (2-3 paragraphs). Example:&#10;&#10;If you try this recipe, I really hope you love it as much as my family does. Drop a comment below and let me know how yours turned out.&#10;&#10;And if you are looking for more easy dinner ideas, make sure to bookmark this page."></textarea>
+                <button class="btn btn-start" onclick="addConclusionTemplate()" style="padding:6px 16px;font-size:13px;margin-top:8px">+ Add Conclusion Template</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ChatGPT Recipe Prompt -->
+          <div class="card">
+            <div class="card-header">ChatGPT Recipe Prompt</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Recipe Prompt Template</label>
+                <textarea id="sRecipePrompt" rows="8" placeholder="Leave empty to use built-in prompt with randomized styles.&#10;&#10;This prompt tells ChatGPT how to generate a recipe from a topic."></textarea>
+                <div class="prompt-hint">
+                  Placeholders: <b>@topic</b> (the recipe topic from Google Sheet)<br/>
+                  Leave empty to use the built-in prompt with randomized tone, intro/conclusion styles, and anti-AI rules.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Image Prompt Settings -->
+          <div class="card">
+            <div class="card-header">Generator Image Prompts</div>
+            <div class="card-body">
+              <div class="prompt-hint" style="margin-bottom:12px;color:#6cb4ee;">
+                Generation order: Ingredients &rarr; Steps &rarr; Hero<br/>
+                Placeholders: <b>@title</b> <b>@ingredients</b> <b>@step_title</b> <b>@step_description</b> <b>@step_number</b> <b>@cuisine</b> <b>@category</b> <b>@prompt</b> <b>@intro</b> <b>@conclusion</b> <b>@keyword</b> <b>@slug</b>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Hero Prompt Prefix</label>
+                  <textarea id="sHeroPromptPrefix" rows="3" placeholder="Added before hero image prompt"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Hero Prompt Suffix</label>
+                  <textarea id="sHeroPromptSuffix" rows="3" placeholder="Added after hero image prompt"></textarea>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Ingredients Prompt Prefix</label>
+                  <textarea id="sIngredientsPromptPrefix" rows="3" placeholder="Added before ingredients image prompt"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Ingredients Prompt Suffix</label>
+                  <textarea id="sIngredientsPromptSuffix" rows="3" placeholder="Added after ingredients image prompt"></textarea>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Steps Prompt Prefix</label>
+                  <textarea id="sStepsPromptPrefix" rows="3" placeholder="Added before each step image prompt"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Steps Prompt Suffix</label>
+                  <textarea id="sStepsPromptSuffix" rows="3" placeholder="Added after each step image prompt"></textarea>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Background Prompt Prefix (fallback for all types)</label>
+                <textarea id="sBackgroundPromptPrefix" rows="3" placeholder="Used if type-specific prefix is empty"></textarea>
+              </div>
+              <div class="form-group">
+                <label>Image Prompt Suffix (fallback for all types)</label>
+                <textarea id="sImagePromptSuffix" rows="3" placeholder="Used if type-specific suffix is empty"></textarea>
+              </div>
+              <div class="prompt-hint" style="margin-top:8px;">
+                These prompts are used ONLY in generator mode. Scraper has its own set in the Scraper tab.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- SETTINGS TAB: SCRAPER                                     -->
+        <!-- ======================================================== -->
+        <div id="stab-scraper" class="settings-panel">
+
+          <!-- Scraper General Settings -->
+          <div class="card">
+            <div class="card-header">Scraper Settings</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Content CSS Selectors</label>
+                <input type="text" id="sContentSelectors" placeholder=".entry-content, .post-content, article" />
+                <div class="prompt-hint">CSS selectors to find recipe content. Comma-separated. Use <b>@content_selectors</b> in extraction prompt to inject this list.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Extraction Prompt -->
+          <div class="card">
+            <div class="card-header">Extraction Prompt</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Run extraction with</label>
+                <select id="sExtractionProvider" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
+                  <option value="chatgpt">ChatGPT</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+                <div class="prompt-hint">Choose which AI to send the scraped HTML for recipe data extraction</div>
+              </div>
+              <div class="form-group">
+                <label>Extraction Prompt Template</label>
+                <textarea id="sExtractionPrompt" rows="8" placeholder="Leave empty to use built-in extraction prompt.&#10;&#10;This prompt tells the AI how to extract structured JSON from scraped HTML."></textarea>
+                <div class="prompt-hint">
+                  Placeholders: <b>@content_selectors</b> (CSS selectors from above)<br/>
+                  Leave empty to use the built-in extraction prompt. The scraped HTML is uploaded as a .txt file attachment.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ChatGPT SEO Rewrite Prompt -->
+          <div class="card">
+            <div class="card-header">ChatGPT SEO Rewrite Prompt</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Rewrite Prompt Template</label>
+                <textarea id="sRewritePrompt" rows="8" placeholder="Leave empty to use built-in SEO rewrite prompt.&#10;&#10;This prompt tells ChatGPT how to rewrite the extracted recipe for SEO."></textarea>
+                <div class="prompt-hint">
+                  Placeholders: <b>@categories</b> (WordPress categories list)<br/>
+                  Leave empty to use the built-in rewrite prompt with randomized styles and anti-AI rules. The extracted JSON is appended automatically.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Scraper Image Prompts -->
+          <div class="card">
+            <div class="card-header">Scraper Image Prompts</div>
+            <div class="card-body">
+              <div class="prompt-hint" style="margin-bottom:12px;color:#6cb4ee;">
+                Generation order: Ingredients &rarr; Steps &rarr; Hero<br/>
+                Placeholders: <b>@title</b> <b>@ingredients</b> <b>@step</b> <b>@step_description</b> <b>@step_number</b> <b>@cuisine</b> <b>@category</b> <b>@prompt</b> <b>@keyword</b> <b>@slug</b>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Hero Prompt Prefix</label>
+                  <textarea id="sScraperHeroPrefix" rows="3" placeholder="Added before hero image prompt (scraper)"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Hero Prompt Suffix</label>
+                  <textarea id="sScraperHeroSuffix" rows="3" placeholder="Added after hero image prompt (scraper)"></textarea>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Ingredients Prompt Prefix</label>
+                  <textarea id="sScraperIngredientsPrefix" rows="3" placeholder="Added before ingredients prompt (scraper)"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Ingredients Prompt Suffix</label>
+                  <textarea id="sScraperIngredientsSuffix" rows="3" placeholder="Added after ingredients prompt (scraper)"></textarea>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Steps Prompt Prefix</label>
+                  <textarea id="sScraperStepsPrefix" rows="3" placeholder="Added before each step prompt (scraper)"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Steps Prompt Suffix</label>
+                  <textarea id="sScraperStepsSuffix" rows="3" placeholder="Added after each step prompt (scraper)"></textarea>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Background Prompt Prefix (fallback for all types)</label>
+                <textarea id="sScraperBgPrefix" rows="3" placeholder="Used if type-specific prefix is empty"></textarea>
+              </div>
+              <div class="prompt-hint">These prompts are used ONLY in scraper mode. Generator has its own set in the Generator tab.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- SETTINGS TAB: IMAGES                                      -->
+        <!-- ======================================================== -->
+        <div id="stab-images" class="settings-panel">
+
+          <!-- Hero Backgrounds -->
+          <div class="card">
+            <div class="card-header">Hero Backgrounds</div>
+            <div class="card-body">
+              <div id="heroDropzone" class="dropzone">
+                <div class="dropzone-text"><strong>Drop images here</strong> or click to browse</div>
+                <div class="dropzone-hint">JPG, PNG, WebP. Used for hero (finished dish) image generation.</div>
+                <input type="file" id="heroFileInput" accept="image/*" multiple style="display:none" />
+              </div>
+              <div id="heroFileList" class="file-list"></div>
+            </div>
+          </div>
+
+          <!-- Backgrounds Folder -->
+          <div class="card">
+            <div class="card-header">Step/Ingredient Backgrounds Folder</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Backgrounds Root Folder</label>
+                <div style="display:flex;gap:8px;">
+                  <input type="text" id="sBackgroundsFolder" placeholder="C:\Users\...\backgrounds" style="flex:1;" />
+                  <button class="btn" onclick="scanSubfolders()" style="background:#4285f4;color:#fff;padding:8px 16px;white-space:nowrap;">Scan</button>
+                </div>
+                <div class="prompt-hint">Paste the full path to your backgrounds root folder, then click Scan</div>
+              </div>
+              <div class="form-group">
+                <label>Active Background Set</label>
+                <select id="sSubfolder" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
+                  <option value="">-- Select subfolder --</option>
+                </select>
+                <div id="subfolderInfo" class="prompt-hint"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Aspect Ratios -->
+          <div class="card">
+            <div class="card-header">Aspect Ratios</div>
+            <div class="card-body">
+              <div class="form-row-3">
+                <div class="form-group">
+                  <label>Hero Aspect Ratio</label>
+                  <select id="sHeroAspectRatio">
+                    <option value="LANDSCAPE">16:9 (Landscape)</option>
+                    <option value="LANDSCAPE_4_3">4:3</option>
+                    <option value="SQUARE">1:1 (Square)</option>
+                    <option value="PORTRAIT_3_4">3:4</option>
+                    <option value="PORTRAIT">9:16 (Portrait)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Steps Aspect Ratio</label>
+                  <select id="sStepAspectRatio">
+                    <option value="LANDSCAPE">16:9 (Landscape)</option>
+                    <option value="LANDSCAPE_4_3">4:3</option>
+                    <option value="SQUARE">1:1 (Square)</option>
+                    <option value="PORTRAIT_3_4">3:4</option>
+                    <option value="PORTRAIT" selected>9:16 (Portrait)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Ingredients Aspect Ratio</label>
+                  <select id="sIngredientAspectRatio">
+                    <option value="LANDSCAPE">16:9 (Landscape)</option>
+                    <option value="LANDSCAPE_4_3">4:3</option>
+                    <option value="SQUARE">1:1 (Square)</option>
+                    <option value="PORTRAIT_3_4">3:4</option>
+                    <option value="PORTRAIT" selected>9:16 (Portrait)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="prompt-hint">Images always generate x1. Aspect ratio is set per type.</div>
+            </div>
+          </div>
+
+          <!-- Pinterest Pins -->
+          <div class="card">
+            <div class="card-header">Pinterest Pins</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;">
+                  <input type="checkbox" id="sPinterestEnabled" style="width:auto;" />
+                  Enable Pinterest pin generation
+                </label>
+                <div class="prompt-hint">After publishing the draft, generate 3 Pinterest pin images and save data to Google Sheet.</div>
+              </div>
+              <!-- Generator Template Folder -->
+              <div class="form-group">
+                <label>Generator Template Folder</label>
+                <div style="display:flex;gap:8px;">
+                  <input type="text" id="sPinterestGenRoot" placeholder="C:\Users\...\pinterest-templates" style="flex:1;" />
+                  <button class="btn" onclick="scanPinterestFolder('gen')" style="background:#4285f4;color:#fff;padding:8px 16px;white-space:nowrap;">Scan</button>
+                </div>
+                <div class="prompt-hint">Root folder with subfolders of example Pinterest pin images (generator mode)</div>
+              </div>
+              <div class="form-group">
+                <label>Active Generator Template Set</label>
+                <select id="sPinterestGenSubfolder" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
+                  <option value="">-- Select subfolder --</option>
+                </select>
+                <div id="pinterestGenInfo" class="prompt-hint"></div>
+              </div>
+              <input type="hidden" id="sPinterestTemplateFolderGenerator" />
+
+              <!-- Scraper Template Folder -->
+              <div class="form-group">
+                <label>Scraper Template Folder</label>
+                <div style="display:flex;gap:8px;">
+                  <input type="text" id="sPinterestScrRoot" placeholder="C:\Users\...\pinterest-templates" style="flex:1;" />
+                  <button class="btn" onclick="scanPinterestFolder('scr')" style="background:#4285f4;color:#fff;padding:8px 16px;white-space:nowrap;">Scan</button>
+                </div>
+                <div class="prompt-hint">Root folder with subfolders of example Pinterest pin images (scraper mode)</div>
+              </div>
+              <div class="form-group">
+                <label>Active Scraper Template Set</label>
+                <select id="sPinterestScrSubfolder" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
+                  <option value="">-- Select subfolder --</option>
+                </select>
+                <div id="pinterestScrInfo" class="prompt-hint"></div>
+              </div>
+              <input type="hidden" id="sPinterestTemplateFolderScraper" />
+              <div class="form-row-2">
+                <div class="form-group">
+                  <label>Pin Aspect Ratio</label>
+                  <select id="sPinterestAspectRatio">
+                    <option value="PORTRAIT" selected>9:16 (Portrait)</option>
+                    <option value="PORTRAIT_3_4">3:4</option>
+                    <option value="SQUARE">1:1 (Square)</option>
+                    <option value="LANDSCAPE_4_3">4:3</option>
+                    <option value="LANDSCAPE">16:9 (Landscape)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Number of Pins</label>
+                  <input type="number" id="sPinterestPinCount" min="1" max="5" value="3" style="width:80px;" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Pinterest Prompt Prefix</label>
+                <textarea id="sPinterestPromptPrefix" rows="2" placeholder="Optional prefix added before pin image prompt"></textarea>
+              </div>
+              <div class="form-group">
+                <label>Pinterest Prompt Suffix</label>
+                <textarea id="sPinterestPromptSuffix" rows="2" placeholder="Optional suffix added after pin image prompt"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- SETTINGS TAB: POST LAYOUT                                 -->
+        <!-- ======================================================== -->
+        <div id="stab-layout" class="settings-panel">
+          <div class="card">
+            <div class="card-header">
+              Post Layout Template
+              <button class="btn btn-sm" onclick="resetTemplate()" style="background:#555;color:#fff;">Reset to Default</button>
+            </div>
+            <div class="card-body">
+              <small style="display:block;margin-bottom:10px;color:#6a6a8a;">Drag blocks to reorder. Click the gear icon to edit options. Use + to add blocks.</small>
+              <div id="templateBlocks" class="template-blocks"></div>
+              <div class="template-add-row">
+                <select id="templateAddSelect" class="template-select" onchange="addTemplateBlock(this)">
+                  <option value="">+ Add block...</option>
+                  <option value="intro">Introduction</option>
+                  <option value="hero">Hero Image</option>
+                  <option value="paragraphs">Paragraphs</option>
+                  <option value="heading">Heading</option>
+                  <option value="ingredients-image">Ingredients Image</option>
+                  <option value="ingredients-list">Ingredients List</option>
+                  <option value="steps">Steps (with tips)</option>
+                  <option value="tips">Pro Tips</option>
+                  <option value="faq">FAQ</option>
+                  <option value="storage">Storage Info</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="fun-fact">Fun Fact</option>
+                  <option value="recipe-card">Recipe Card (WPRM)</option>
+                  <option value="note">Final Notes</option>
+                  <option value="custom-text">Custom Text</option>
+                  <option value="spacer">Spacer (Saute de ligne)</option>
+                  <option value="separator">Divider Line</option>
+                </select>
+              </div>
+              <textarea id="postTemplate" style="display:none;"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- SETTINGS TAB: FLOW ACCOUNTS                             -->
+        <!-- ======================================================== -->
+        <div id="stab-flow-accounts" class="settings-panel">
+
+          <!-- Global Settings -->
+          <div class="card">
+            <div class="card-header">Flow Account Rotation Settings</div>
+            <div class="card-body">
+              <div class="prompt-hint" style="margin-bottom:12px;">Accounts rotate round-robin every recipe. Rate-limited accounts are skipped until auto-reset.</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Auto-Reset</label>
+                  <select id="faAutoReset">
+                    <option value="true">Yes</option>
+                    <option value="false">No</option>
+                  </select>
+                  <div class="prompt-hint">Automatically reset counts and rate-limit flags</div>
+                </div>
+                <div class="form-group">
+                  <label>Rate Limit Reset (hours)</label>
+                  <input type="number" id="faRateLimitResetHours" value="4" min="1" max="48" />
+                  <div class="prompt-hint">Clear rate-limit flag after this many hours (default: 4)</div>
+                </div>
+                <div class="form-group">
+                  <label>Count Reset (hours)</label>
+                  <input type="number" id="faCountResetHours" value="24" min="1" max="72" />
+                  <div class="prompt-hint">Reset generation count after this many hours (default: 24)</div>
+                </div>
+              </div>
+              <button class="btn" onclick="saveFlowAccountSettings()" style="background:#4285f4;padding:8px 20px;font-size:13px;">Save Settings</button>
+            </div>
+          </div>
+
+          <!-- Add New Account -->
+          <div class="card">
+            <div class="card-header">Add Flow Account</div>
+            <div class="card-body">
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Account Name</label>
+                  <input type="text" id="faNewName" placeholder="e.g. Account 1 (myemail@gmail.com)" />
+                </div>
+                <div class="form-group">
+                  <label>Profile Directory Name</label>
+                  <input type="text" id="faNewProfileDir" placeholder="e.g. recipe-automator-profile-1" />
+                  <div class="prompt-hint">Stored in %LOCALAPPDATA%. Each account needs a unique profile.</div>
+                </div>
+              </div>
+              <button class="btn btn-start" onclick="addFlowAccount()" style="padding:8px 20px;font-size:13px;">Add Account</button>
+            </div>
+          </div>
+
+          <!-- Accounts List -->
+          <div class="card">
+            <div class="card-header">
+              Accounts
+              <button class="btn btn-secondary btn-sm" onclick="loadFlowAccounts()">Refresh</button>
+            </div>
+            <div class="card-body">
+              <div id="flowAccountsList"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Save / Export / Import -->
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+          <button class="btn btn-save" onclick="saveSettings()" style="padding:12px 48px;font-size:14px;">Save All Settings</button>
+          <button class="btn" onclick="exportSettings()" style="background:#4285f4;color:#fff;padding:10px 20px;font-size:13px;">Export</button>
+          <button class="btn" onclick="document.getElementById('importFile').click()" style="background:#ff9800;color:#fff;padding:10px 20px;font-size:13px;">Import</button>
+          <input type="file" id="importFile" accept=".json" style="display:none" onchange="importSettings(this)" />
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PAGE: SITES                                                   -->
+    <!-- ============================================================ -->
+    <section id="page-sites" class="page-section">
+      <div class="page-header"><h1 class="page-title">Sites</h1></div>
+      <div class="page-content">
+        <div class="card">
+          <div class="card-header">Add New Site</div>
+          <div class="card-body">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Site Name (slug)</label>
+                <input type="text" id="newSiteName" placeholder="my-food-blog" pattern="[a-z0-9-]+" />
+                <small style="color:#888">Lowercase letters, numbers, hyphens only</small>
+              </div>
+            </div>
+            <button class="btn btn-start" onclick="createSite()">Create Site</button>
+          </div>
+        </div>
+        <div class="sites-grid" id="sitesList"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Toast container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- ============================================================== -->
+  <!-- JAVASCRIPT                                                      -->
+  <!-- ============================================================== -->
+  <script src="dashboard.js"></script>
+</body>
+</html>
