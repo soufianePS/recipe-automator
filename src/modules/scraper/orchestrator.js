@@ -447,6 +447,9 @@ export class ScraperOrchestrator extends BaseOrchestrator {
     const origPath = join(__dirname, '..', '..', '..', 'data', 'tmp', 'originals', `orig_step_${idx}.jpg`);
     if (!step.image_url && !existsSync(origPath)) {
       Logger.info(`Step ${idx + 1}: No original image (null in JSON) — skipping generation`);
+      const steps = [...state.steps];
+      steps[idx] = { ...steps[idx], base64: true };
+      await StateManager.updateState({ steps });
       await this._advanceStep();
       return;
     }
@@ -476,6 +479,7 @@ export class ScraperOrchestrator extends BaseOrchestrator {
       this.flow.generate(prompt, backgroundPath, contextPaths, settings.stepAspectRatio || 'PORTRAIT', outputPath)
     );
     if (!ok) throw new Error(`Step ${idx + 1} image generation failed after 2 attempts`);
+    await this._trackFlowGeneration();
 
     const imgBuf = readFileSync(outputPath);
     await StateManager.storeImageData(`step_${idx}`, imgBuf.toString('base64'));
@@ -530,6 +534,7 @@ export class ScraperOrchestrator extends BaseOrchestrator {
       true // first image — rotate immediately on rate limit
     );
     if (!ok) throw new Error('Ingredients image generation failed after 2 attempts');
+    await this._trackFlowGeneration();
 
     const imgBuf = readFileSync(outputPath);
     await StateManager.storeImageData('ingredients', imgBuf.toString('base64'));
@@ -580,6 +585,7 @@ export class ScraperOrchestrator extends BaseOrchestrator {
       this.flow.generate(prompt, heroTmpPath, contextPaths, settings.heroAspectRatio || 'LANDSCAPE', outputPath)
     );
     if (!ok) throw new Error('Hero image generation failed after 2 attempts');
+    await this._trackFlowGeneration();
 
     const imgBuf = readFileSync(outputPath);
     await StateManager.storeImageData('hero', imgBuf.toString('base64'));
