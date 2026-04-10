@@ -666,11 +666,9 @@ export class BaseOrchestrator {
    * Limited to last MAX_CONTEXT steps for speed and reliability.
    */
   _collectStepContextPaths(steps, outputDir, upToIndex) {
-    const MAX_CONTEXT = 2; // Only last 2 steps — enough for visual consistency
-    const startFrom = Math.max(0, upToIndex - MAX_CONTEXT);
     const contextPaths = [];
     const now = Date.now();
-    for (let i = startFrom; i < upToIndex; i++) {
+    for (let i = 0; i < upToIndex; i++) {
       const p = join(outputDir, steps[i].seo?.filename || FILENAMES.stepDefault(i));
       if (!existsSync(p)) continue;
       // Only use files from the current run (created within last 2 hours)
