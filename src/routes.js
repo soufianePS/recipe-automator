@@ -238,8 +238,22 @@ export function setupRoutes(app, ctx) {
         await StateManager.saveSettings(settings);
       }
 
-      // Reset state and initialize batch
+      // Reset state, clean image cache + tmp files
       await StateManager.resetState();
+      try {
+        const { readdirSync, unlinkSync, existsSync: ex } = await import('fs');
+        const cleanDir = (dir) => {
+          if (!ex(dir)) return;
+          for (const f of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, f.name);
+            if (f.isDirectory()) cleanDir(p);
+            else try { unlinkSync(p); } catch {}
+          }
+        };
+        cleanDir(join(ctx.__dirname, '..', 'data', 'tmp'));
+        cleanDir(join(ctx.__dirname, '..', 'output'));
+        Logger.info('Cleaned tmp + output before batch start');
+      } catch {}
       await StateManager.updateState({
         status: STATES.LOADING_JOB,
         batchMode: true,
@@ -346,9 +360,32 @@ export function setupRoutes(app, ctx) {
       await ctx.cleanupBrowser();
       ctx.orchestrator = null;
       await StateManager.resetState();
+
+      // Clean tmp files, output, and screenshots
+      try {
+        const { readdirSync, unlinkSync, existsSync: ex } = await import('fs');
+        const cleanDir = (dir) => {
+          if (!ex(dir)) return 0;
+          let count = 0;
+          for (const f of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, f.name);
+            if (f.isDirectory()) { count += cleanDir(p); }
+            else { try { unlinkSync(p); count++; } catch {} }
+          }
+          return count;
+        };
+        const tmpDir = join(ctx.__dirname, '..', 'data', 'tmp');
+        const ssDir = join(ctx.__dirname, '..', 'screenshots');
+        const outDir = join(ctx.__dirname, '..', 'output');
+        const tmpCount = cleanDir(tmpDir);
+        const ssCount = cleanDir(ssDir);
+        const outCount = cleanDir(outDir);
+        Logger.info(`Reset cleanup: ${tmpCount} tmp, ${ssCount} screenshots, ${outCount} output files`);
+      } catch {}
+
       Logger.info('Automation reset');
       Logger.clearLogs();
-      res.json({ ok: true, message: 'Reset complete' });
+      res.json({ ok: true, message: 'Reset complete — all temp files cleaned' });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

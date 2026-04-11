@@ -25,7 +25,7 @@ import { FlowAccountManager } from '../shared/utils/flow-account-manager.js';
 import { buildAndPublishPost } from './post-builder.js';
 import { saveFiles, uploadMedia, updateSheet } from './save-upload.js';
 import { writeFile, mkdir } from 'fs/promises';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -543,10 +543,21 @@ export class BaseOrchestrator {
       const nextIndex = (state.batchCurrentIndex || 0) + 1;
       Logger.warn(`Batch: recipe "${state.recipeTitle}" failed — skipping to next (${nextIndex + 1}/${state.batchQueue.length})`);
 
-      // Clean up for next recipe — close tabs but keep browser alive
+      // Clean up for next recipe — close tabs, clear image cache + tmp
       try { await this.chatgpt.close(); } catch {}
       try { await this.flow.closeSession(); } catch {}
       try { await StateManager.clearImageData(); } catch {}
+      try {
+        const cleanDir = (dir) => {
+          if (!existsSync(dir)) return;
+          for (const f of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, f.name);
+            if (f.isDirectory()) cleanDir(p);
+            else try { unlinkSync(p); } catch {}
+          }
+        };
+        cleanDir(join(__dirname, '..', '..', 'data', 'tmp'));
+      } catch {}
 
       // Verify browser context is still alive — if not, flag for relaunch
       try {
