@@ -202,6 +202,7 @@ export const FlowAccountManager = {
       name,
       profileDir,
       enabled: true,
+      geminiApiKey: '',
       generationCount: 0,
       firstGenAt: null,
       lastGenAt: null,
@@ -294,6 +295,29 @@ export const FlowAccountManager = {
   async isEnabled() {
     const data = await this.getAccounts();
     return data.accounts.some(a => a.enabled);
+  },
+
+  /**
+   * Get the Gemini API key for the currently active account.
+   * Returns empty string if not configured.
+   */
+  async getActiveGeminiKey() {
+    const data = await this.getAccounts();
+    const active = data.accounts.find(a => a.id === data.activeAccountId);
+    return active?.geminiApiKey || '';
+  },
+
+  /**
+   * Get ALL available Gemini API keys (for round-robin rotation).
+   * Returns array of unique non-empty keys.
+   */
+  async getAllGeminiKeys() {
+    const data = await this.getAccounts();
+    const keys = data.accounts
+      .filter(a => a.enabled && a.geminiApiKey)
+      .map(a => a.geminiApiKey);
+    // Deduplicate
+    return [...new Set(keys)];
   },
 
   // ── Internal ──

@@ -8,6 +8,7 @@
       'SCRAPING_SITE': 'Scraping recipe page...',
       'DOWNLOADING_IMAGES': 'Downloading original images...',
       'GENERATING_RECIPE_JSON': 'Generating recipe (ChatGPT)',
+      'PLANNING_VISUAL_STATES': 'Planning visual states (ChatGPT)',
       'CREATING_FOLDERS': 'Creating folders',
       'GENERATING_STEPS': 'Generating step images',
       'GENERATING_INGREDIENTS': 'Generating ingredients image',
@@ -31,7 +32,7 @@
     };
 
     const STATE_ORDER = [
-      'LOADING_JOB', 'SELECTING_BACKGROUND', 'GENERATING_RECIPE_JSON', 'CREATING_FOLDERS',
+      'LOADING_JOB', 'SELECTING_BACKGROUND', 'GENERATING_RECIPE_JSON', 'PLANNING_VISUAL_STATES', 'CREATING_FOLDERS',
       'GENERATING_STEPS', 'GENERATING_INGREDIENTS', 'GENERATING_HERO',
       'SAVING_FILES', 'UPLOADING_MEDIA', 'PUBLISHING_DRAFT', 'GENERATING_PINS', 'UPLOADING_PINS', 'UPDATING_SHEET', 'COMPLETED'
     ];
@@ -63,9 +64,10 @@
 
       // Load data for specific pages
       if (page === 'dashboard') loadDashboardData();
-      if (page === 'settings' && !settingsLoaded) { loadSettings(); settingsLoaded = true; }
+      if ((page === 'settings' || page === 'verified') && !settingsLoaded) { loadSettings(); settingsLoaded = true; }
+      if (page === 'verified' && settingsLoaded) loadVGPrompts();
       if (page === 'sites') loadSites();
-      if (page === 'generator' || page === 'scraper') checkLoginStatus();
+      if (page === 'generator' || page === 'scraper' || page === 'verified') checkLoginStatus();
     }
 
     // Listen for hash changes
@@ -199,6 +201,8 @@
         updateModulePage('gen', state);
         // Update Scraper page
         updateModulePage('scr', state);
+        // Update Verified Generator page
+        updateModulePage('vg', state);
       } catch {}
 
       // Check if open-browser was closed manually
@@ -206,7 +210,7 @@
         const bResp = await fetch('/api/browser-status');
         if (bResp.ok) {
           const { open } = await bResp.json();
-          ['gen', 'scr'].forEach(p => {
+          ['gen', 'scr', 'vg'].forEach(p => {
             const openBtn = document.getElementById(p + 'BtnOpenBrowser');
             const closeBtn = document.getElementById(p + 'BtnCloseBrowser');
             if (!open && closeBtn.style.display !== 'none') {
@@ -219,13 +223,14 @@
       } catch {}
 
       // Fetch logs for active pages
-      if (currentPage === 'generator' || currentPage === 'scraper') {
+      if (currentPage === 'generator' || currentPage === 'scraper' || currentPage === 'verified') {
         try {
           const resp = await fetch('/api/logs');
           if (!resp.ok) return;
           const logs = await resp.json();
           updateActivityFeed('genActivityFeed', logs);
           updateActivityFeed('scrActivityFeed', logs);
+          updateActivityFeed('vgActivityFeed', logs);
         } catch {}
       }
     }
@@ -371,7 +376,7 @@
         const data = await resp.json();
         if (data.ok) {
           toast('Browser opened -- log in to Google, then click Done', 'success');
-          ['gen', 'scr'].forEach(p => {
+          ['gen', 'scr', 'vg'].forEach(p => {
             document.getElementById(p + 'BtnLogin').style.display = 'none';
             document.getElementById(p + 'BtnLoginDone').style.display = '';
           });
@@ -421,13 +426,13 @@
         const data = await resp.json();
         if (resp.ok) {
           toast(data.message || 'Browser opened', 'success');
-          ['gen', 'scr'].forEach(p => {
+          ['gen', 'scr', 'vg'].forEach(p => {
             document.getElementById(p + 'BtnOpenBrowser').style.display = 'none';
             document.getElementById(p + 'BtnCloseBrowser').style.display = '';
           });
         } else {
           toast(data.error || 'Failed to open browser', 'error');
-          ['gen', 'scr'].forEach(p => {
+          ['gen', 'scr', 'vg'].forEach(p => {
             document.getElementById(p + 'BtnOpenBrowser').disabled = false;
           });
         }
@@ -478,11 +483,13 @@
         return;
       }
 
-      // Disable both start buttons
+      // Disable all start buttons
       const genBtn = document.getElementById('genBtnStart');
       const scrBtn = document.getElementById('scrBtnStart');
+      const vgBtn = document.getElementById('vgBtnStart');
       if (genBtn) genBtn.disabled = true;
       if (scrBtn) scrBtn.disabled = true;
+      if (vgBtn) vgBtn.disabled = true;
 
       try {
         const resp = await fetch('/api/start', {
@@ -499,6 +506,7 @@
           toast(data.error || 'Failed to start', 'error');
           if (genBtn) genBtn.disabled = false;
           if (scrBtn) scrBtn.disabled = false;
+          if (vgBtn) vgBtn.disabled = false;
         }
       } catch (e) {
         toast('Request failed: ' + e.message, 'error');
@@ -521,8 +529,10 @@
     async function doResume() {
       const genBtn = document.getElementById('genBtnResume');
       const scrBtn = document.getElementById('scrBtnResume');
+      const vgBtn = document.getElementById('vgBtnResume');
       if (genBtn) genBtn.disabled = true;
       if (scrBtn) scrBtn.disabled = true;
+      if (vgBtn) vgBtn.disabled = true;
 
       try {
         const resp = await fetch('/api/resume', { method: 'POST' });
@@ -532,6 +542,7 @@
           toast(data.error || 'Failed to resume', 'error');
           if (genBtn) genBtn.disabled = false;
           if (scrBtn) scrBtn.disabled = false;
+          if (vgBtn) vgBtn.disabled = false;
         }
       } catch (e) {
         toast('Request failed: ' + e.message, 'error');
@@ -1135,11 +1146,69 @@
         if (settings.backgroundsFolderPath) {
           await scanSubfolders(settings.selectedSubfolder);
         }
+        // ── Verified Generator settings (non-prompt fields) ──
+        const vg = settings.verifiedGenerator || {};
+        document.getElementById('vgMinSteps').value = vg.minVisualSteps || 4;
+        document.getElementById('vgMaxSteps').value = vg.maxVisualSteps || 8;
+        document.getElementById('vgMaxRetries').value = vg.maxVerificationRetries || 3;
+        document.getElementById('vgSoftFailAction').value = vg.softFailAction || 'accept';
+        document.getElementById('vgContainer').value = vg.defaultContainer || 'white ceramic bowl';
+        document.getElementById('vgCameraAngle').value = vg.defaultCameraAngle || 'top-down';
+        document.getElementById('vgLighting').value = vg.defaultLighting || 'natural soft light';
+        // Load prompts via dedicated function
+        loadVGPrompts();
       } catch (e) {
         toast('Failed to load settings: ' + e.message, 'error');
       }
 
       loadBackgrounds();
+    }
+
+    // ── Verified Generator prompt defaults & loader ──
+    const VG_DEFAULT_PROMPTS = {
+      visualPlan: 'You are a food photography director planning a step-by-step recipe photo shoot.\n\nGiven the recipe JSON below, create a VISUAL PRODUCTION PLAN \u2014 a structured JSON that describes exactly what each photo should show.\n\nCRITICAL RULES:\n- Create between {{min_steps}} and {{max_steps}} visual steps (adapt to recipe complexity)\n- Each step must show ONE clear visual change from the previous step\n- Use the SAME container throughout all steps: \"{{default_container}}\"\n- Every step must list EXACT visible ingredients and FORBIDDEN ingredients\n- Forbidden = anything that has NOT been added yet at this step + any garnish/decoration (unless it\'s the last step)\n- For continuity: only allow previous image as context when same container + small change\n- NEVER show ingredients from future steps\n- Previously mixed ingredients cannot reappear separately\n- The ingredients image must show ALL raw ingredients laid out separately\n- The hero image must show the final finished dish\n\nRECIPE JSON:\n{{recipe_json}}\n\nOutput ONLY valid JSON (no markdown, no explanation) matching this exact schema:\n{\n  \"ingredients_image\": {\n    \"image_type\": \"ingredients\",\n    \"layout\": \"flat lay arrangement on background\",\n    \"camera_angle\": \"top-down\",\n    \"items\": [\n      { \"name\": \"ingredient name\", \"state\": \"visual description\", \"presentation\": \"how displayed\" }\n    ],\n    \"forbidden\": [\"cooked food\", \"mixed items\", \"garnish\", \"utensils\"]\n  },\n  \"visual_steps\": [\n    {\n      \"step_id\": 1,\n      \"title\": \"short action title\",\n      \"container\": \"{{default_container}}\",\n      \"camera_angle\": \"{{default_camera_angle}}\",\n      \"visible_ingredients\": [\n        { \"name\": \"ingredient\", \"state\": \"visual state description\" }\n      ],\n      \"forbidden_ingredients\": [\"list of ingredients NOT allowed in this image\"],\n      \"food_state\": \"detailed description of food appearance at this exact moment\",\n      \"continuity\": {\n        \"uses_previous_image\": false,\n        \"reason\": \"why or why not use previous image as context\"\n      }\n    }\n  ],\n  \"hero_image\": {\n    \"image_type\": \"hero\",\n    \"base_description\": \"final dish description\",\n    \"container\": \"{{default_container}}\",\n    \"camera_angle\": \"45-degree angle\",\n    \"allowed_additions\": [\"garnish if recipe includes it\", \"final presentation touches\"],\n    \"forbidden\": [\"raw ingredients\", \"extra bowls\", \"utensils\", \"side dishes not in recipe\"]\n  }\n}',
+      flowImage: 'Photorealistic food photography. {{lighting}}.\n\nSCENE:\n- Background: exact same as the uploaded reference image\n- One {{container}}, {{camera_angle}} angle\n- Entire container visible in frame\n\nSHOW EXACTLY:\n{{visible_ingredients_list}}\n\nCURRENT STATE: {{food_state}}\n\nSTRICT RULES:\n- Only 1 container visible in the image\n- No extra bowls, plates, utensils, or props\n- No garnish or decoration unless explicitly listed above\n- No ingredients outside the list above\n- Show ONLY this step, not future steps\n- Previously mixed ingredients cannot reappear separately\n- All food must be inside the container\n- No text, no watermark',
+      flowIngredients: 'Photorealistic food photography. {{lighting}}.\n\nSCENE:\n- Background: exact same as the uploaded reference image\n- {{layout}}\n- {{camera_angle}} angle\n\nINGREDIENTS TO SHOW (each separate, not mixed):\n{{ingredients_list}}\n\nSTRICT RULES:\n- Every ingredient must be clearly visible and separate\n- No ingredient is cooked or mixed\n- No garnish, no utensils, no extra props\n- All items arranged neatly on the background\n- No text, no watermark',
+      flowHero: 'Photorealistic food photography. {{lighting}}.\n\nSCENE:\n- Background: exact same as the uploaded reference image\n- {{base_description}}\n- {{container}}, {{camera_angle}} angle\n- Appetizing, magazine-quality presentation\n\nALLOWED ADDITIONS:\n{{allowed_additions_list}}\n\nSTRICT RULES:\n- Show the FINISHED dish only\n- No raw ingredients visible\n- No extra containers or utensils\n- No text, no watermark\n{{forbidden_list}}',
+      verifier: 'You are validating a recipe step image for accuracy.\n\nEXPECTED STEP:\n- Container: {{container}} (exactly 1 allowed)\n- Camera angle: {{camera_angle}}\n\nALLOWED visible ingredients:\n{{visible_ingredients_list}}\n\nFORBIDDEN ingredients (must NOT appear):\n{{forbidden_ingredients_list}}\n\nExpected food state: {{food_state}}\n\nIMPORTANT: The background surface may contain elements like rings, cables, cloth edges, table texture. These are part of the BACKGROUND — ignore them completely. Only check the FOOD and CONTAINER.\n\nVALIDATION CHECKS:\n1. List every visible food element in the image\n2. Count how many food containers/bowls/plates are visible (ignore background objects)\n3. Check if any FORBIDDEN ingredient appears\n4. Check if any ingredient from a FUTURE step is visible\n5. Check if previously mixed ingredients reappear separately\n6. Check if the food state matches the expected description\n\nSEVERITY RULES:\n- HARD_FAIL: forbidden ingredient found, wrong container count, future ingredient visible, food completely wrong state\n- SOFT_FAIL: framing slightly off, minor texture difference, bowl not perfectly centered\n- PASS: everything matches expected state\n\nOUTPUT JSON ONLY (no markdown, no explanation):\n{\n  \"status\": \"PASS\",\n  \"detected_items\": [],\n  \"forbidden_found\": [],\n  \"container_count\": 1,\n  \"state_match\": true,\n  \"issues\": []\n}',
+      verifierIngredients: 'You are validating a recipe ingredients flat-lay image.\n\nEXPECTED:\n- All ingredients laid out separately on the background\n- Camera angle: {{camera_angle}}\n\nREQUIRED ingredients (must ALL be visible):\n{{ingredients_list}}\n\nFORBIDDEN:\n- No cooked food\n- No mixed/combined ingredients\n- No garnish\n- No utensils or extra props\n\nIMPORTANT: The background surface may contain elements like rings, cables, cloth, table texture. These are part of the BACKGROUND — ignore them. Only check the FOOD items.\n\nVALIDATION CHECKS:\n1. List every visible food item (ignore background surface elements)\n2. Check if all required ingredients are present\n3. Check if any ingredient appears cooked or mixed\n4. Check for extra food items not in the required list\n\nOUTPUT JSON ONLY:\n{\n  \"status\": \"PASS\",\n  \"detected_items\": [],\n  \"missing_ingredients\": [],\n  \"extra_items\": [],\n  \"issues\": []\n}',
+      verifierHero: 'You are validating a recipe hero/final image.\n\nEXPECTED:\n- Finished dish: {{base_description}}\n- Container: {{container}}\n- Camera angle: {{camera_angle}}\n\nALLOWED additions: {{allowed_additions_list}}\n\nFORBIDDEN:\n{{forbidden_list}}\n\nVALIDATION CHECKS:\n1. Does the image show a finished, appetizing dish?\n2. Does it match the expected description?\n3. Are there any forbidden elements?\n4. Is the presentation clean and professional?\n\nOUTPUT JSON ONLY:\n{\n  \"status\": \"PASS\",\n  \"detected_items\": [],\n  \"forbidden_found\": [],\n  \"issues\": []\n}',
+      recipeVisualPlan: 'You are a professional food blogger and food photography director.\n\nGenerate a COMPLETE recipe blog post AND a visual production plan for image generation.\n\nRECIPE TOPIC: {{topic}}\nCATEGORIES TO CHOOSE FROM: {{categories}}\n\nOUTPUT ONE JSON OBJECT with THREE sections:\n\nSECTION 1 \u2014 \"recipe\" (for the blog post):\n- post_title, slug, focus_keyword, meta_title, meta_description\n- intro (2-3 paragraphs, human tone, no AI cliches, separate with \\\\n\\\\n)\n- ingredients (array of strings with quantities)\n- steps (array of {number, title, description, tip})\n- prep_time, cook_time, total_time, servings, calories\n- pro_tips (array of 3-4 tips)\n- variations (array of 2-3 variations)\n- storage_notes, serving_suggestions, make_ahead\n- conclusion (1-2 paragraphs, human tone)\n- category (pick ONE from the categories list)\n\nSECTION 2 \u2014 \"visual_plan\" (for AI image generation):\n\nCONTAINER SELECTION \u2014 choose the BEST container for this recipe:\n- White ceramic bowl: soups, salads, pasta, stir-fry, rice bowls\n- Glass/ceramic baking dish: casseroles, lasagna, baked pasta\n- Cast iron skillet: pan-fried, seared meats, one-pan dishes\n- Sheet pan/baking tray: roasted vegetables, sheet pan dinners\n- White plate: plated dishes, sandwiches, steaks\n- Wooden cutting board: breads, charcuterie, sliced items\nUse the SAME container for ALL visual steps.\n\nVISUAL PLAN RULES:\n- Create between {{min_steps}} and {{max_steps}} visual steps\n- Each step = ONE clear visual change from previous step\n- List EXACT visible ingredients and FORBIDDEN ingredients per step\n- Forbidden = anything NOT yet added + garnish (unless last step)\n\nARRANGEMENT \u2014 for each step describe HOW ingredients are placed:\n- Where each ingredient sits (center, edges, scattered, layered)\n- How they are oriented (fanned out, stacked neatly, poured from side)\n- Spacing between elements (not piled up, each item visible)\n\nINGREDIENTS IMAGE: each ingredient in its own small container or on background, arranged in grid/circle with spacing, nothing touching.\n\nSECTION 3 \u2014 \"pinterest_pins\": 3 pins with title, description, image_prompt\n\nOUTPUT THIS EXACT JSON STRUCTURE (no markdown, no explanation):\n{\n  \"recipe\": {\n    \"post_title\": \"\", \"slug\": \"\", \"focus_keyword\": \"\", \"meta_title\": \"\", \"meta_description\": \"\",\n    \"intro\": \"\", \"ingredients\": [],\n    \"steps\": [{\"number\": 1, \"title\": \"\", \"description\": \"\", \"tip\": \"\"}],\n    \"prep_time\": \"\", \"cook_time\": \"\", \"total_time\": \"\", \"servings\": \"\", \"calories\": \"\",\n    \"pro_tips\": [], \"variations\": [], \"storage_notes\": \"\", \"serving_suggestions\": \"\", \"make_ahead\": \"\",\n    \"conclusion\": \"\", \"category\": \"\"\n  },\n  \"visual_plan\": {\n    \"ingredients_image\": {\n      \"layout\": \"describe arrangement pattern\",\n      \"camera_angle\": \"{{default_camera_angle}}\",\n      \"items\": [{\"name\": \"\", \"state\": \"\", \"presentation\": \"in small glass bowl / on plate\", \"placement\": \"top-left / center\"}],\n      \"forbidden\": [\"cooked food\", \"mixed items\", \"garnish\", \"utensils\"]\n    },\n    \"visual_steps\": [{\n      \"step_id\": 1, \"title\": \"\", \"container\": \"chosen container\",\n      \"camera_angle\": \"{{default_camera_angle}}\",\n      \"visible_ingredients\": [{\"name\": \"\", \"state\": \"\", \"placement\": \"where in container\"}],\n      \"forbidden_ingredients\": [],\n      \"food_state\": \"detailed food appearance\",\n      \"arrangement\": \"overall composition description\"\n    }],\n    \"hero_image\": {\n      \"base_description\": \"\", \"container\": \"chosen container\",\n      \"camera_angle\": \"45-degree angle\",\n      \"arrangement\": \"final plating description\",\n      \"allowed_additions\": [], \"forbidden\": [\"raw ingredients\", \"extra bowls\", \"utensils\"]\n    }\n  },\n  \"pinterest_pins\": [{\"title\": \"\", \"description\": \"\", \"image_prompt\": \"\"}]\n}\n\n{{template_instructions}}',
+
+      pinterest: 'Recreate the EXACT same layout, style, colors, text placement, and design from the first uploaded reference image (the Pinterest template).\n\nUse the food from the second reference image (the hero/recipe photo).\n\nTitle text on the pin: \"{{pin_title}}\"\nWebsite: {{website}}\n\nRULES:\n- Match the template layout exactly\n- Use the actual food photo, not a different dish\n- Text must be readable and well-placed\n- Vertical Pinterest format\n- Professional, eye-catching design',
+
+      verifierPinterest: 'You are validating a Pinterest food pin image.\n\nEXPECTED:\n- Recipe: {{recipe_title}}\n- Pin should show the finished dish matching this recipe\n- Pin should follow a Pinterest-style layout (vertical, eye-catching)\n- Food should look appetizing and match the recipe described\n\nVALIDATION CHECKS:\n1. Does the image show food that matches the recipe title?\n2. Is there text overlay visible (title or branding)?\n3. Is the composition vertical and Pinterest-appropriate?\n4. Does the food look appetizing and well-presented?\n5. Are there any wrong or unrelated food items?\n\nSEVERITY RULES:\n- HARD_FAIL: wrong food entirely, no food visible, image is broken/blank\n- SOFT_FAIL: text slightly cut off, minor composition issue, food slightly different from expected\n- PASS: food matches recipe, layout is Pinterest-appropriate, looks professional\n\nOUTPUT JSON ONLY (no markdown, no explanation):\n{\n  \"status\": \"PASS\",\n  \"detected_food\": \"\",\n  \"has_text_overlay\": true,\n  \"composition_valid\": true,\n  \"issues\": []\n}',
+      correction: 'CORRECTION \u2014 the previous image was rejected by quality control.\n\nIssues found:\n{{issues_list}}\n\nFIXES REQUIRED:\n{{fixes_list}}\n\nGenerate the image again with these corrections. All previous rules still apply.'
+    };
+
+    async function loadVGPrompts() {
+      try {
+        const resp = await fetch('/api/settings');
+        const settings = await resp.json();
+        const vgPrompts = settings?.verifiedGenerator?.prompts || {};
+        document.getElementById('vgPromptRecipeVisualPlan').value = vgPrompts.recipeVisualPlan || VG_DEFAULT_PROMPTS.recipeVisualPlan;
+        document.getElementById('vgPromptPinterest').value = vgPrompts.pinterest || VG_DEFAULT_PROMPTS.pinterest;
+        document.getElementById('vgPromptFlowImage').value = vgPrompts.flowImage || VG_DEFAULT_PROMPTS.flowImage;
+        document.getElementById('vgPromptFlowIngredients').value = vgPrompts.flowIngredients || VG_DEFAULT_PROMPTS.flowIngredients;
+        document.getElementById('vgPromptFlowHero').value = vgPrompts.flowHero || VG_DEFAULT_PROMPTS.flowHero;
+        document.getElementById('vgPromptVerifier').value = vgPrompts.verifier || VG_DEFAULT_PROMPTS.verifier;
+        document.getElementById('vgPromptVerifierIngredients').value = vgPrompts.verifierIngredients || VG_DEFAULT_PROMPTS.verifierIngredients;
+        document.getElementById('vgPromptVerifierHero').value = vgPrompts.verifierHero || VG_DEFAULT_PROMPTS.verifierHero;
+        document.getElementById('vgPromptVerifierPinterest').value = vgPrompts.verifierPinterest || VG_DEFAULT_PROMPTS.verifierPinterest;
+        document.getElementById('vgPromptCorrection').value = vgPrompts.correction || VG_DEFAULT_PROMPTS.correction;
+      } catch (e) {
+        // Silently use defaults if settings fetch fails
+        document.getElementById('vgPromptRecipeVisualPlan').value = VG_DEFAULT_PROMPTS.recipeVisualPlan;
+        document.getElementById('vgPromptPinterest').value = VG_DEFAULT_PROMPTS.pinterest;
+        document.getElementById('vgPromptFlowImage').value = VG_DEFAULT_PROMPTS.flowImage;
+        document.getElementById('vgPromptFlowIngredients').value = VG_DEFAULT_PROMPTS.flowIngredients;
+        document.getElementById('vgPromptFlowHero').value = VG_DEFAULT_PROMPTS.flowHero;
+        document.getElementById('vgPromptVerifier').value = VG_DEFAULT_PROMPTS.verifier;
+        document.getElementById('vgPromptVerifierIngredients').value = VG_DEFAULT_PROMPTS.verifierIngredients;
+        document.getElementById('vgPromptVerifierHero').value = VG_DEFAULT_PROMPTS.verifierHero;
+        document.getElementById('vgPromptVerifierPinterest').value = VG_DEFAULT_PROMPTS.verifierPinterest;
+        document.getElementById('vgPromptCorrection').value = VG_DEFAULT_PROMPTS.correction;
+      }
     }
 
     // === Intro Templates ===
@@ -1847,6 +1916,10 @@
                 <span style="font-size:12px;color:#666;">Profile:</span>
                 <input type="text" value="${acct.profileDir}" id="faProfile_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#888;padding:3px 8px;border-radius:5px;font-size:12px;flex:1;" onchange="updateFlowAccount('${acct.id}', {profileDir: this.value})" />
               </div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+                <span style="font-size:12px;color:#666;">Gemini Key:</span>
+                <input type="password" value="${acct.geminiApiKey || ''}" id="faGemini_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#888;padding:3px 8px;border-radius:5px;font-size:12px;flex:1;" placeholder="Gemini API key (for verified generator)" onchange="updateFlowAccount('${acct.id}', {geminiApiKey: this.value})" />
+              </div>
               <div style="font-size:12px;color:#aaa;margin-bottom:10px;">
                 Images today: ${acct.generationCount || 0} &nbsp;|&nbsp; Last gen: ${lastGenTime}
                 ${rateLimitTime ? `<br><span style="color:#f44336;">Rate limited at: ${rateLimitTime}</span>` : ''}
@@ -1962,6 +2035,45 @@
       } catch (e) { toast('Failed: ' + e.message, 'error'); }
     }
     window.saveFlowAccountSettings = saveFlowAccountSettings;
+
+    async function saveVGSettings() {
+      const vg = {
+        minVisualSteps: parseInt(document.getElementById('vgMinSteps').value) || 4,
+        maxVisualSteps: parseInt(document.getElementById('vgMaxSteps').value) || 8,
+        maxVerificationRetries: parseInt(document.getElementById('vgMaxRetries').value) || 3,
+        softFailAction: document.getElementById('vgSoftFailAction').value || 'accept',
+        defaultContainer: document.getElementById('vgContainer').value.trim() || 'white ceramic bowl',
+        defaultCameraAngle: document.getElementById('vgCameraAngle').value.trim() || 'top-down',
+        defaultLighting: document.getElementById('vgLighting').value.trim() || 'natural soft light',
+        prompts: {
+          recipeVisualPlan: document.getElementById('vgPromptRecipeVisualPlan').value,
+          pinterest: document.getElementById('vgPromptPinterest').value,
+          flowImage: document.getElementById('vgPromptFlowImage').value,
+          flowIngredients: document.getElementById('vgPromptFlowIngredients').value,
+          flowHero: document.getElementById('vgPromptFlowHero').value,
+          verifier: document.getElementById('vgPromptVerifier').value,
+          verifierIngredients: document.getElementById('vgPromptVerifierIngredients').value,
+          verifierHero: document.getElementById('vgPromptVerifierHero').value,
+          verifierPinterest: document.getElementById('vgPromptVerifierPinterest').value,
+          correction: document.getElementById('vgPromptCorrection').value,
+        }
+      };
+      // Remove empty prompt strings so defaults are used
+      for (const [k, v] of Object.entries(vg.prompts)) {
+        if (!v.trim()) delete vg.prompts[k];
+      }
+      if (Object.keys(vg.prompts).length === 0) delete vg.prompts;
+      try {
+        const resp = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ verifiedGenerator: vg })
+        });
+        if (!resp.ok) throw new Error((await resp.json()).error || 'Save failed');
+        toast('Verified Generator settings saved', 'success');
+      } catch (e) { toast('Failed: ' + e.message, 'error'); }
+    }
+    window.saveVGSettings = saveVGSettings;
 
     async function addFlowAccount() {
       const name = document.getElementById('faNewName').value.trim();

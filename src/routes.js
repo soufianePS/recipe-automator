@@ -11,6 +11,7 @@ import { History } from './shared/utils/history.js';
 import { FlowAccountManager } from './shared/utils/flow-account-manager.js';
 import { GeneratorOrchestrator } from './modules/generator/orchestrator.js';
 import { ScraperOrchestrator } from './modules/scraper/orchestrator.js';
+import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orchestrator.js';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 
@@ -282,7 +283,7 @@ export function setupRoutes(app, ctx) {
       }
       Logger.success('Browser launched with your profile');
 
-      const OrchestratorClass = mode === 'scrape' ? ScraperOrchestrator : GeneratorOrchestrator;
+      const OrchestratorClass = mode === 'scrape' ? ScraperOrchestrator : mode === 'verified' ? VerifiedGeneratorOrchestrator : GeneratorOrchestrator;
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
@@ -338,7 +339,7 @@ export function setupRoutes(app, ctx) {
       }
 
       const settings = await StateManager.getSettings();
-      const OrchestratorClass = settings.mode === 'scrape' ? ScraperOrchestrator : GeneratorOrchestrator;
+      const OrchestratorClass = settings.mode === 'scrape' ? ScraperOrchestrator : settings.mode === 'verified' ? VerifiedGeneratorOrchestrator : GeneratorOrchestrator;
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);

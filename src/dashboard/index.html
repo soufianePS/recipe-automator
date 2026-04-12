@@ -44,6 +44,9 @@
       <a class="nav-item" data-page="scraper" href="#scraper">
         <span class="nav-icon">&#8623;</span> Scraper
       </a>
+      <a class="nav-item" data-page="verified" href="#verified">
+        <span class="nav-icon">&#10003;</span> Verified Gen
+      </a>
       <a class="nav-item" data-page="settings" href="#settings">
         <span class="nav-icon">&#9881;</span> Settings
       </a>
@@ -280,6 +283,195 @@
           </div>
           <div class="card-body">
             <div id="scrActivityFeed" class="activity-feed">
+              <div class="activity-item activity-info">
+                <span class="time">--:--:--</span>
+                <span>Waiting for activity...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PAGE: VERIFIED GENERATOR                                      -->
+    <!-- ============================================================ -->
+    <section id="page-verified" class="page-section">
+      <div class="page-header">
+        <h1 class="page-title">Verified Generator</h1>
+        <span class="badge" style="background:#9c27b0;">Verified Mode</span>
+      </div>
+      <div class="page-content">
+
+        <!-- Status card -->
+        <div class="card">
+          <div class="card-header">Status</div>
+          <div class="card-body">
+            <div class="status-grid">
+              <div>
+                <div class="status-row">
+                  <span class="status-label">State</span>
+                  <span id="vgState" class="badge badge-idle">IDLE</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Recipe</span>
+                  <span id="vgRecipe" class="status-value">--</span>
+                </div>
+              </div>
+              <div>
+                <div class="status-row">
+                  <span class="status-label">Phase</span>
+                  <span id="vgPhase" class="status-value">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Current Step</span>
+                  <span id="vgStep" class="status-value">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="progress-container">
+              <div class="progress-bar">
+                <div id="vgProgress" class="progress-fill" style="width:0%"></div>
+              </div>
+              <div id="vgProgressText" class="progress-text">0%</div>
+            </div>
+            <div id="vgError" class="error-box"></div>
+
+            <!-- Google login -->
+            <div class="login-bar" id="vgLoginBar">
+              <span class="login-status-text" id="vgLoginStatus">Checking Google login...</span>
+              <button id="vgBtnLogin" class="btn" onclick="doLogin('vg')" style="background:#4285f4;padding:6px 16px;font-size:13px;">Login to Google</button>
+              <button id="vgBtnLoginDone" class="btn" onclick="doLoginDone('vg')" style="background:#00c853;color:#003300;padding:6px 16px;font-size:13px;display:none;">Done</button>
+              <button id="vgBtnOpenBrowser" class="btn" onclick="openBrowser()" style="background:#ff9800;padding:6px 16px;font-size:13px;">Open Browser</button>
+              <button id="vgBtnCloseBrowser" class="btn" onclick="closeBrowser()" style="background:#f44336;padding:6px 16px;font-size:13px;display:none;">Close Browser</button>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls">
+              <button id="vgBtnStart" class="btn btn-start" onclick="doStart('verified')">Start</button>
+              <button id="vgBtnPause" class="btn btn-pause" onclick="doPause()" disabled>Pause</button>
+              <button id="vgBtnResume" class="btn btn-resume" onclick="doResume()" disabled>Resume</button>
+              <button id="vgBtnReset" class="btn btn-reset" onclick="doReset()">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Batch Progress -->
+        <div class="card" id="vgBatchCard" style="display:none;">
+          <div class="card-header">Batch Progress</div>
+          <div class="card-body">
+            <div id="vgBatchProgress"></div>
+          </div>
+        </div>
+
+        <!-- Verified Generator Settings -->
+        <div class="card">
+          <div class="card-header">Verified Generator Settings</div>
+          <div class="card-body">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Min Visual Steps</label>
+                <input type="number" id="vgMinSteps" value="4" min="2" max="12" />
+              </div>
+              <div class="form-group">
+                <label>Max Visual Steps</label>
+                <input type="number" id="vgMaxSteps" value="8" min="3" max="15" />
+              </div>
+              <div class="form-group">
+                <label>Max Verification Retries</label>
+                <input type="number" id="vgMaxRetries" value="3" min="1" max="5" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Soft Fail Action</label>
+                <select id="vgSoftFailAction">
+                  <option value="accept">Accept (log warning)</option>
+                  <option value="retry">Retry</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Default Container</label>
+                <input type="text" id="vgContainer" value="white ceramic bowl" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Default Camera Angle</label>
+                <input type="text" id="vgCameraAngle" value="top-down" />
+              </div>
+              <div class="form-group">
+                <label>Default Lighting</label>
+                <input type="text" id="vgLighting" value="natural soft light" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prompt Templates -->
+        <div class="card">
+          <div class="card-header">Prompt Templates</div>
+          <div class="card-body">
+            <div class="form-group">
+              <label>Recipe + Visual Plan Prompt (main ChatGPT prompt)</label>
+              <textarea id="vgPromptRecipeVisualPlan" rows="12" placeholder="Main prompt: generates recipe JSON + visual plan + pinterest pins in ONE call..."></textarea>
+              <div class="prompt-hint">Placeholders: {{topic}}, {{categories}}, {{min_steps}}, {{max_steps}}, {{default_container}}, {{default_camera_angle}}, {{template_instructions}}</div>
+            </div>
+            <div class="form-group">
+              <label>Pinterest Pin Prompt (Flow generation)</label>
+              <textarea id="vgPromptPinterest" rows="5" placeholder="Prompt sent to Flow for Pinterest pin generation..."></textarea>
+              <div class="prompt-hint">Placeholders: {{pin_title}}, {{pin_description}}, {{recipe_title}}, {{website}}</div>
+            </div>
+            <div class="form-group">
+              <label>Flow Step Image Prompt</label>
+              <textarea id="vgPromptFlowImage" rows="6" placeholder="Template for Flow image generation..."></textarea>
+              <div class="prompt-hint">Placeholders: {{lighting}}, {{container}}, {{camera_angle}}, {{visible_ingredients_list}}, {{food_state}}</div>
+            </div>
+            <div class="form-group">
+              <label>Flow Ingredients Prompt</label>
+              <textarea id="vgPromptFlowIngredients" rows="6" placeholder="Template for ingredients flat-lay..."></textarea>
+              <div class="prompt-hint">Placeholders: {{lighting}}, {{layout}}, {{camera_angle}}, {{ingredients_list}}</div>
+            </div>
+            <div class="form-group">
+              <label>Flow Hero Prompt</label>
+              <textarea id="vgPromptFlowHero" rows="6" placeholder="Template for hero/final image..."></textarea>
+              <div class="prompt-hint">Placeholders: {{lighting}}, {{base_description}}, {{container}}, {{camera_angle}}, {{allowed_additions_list}}, {{forbidden_list}}</div>
+            </div>
+            <div class="form-group">
+              <label>Verifier Prompt (Step)</label>
+              <textarea id="vgPromptVerifier" rows="6" placeholder="Template for Gemini step verification..."></textarea>
+              <div class="prompt-hint">Placeholders: {{container}}, {{camera_angle}}, {{visible_ingredients_list}}, {{forbidden_ingredients_list}}, {{food_state}}</div>
+            </div>
+            <div class="form-group">
+              <label>Verifier Prompt (Ingredients)</label>
+              <textarea id="vgPromptVerifierIngredients" rows="4" placeholder="Template for ingredients verification..."></textarea>
+            </div>
+            <div class="form-group">
+              <label>Verifier Prompt (Hero)</label>
+              <textarea id="vgPromptVerifierHero" rows="4" placeholder="Template for hero verification..."></textarea>
+            </div>
+            <div class="form-group">
+              <label>Verifier Prompt (Pinterest)</label>
+              <textarea id="vgPromptVerifierPinterest" rows="4" placeholder="Template for Pinterest pin verification..."></textarea>
+              <div class="prompt-hint">Placeholders: {{recipe_title}}</div>
+            </div>
+            <div class="form-group">
+              <label>Correction Prompt (on fail)</label>
+              <textarea id="vgPromptCorrection" rows="4" placeholder="Template for correction after verification fails..."></textarea>
+              <div class="prompt-hint">Placeholders: {{issues_list}}, {{fixes_list}}</div>
+            </div>
+            <button class="btn btn-save" onclick="saveVGSettings()" style="padding:10px 30px;font-size:13px;">Save Verified Generator Settings</button>
+          </div>
+        </div>
+
+        <!-- Activity Feed -->
+        <div class="card">
+          <div class="card-header">
+            Activity
+            <button class="btn btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
+          </div>
+          <div class="card-body">
+            <div id="vgActivityFeed" class="activity-feed">
               <div class="activity-item activity-info">
                 <span class="time">--:--:--</span>
                 <span>Waiting for activity...</span>
