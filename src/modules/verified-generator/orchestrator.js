@@ -510,12 +510,6 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     Logger.step('Flow', `Step ${idx + 1}/${state.steps.length}: ${visualStep.title}`);
 
-    // Reset Flow project every 3 steps to prevent browser crash from too many images
-    if (idx > 0 && idx % 3 === 0) {
-      Logger.info(`[VerifiedGen] Resetting Flow project (step ${idx + 1}, preventing memory buildup)`);
-      try { await this.flow.closeSession(); } catch {}
-    }
-
     // Build prompt from structured state
     const prompt = buildStepPrompt(visualStep, vgSettings);
 
