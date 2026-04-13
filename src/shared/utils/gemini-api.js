@@ -8,7 +8,7 @@
 import { readFileSync } from 'fs';
 import { Logger } from './logger.js';
 
-const GEMINI_MODEL = 'gemini-3-flash-preview';
+const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
