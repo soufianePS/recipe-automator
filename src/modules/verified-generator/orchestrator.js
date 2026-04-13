@@ -363,16 +363,29 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     const visualPlan = validateVisualPlan(rawVisualPlan, vgSettings);
 
-    // Build steps array from visual plan
-    const steps = visualPlan.visual_steps.map((vs, i) => ({
-      number: vs.step_id || i + 1,
-      title: vs.title || `Step ${i + 1}`,
-      description: vs.food_state || '',
-      tip: '',
-      prompt: '',
-      seo: { filename: FILENAMES.stepDefault(i), alt_text: vs.title || `Step ${i + 1}` },
-      base64: null, wpImageId: null, wpImageUrl: null
-    }));
+    // Normalize ingredients format (support both array of strings and array of objects)
+    if (Array.isArray(recipe.ingredients) && recipe.ingredients.length > 0 && typeof recipe.ingredients[0] === 'object') {
+      // New format: {name, quantity, description} — keep as-is, post-builder handles both
+    }
+
+    // Build steps array: merge recipe step descriptions + visual plan titles + SEO
+    const recipeSteps = recipe.steps || [];
+    const steps = visualPlan.visual_steps.map((vs, i) => {
+      const recipeStep = recipeSteps[i] || {};
+      const stepSeo = recipeStep.seo || {};
+      return {
+        number: vs.step_id || i + 1,
+        title: recipeStep.title || vs.title || `Step ${i + 1}`,
+        description: recipeStep.description || vs.food_state || '',
+        tip: recipeStep.tip || '',
+        prompt: '',
+        seo: {
+          filename: stepSeo.filename || FILENAMES.stepDefault(i),
+          alt_text: stepSeo.alt_text || recipeStep.title || vs.title || `Step ${i + 1}`
+        },
+        base64: null, wpImageId: null, wpImageUrl: null
+      };
+    });
 
     // Normalize pinterest_pins
     const pinterestPins = (rawPins || []).map((pin, i) => ({

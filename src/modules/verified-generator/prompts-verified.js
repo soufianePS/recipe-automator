@@ -349,113 +349,124 @@ Generate the image again with these corrections. All previous rules still apply.
 
 export const DEFAULT_RECIPE_VISUAL_PROMPT = `You are a professional food blogger and food photography director.
 
-Generate a COMPLETE recipe blog post AND a visual production plan for image generation.
+Generate a COMPLETE recipe blog post AND a visual production plan for AI image generation.
 
-RECIPE TOPIC: {{topic}}
-CATEGORIES TO CHOOSE FROM: {{categories}}
+Topic: "{{topic}}"
+Categories to choose from: {{categories}}
 
-OUTPUT ONE JSON OBJECT with THREE sections:
+OUTPUT ONE JSON OBJECT with three sections: "recipe", "visual_plan", "pinterest_pins".
 
-SECTION 1 — "recipe" (for the blog post):
-- post_title, slug, focus_keyword, meta_title, meta_description
-- intro (2-3 paragraphs, human tone, no AI cliches, separate with \\n\\n)
-- ingredients (array of strings with quantities)
-- steps (array of {number, title, description, tip})
-- prep_time, cook_time, total_time, servings, calories
-- pro_tips (array of 3-4 tips)
-- variations (array of 2-3 variations)
-- storage_notes, serving_suggestions, make_ahead
-- conclusion (1-2 paragraphs, human tone)
-- category (pick ONE from the categories list)
+SECTION 1 — "recipe" (blog post content):
+
+Write a full blog post recipe. CONTENT RULES:
+- Use "{{topic}}" as the post title
+- intro: MINIMUM 3 paragraphs separated by \\n\\n. Warm human tone, like a home cook. No AI cliches (no "delve", "elevate", "mouthwatering", "culinary journey")
+- conclusion: 2-3 sentences, human tone
+- recipe_card_description: 450-480 chars, MUST include words: easy, ideas, quick, simple, best, healthy. Mention events like weeknight dinner, meal prep, holiday
+- Steps: 2-3 paragraph descriptions per step explaining visual change
+- Ingredients: each with name, quantity, and short function description
+- Category MUST be one of: {{categories}}
+- Prep/cook times in ISO 8601 (PT15M, PT30M)
+- FAQ: 3-4 items
+- pro_tips: 3-4 tips
+- Include equipment list
+- Include hero_seo and ingredients_seo with filename and alt_text
+- Include seo per step with filename and alt_text
+
+STEP COMPLETENESS: cover recipe START to FINISH, each step = ONE clear stage, natural progression.
+
+HUMAN REALISM RULES:
+- Food NEVER perfectly arranged or symmetrical
+- Slight randomness in spacing, size, orientation
+- Small imperfections REQUIRED: uneven sauce, irregular cheese, slight overlap
+- Food must look homemade, not commercial
 
 SECTION 2 — "visual_plan" (for AI image generation):
-This tells the image generator exactly what each photo should show.
+This tells the image generator EXACTLY what each photo should show.
 
-CONTAINER SELECTION — choose the BEST container for this recipe:
-- White ceramic bowl: soups, salads, pasta, stir-fry, rice bowls, mixed dishes
-- Glass/ceramic baking dish: casseroles, lasagna, baked pasta, gratins
+CONTAINER SELECTION - choose the BEST for this recipe:
+- White ceramic bowl: soups, salads, pasta, stir-fry, rice bowls
+- Glass/ceramic baking dish: casseroles, lasagna, baked pasta
 - Cast iron skillet: pan-fried, seared meats, one-pan dishes
-- Sheet pan/baking tray: roasted vegetables, sheet pan dinners, cookies
-- White plate: plated dishes, sandwiches, steaks, finished presentations
+- Sheet pan/baking tray: roasted vegetables, sheet pan dinners
+- White plate: plated dishes, sandwiches, steaks
 - Wooden cutting board: breads, charcuterie, sliced items
-Use the SAME container for ALL visual steps (not the ingredients image).
+Use the SAME container for ALL visual steps.
 
 VISUAL PLAN RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps
-- Each step = ONE clear visual change from previous step
-- List EXACT visible ingredients and FORBIDDEN ingredients per step
+- Each step = ONE clear visual change from previous
+- List EXACT visible and FORBIDDEN ingredients per step
 - Forbidden = anything NOT yet added + garnish (unless last step)
-- NEVER show ingredients from future steps
-- The LAST visual step MUST be a "serving/plating" step: the finished dish served on a nice plate or in an appropriate serving dish (NOT the cooking pan/skillet unless it's a one-pan recipe meant to be served from it). Add garnish, make it look restaurant-ready. This is different from the hero — the serving step is top-down showing a plated portion, while hero is a 45-degree beauty shot of the full dish
-- Each step must look VISUALLY DISTINCT from the previous step — different color, texture, amount of sauce, ingredient count, or state
+- Each step VISUALLY DISTINCT - different color, texture, sauce amount, state
+- Food must evolve: raw > combined > coated > softened > melted > browned > finished
+- Do NOT create steps for: heating oil, preheating pan, boiling water, or any step without food visible. Every step must show food in the container
 
-ARRANGEMENT — for each step, describe HOW ingredients are placed:
-- Where each ingredient sits in the container (center, edges, scattered, layered)
-- How they're oriented (fanned out, stacked neatly, poured from side)
-- Spacing between elements (not piled up, each item visible and distinct)
-- The overall visual composition (what the viewer sees from top-down)
+THE LAST STEP - "serving/portion":
+- Show a SINGLE PORTION on a plate (not the cooking container)
+- If the dish can be cut or sliced, show the INSIDE: cut piece revealing texture, layers, melted cheese, juicy interior
+- If it cannot be cut (soup, stir-fry), show a served portion in a bowl with garnish
+- Garnished, restaurant-ready but natural look
+- Different from hero: close-up of one portion showing detail, hero is full dish at 45 degrees
 
-INGREDIENTS IMAGE ARRANGEMENT:
-- EVERY ingredient MUST be in its own small container — NEVER directly on the background surface
-- Proteins on small white plates, liquids in small glass bowls, spices in small ceramic dishes, vegetables on small plates
-- Arranged in a clean grid or circular pattern with clear spacing between containers
-- Nothing touching or overlapping — each ingredient fully visible and identifiable
-- The background surface should be visible between the containers (clean, organized look)
+ARRANGEMENT per step:
+- Where each ingredient sits (center, edges, scattered, layered)
+- Natural imperfections (not symmetrical, casual home cooking)
+- Use natural wording: "loosely spread", "unevenly scattered", "casually arranged"
 
-SECTION 3 — "pinterest_pins" (for Pinterest):
-- 3 pins with title, description, image_prompt
+INGREDIENTS IMAGE:
+- EVERY ingredient in its own small container - NEVER on surface
+- Proteins on small white plates, liquids in glass bowls, spices in ceramic dishes
+- Clean grid or circular pattern with spacing
 
-OUTPUT THIS EXACT JSON STRUCTURE (no markdown, no explanation):
+SECTION 3 - "pinterest_pins": 3 pins with title, description, image_prompt.
+
+OUTPUT THIS EXACT JSON (no markdown, no explanation):
 {
   "recipe": {
     "post_title": "",
     "slug": "",
     "focus_keyword": "",
     "meta_title": "",
-    "meta_description": "",
-    "intro": "",
-    "ingredients": [],
-    "steps": [{"number": 1, "title": "", "description": "", "tip": ""}],
-    "prep_time": "", "cook_time": "", "total_time": "", "servings": "", "calories": "",
-    "pro_tips": [],
-    "variations": [],
-    "storage_notes": "",
-    "serving_suggestions": "",
-    "make_ahead": "",
-    "conclusion": "",
-    "category": ""
+    "meta_description": "max 155 chars",
+    "recipe_card_description": "450-480 chars, include: easy, quick, simple, best, healthy",
+    "intro": "3+ paragraphs separated by newlines",
+    "ingredients": [{"name": "", "quantity": "", "description": ""}],
+    "steps": [{"number": 1, "title": "", "description": "2-3 paragraphs", "tip": "", "seo": {"filename": "", "alt_text": ""}}],
+    "hero_seo": {"filename": "", "alt_text": ""},
+    "ingredients_seo": {"filename": "", "alt_text": ""},
+    "equipment": [{"name": "", "notes": ""}],
+    "prep_time": "PT15M", "cook_time": "PT30M", "total_time": "PT45M",
+    "servings": "4", "calories": "",
+    "pro_tips": [], "faq": [{"question": "", "answer": ""}],
+    "variations": [], "storage_notes": "", "serving_suggestions": "", "make_ahead": "",
+    "fun_fact": "", "cuisine": "", "category": "", "conclusion": ""
   },
   "visual_plan": {
     "ingredients_image": {
-      "layout": "describe the exact arrangement pattern",
+      "layout": "describe arrangement",
       "camera_angle": "{{default_camera_angle}}",
-      "items": [{"name": "", "state": "", "presentation": "in small glass bowl / on small white plate / directly on background", "placement": "top-left / center / bottom-right etc."}],
+      "items": [{"name": "", "state": "", "presentation": "in small glass bowl", "placement": "position"}],
       "forbidden": ["cooked food", "mixed items", "garnish", "utensils"]
     },
-    "visual_steps": [
-      {
-        "step_id": 1,
-        "title": "short action title",
-        "container": "chosen container type",
-        "camera_angle": "{{default_camera_angle}}",
-        "visible_ingredients": [{"name": "", "state": "", "placement": "where and how in the container"}],
-        "forbidden_ingredients": [],
-        "food_state": "detailed description of food appearance at this exact moment",
-        "arrangement": "describe the overall visual composition — how everything is laid out, spacing, orientation"
-      }
-    ],
+    "visual_steps": [{
+      "step_id": 1, "title": "", "container": "chosen container",
+      "camera_angle": "{{default_camera_angle}}",
+      "visible_ingredients": [{"name": "", "state": "", "placement": ""}],
+      "forbidden_ingredients": [],
+      "food_state": "detailed appearance with natural imperfections",
+      "arrangement": "composition with casual layout"
+    }],
     "hero_image": {
-      "base_description": "final dish description with presentation details",
-      "container": "chosen container type",
+      "base_description": "finished dish, natural look",
+      "container": "plate or serving dish",
       "camera_angle": "45-degree angle",
-      "arrangement": "describe final plating — garnish position, sauce drizzle pattern, steam effect",
+      "arrangement": "natural plating, casual garnish",
       "allowed_additions": [],
       "forbidden": ["raw ingredients", "extra bowls", "utensils"]
     }
   },
-  "pinterest_pins": [
-    {"title": "", "description": "", "image_prompt": ""}
-  ]
+  "pinterest_pins": [{"title": "", "description": "", "image_prompt": ""}]
 }
 
 {{template_instructions}}`;

@@ -894,6 +894,20 @@ export function setupRoutes(app, ctx) {
   // APP UPDATE (git pull)
   // ═══════════════════════════════════════════════════════════
 
+  // DELETE /api/wp-post/:id — delete a WP post and all its media
+  app.delete('/api/wp-post/:id', async (req, res) => {
+    try {
+      const settings = await StateManager.getSettings();
+      const postId = parseInt(req.params.id);
+      if (!postId) return res.status(400).json({ error: 'Invalid post ID' });
+      const result = await WordPressAPI.deletePostWithMedia(settings, postId);
+      Logger.info(`Deleted WP post ${postId}: ${result.mediaDeleted}/${result.totalMedia} media files removed`);
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/update/check — check if updates are available
   app.get('/api/update/check', async (req, res) => {
     try {

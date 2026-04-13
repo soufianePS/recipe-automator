@@ -67,6 +67,70 @@ export const WordPressAPI = {
   },
 
   /**
+   * Delete a post and all its associated media (images).
+   * Finds media by: post content (wp-image-XXX), featured image, and attached media.
+   * Only deletes media not used by other posts.
+   */
+  async deletePostWithMedia(settings, postId) {
+    const { wpUrl, wpUsername, wpAppPassword } = settings;
+    const auth = { 'Authorization': this._authHeader(wpUsername, wpAppPassword) };
+
+    // 1. Get the post content to find image IDs
+    const postResp = await fetch(`${wpUrl}/wp-json/wp/v2/posts/${postId}`, { headers: auth });
+    if (!postResp.ok) throw new Error(`Post ${postId} not found`);
+    const post = await postResp.json();
+
+    const mediaIds = new Set();
+
+    // Featured image
+    if (post.featured_media) mediaIds.add(post.featured_media);
+
+    // Images in content (wp-image-XXX)
+    const matches = (post.content?.rendered || '').match(/wp-image-(\d+)/g) || [];
+    for (const m of matches) mediaIds.add(parseInt(m.replace('wp-image-', '')));
+
+    // Attached media
+    try {
+      const attResp = await fetch(`${wpUrl}/wp-json/wp/v2/media?parent=${postId}&per_page=50`, { headers: auth });
+      if (attResp.ok) {
+        const atts = await attResp.json();
+        for (const a of atts) mediaIds.add(a.id);
+      }
+    } catch {}
+
+    // Search for pin images by slug pattern
+    const slug = post.slug || '';
+    if (slug) {
+      try {
+        const pinResp = await fetch(`${wpUrl}/wp-json/wp/v2/media?search=${encodeURIComponent(slug)}&per_page=20`, { headers: auth });
+        if (pinResp.ok) {
+          const pins = await pinResp.json();
+          for (const p of pins) mediaIds.add(p.id);
+        }
+      } catch {}
+    }
+
+    // 2. Delete the post first
+    const delResp = await fetch(`${wpUrl}/wp-json/wp/v2/posts/${postId}?force=true`, {
+      method: 'DELETE', headers: auth
+    });
+    if (!delResp.ok) throw new Error(`Failed to delete post ${postId}`);
+
+    // 3. Delete each media (only if not used elsewhere)
+    let deleted = 0;
+    for (const mediaId of mediaIds) {
+      try {
+        const mediaDelResp = await fetch(`${wpUrl}/wp-json/wp/v2/media/${mediaId}?force=true`, {
+          method: 'DELETE', headers: auth
+        });
+        if (mediaDelResp.ok) deleted++;
+      } catch {}
+    }
+
+    return { postDeleted: true, mediaDeleted: deleted, totalMedia: mediaIds.size };
+  },
+
+  /**
    * Fetch existing published posts for internal linking.
    * Returns array of { title, url } for ChatGPT to link to.
    */

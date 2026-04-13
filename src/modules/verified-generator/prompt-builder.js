@@ -20,7 +20,7 @@ export function buildStepPrompt(stepState, vgSettings) {
     container: stepState.container || defaults.defaultContainer,
     camera: stepState.camera_angle || defaults.defaultCameraAngle,
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "same as uploaded reference image",
+    background: "MUST match the uploaded reference image — keep the same surface, texture, and color. Do NOT change or replace the background.",
     visible_ingredients: (stepState.visible_ingredients || []).map(ing => {
       if (typeof ing === 'string') return ing;
       let desc = `${ing.name}: ${ing.state}`;
@@ -38,9 +38,10 @@ export function buildStepPrompt(stepState, vgSettings) {
       "Show ONLY this step, not future steps",
       "All food must be inside the container",
       "No text, no watermark",
-      "Ingredients must NOT pile up or stack randomly — each element should be distinctly visible",
-      "Space ingredients evenly, showing each item clearly from the camera angle",
-      "Follow the arrangement description exactly for composition"
+      "KEEP the uploaded background exactly — same surface, same texture, same color",
+      "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
+      "Do NOT make food look perfectly arranged or symmetrical",
+      "Follow the arrangement description for composition"
     ]
   };
 
@@ -62,7 +63,7 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
     layout: ingredientsState.layout || "flat lay arrangement on background",
     camera: ingredientsState.camera_angle || defaults.defaultCameraAngle,
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "same as uploaded reference image",
+    background: "MUST match the uploaded reference image — keep the same surface, texture, color",
     ingredients: (ingredientsState.items || []).map(item => {
       const entry = {
         name: item.name,
@@ -101,7 +102,7 @@ export function buildHeroPrompt(heroState, vgSettings) {
     container: heroState.container || defaults.defaultContainer,
     camera: heroState.camera_angle || "45-degree angle",
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "same as uploaded reference image",
+    background: "MUST match the uploaded reference image — keep the same surface, texture, color",
     arrangement: heroState.arrangement || "appetizing final presentation, magazine-quality plating",
     allowed_additions: heroState.allowed_additions || [],
     forbidden: heroState.forbidden || ["raw ingredients", "extra bowls", "utensils"],
