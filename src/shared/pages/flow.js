@@ -494,6 +494,37 @@ export class FlowPage {
       }
     }
 
+    // Strategy 1.5: Last image element screenshot (when src comparison fails)
+    if (!downloaded) {
+      try {
+        const lastImgData = await this.page.evaluate(() => {
+          const imgs = Array.from(document.querySelectorAll('img'))
+            .filter(i => i.naturalWidth > 200 && i.naturalHeight > 200 && !i.src.includes('data:'));
+          if (imgs.length === 0) return null;
+          const last = imgs[imgs.length - 1];
+          // Try canvas approach on the last (newest) image
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = last.naturalWidth;
+            canvas.height = last.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(last, 0, 0);
+            return canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+          } catch { return null; }
+        });
+        if (lastImgData) {
+          mkdirSync(dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, Buffer.from(lastImgData, 'base64'));
+          if (statSync(outputPath).size > 5000) {
+            downloaded = true;
+            Logger.info('[Flow] Image captured via last-element canvas screenshot');
+          }
+        }
+      } catch (e) {
+        Logger.debug('Last element screenshot failed:', e.message);
+      }
+    }
+
     // Strategy 2: Généré filter fallback
     if (!downloaded) {
       try {
