@@ -22,7 +22,7 @@ export function buildVisualPlanPrompt(recipeJSON, vgSettings) {
 
   const minSteps = vgSettings?.minVisualSteps || defaults.minVisualSteps;
   const maxSteps = vgSettings?.maxVisualSteps || defaults.maxVisualSteps;
-  const container = vgSettings?.defaultContainer || defaults.defaultContainer;
+  const container = vgSettings?.defaultContainer || '';
   const cameraAngle = vgSettings?.defaultCameraAngle || defaults.defaultCameraAngle;
 
   // Replace placeholders
@@ -71,7 +71,7 @@ export function validateVisualPlan(rawPlan, vgSettings) {
   for (let i = 0; i < rawPlan.visual_steps.length; i++) {
     const step = rawPlan.visual_steps[i];
     if (!step.title) step.title = `Step ${i + 1}`;
-    if (!step.container) step.container = vgSettings?.defaultContainer || defaults.defaultContainer;
+    if (!step.container) step.container = vgSettings?.defaultContainer || 'white ceramic bowl';
     if (!step.camera_angle) step.camera_angle = vgSettings?.defaultCameraAngle || defaults.defaultCameraAngle;
     if (!Array.isArray(step.visible_ingredients)) step.visible_ingredients = [];
     if (!Array.isArray(step.forbidden_ingredients)) step.forbidden_ingredients = [];

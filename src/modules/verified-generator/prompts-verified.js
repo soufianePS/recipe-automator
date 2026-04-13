@@ -18,7 +18,7 @@ Given the recipe JSON below, create a VISUAL PRODUCTION PLAN — a structured JS
 CRITICAL RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps (adapt to recipe complexity)
 - Each step must show ONE clear visual change from the previous step
-- Use the SAME container throughout all steps: "{{default_container}}"
+- Use the SAME container throughout all steps (chosen by ChatGPT based on recipe type)
 - Every step must list EXACT visible ingredients and FORBIDDEN ingredients
 - Forbidden = anything that has NOT been added yet at this step + any garnish/decoration (unless it's the last step)
 - For continuity: only allow previous image as context when same container + small change
@@ -45,7 +45,7 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
     {
       "step_id": 1,
       "title": "short action title",
-      "container": "{{default_container}}",
+      "container": "choose based on recipe type",
       "camera_angle": "{{default_camera_angle}}",
       "visible_ingredients": [
         { "name": "ingredient", "state": "visual state description" }
@@ -61,7 +61,7 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
   "hero_image": {
     "image_type": "hero",
     "base_description": "final dish description",
-    "container": "{{default_container}}",
+    "container": "choose based on recipe type",
     "camera_angle": "45-degree angle",
     "allowed_additions": ["garnish if recipe includes it", "final presentation touches"],
     "forbidden": ["raw ingredients", "extra bowls", "utensils", "side dishes not in recipe"]
