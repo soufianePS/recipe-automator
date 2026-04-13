@@ -313,8 +313,10 @@ export const FlowAccountManager = {
    */
   async getAllGeminiKeys() {
     const data = await this.getAccounts();
+    // Get keys from ALL accounts — even disabled or rate-limited ones
+    // Gemini API is independent from Flow, no reason to exclude any key
     const keys = data.accounts
-      .filter(a => a.enabled && a.geminiApiKey)
+      .filter(a => a.geminiApiKey)
       .map(a => a.geminiApiKey);
     // Deduplicate
     return [...new Set(keys)];
