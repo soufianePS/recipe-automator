@@ -72,7 +72,11 @@ export async function geminiVision(apiKey, imagePath, prompt, options = {}) {
           continue;
         }
 
-        Logger.error(`[Gemini] API error: ${errMsg}`);
+        if (errMsg.includes('high demand') || errMsg.includes('quota') || res.status === 503 || res.status === 429) {
+          Logger.warn(`[Gemini] Temporarily unavailable: ${errMsg.substring(0, 100)}`);
+        } else {
+          Logger.error(`[Gemini] API error: ${errMsg}`);
+        }
         return null;
       }
 
@@ -156,7 +160,11 @@ export async function geminiVisionMultiImage(apiKey, imagePaths, prompt, options
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        Logger.error(`[Gemini] API error: ${errMsg}`);
+        if (errMsg.includes('high demand') || errMsg.includes('quota') || res.status === 503 || res.status === 429) {
+          Logger.warn(`[Gemini] Temporarily unavailable: ${errMsg.substring(0, 100)}`);
+        } else {
+          Logger.error(`[Gemini] API error: ${errMsg}`);
+        }
         return null;
       }
 
