@@ -149,10 +149,10 @@ export class FlowPage {
           const url = response.url();
           const contentType = response.headers()['content-type'] || '';
 
-          // Only capture large images from Google's CDN
+          // Capture ANY large image response (not just specific CDN domains)
           if (contentType.includes('image') &&
-              (url.includes('googleusercontent.com') || url.includes('gstatic.com/generate')) &&
-              !url.includes('favicon') && !url.includes('nav_logo')) {
+              !url.includes('favicon') && !url.includes('nav_logo') &&
+              !url.includes('pinhole-about') && !url.includes('hero-grid')) {
             const body = await response.body();
             if (body.length > 50000) { // >50KB = real image, not thumbnail
               this._networkImages.push({
@@ -450,6 +450,10 @@ export class FlowPage {
     // 13. Wait for image to render + stop sniffer
     await this._delay(3000);
     const capturedImages = this._stopNetworkSniffer();
+
+    // Log sniffer results
+    const debugSrcs = (await this._getAllImgSrcs()).filter(s => !srcsBeforeGen.has(s));
+    Logger.info(`[Flow/Network] Sniffer captured ${capturedImages.length} images, DOM found ${debugSrcs.length} new srcs`);
 
     // 14. Download — Strategy 0: Network sniffer (most reliable)
     if (capturedImages.length > 0) {
