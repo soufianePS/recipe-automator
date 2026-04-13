@@ -392,7 +392,10 @@ export class FlowPage {
     // 11. Screenshot after generation (debug)
     await this._screenshot('post-generate');
 
-    // 12. Download the generated image — find the new SRC that appeared
+    // 12. Wait for image to render in DOM before downloading
+    await this._delay(3000);
+
+    // 13. Download the generated image — find the new SRC that appeared
     const srcsAfterGen = await this._getAllImgSrcs();
     const newSrcs = srcsAfterGen.filter(s => !srcsBeforeGen.has(s));
 
