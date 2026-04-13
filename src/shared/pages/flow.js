@@ -460,10 +460,15 @@ export class FlowPage {
       const newest = capturedImages[0]; // sorted newest first
       try {
         mkdirSync(dirname(outputPath), { recursive: true });
+      } catch {}
+      try {
         writeFileSync(outputPath, newest.buffer);
-        Logger.info(`[Flow] Image captured via network sniffer: ${Math.round(newest.size / 1024)}KB`);
-        // Skip DOM-based download
-        // Still learn picker name for context
+      } catch (e) {
+        Logger.debug(`[Flow] Sniffer writeFileSync error (may still have written): ${e.message}`);
+      }
+      // Check if file was actually written (Windows sometimes throws but succeeds)
+      if (existsSync(outputPath) && statSync(outputPath).size > 5000) {
+        Logger.info(`[Flow] Image captured via network sniffer: ${Math.round(statSync(outputPath).size / 1024)}KB`);
         try {
           const newName = await this._getNewestPickerName();
           if (newName) {
@@ -472,9 +477,8 @@ export class FlowPage {
           }
         } catch {}
         return true;
-      } catch (e) {
-        Logger.warn(`[Flow] Network sniffer save failed: ${e.message} — falling back to DOM`);
       }
+      Logger.warn(`[Flow] Network sniffer: file not saved properly — falling back to DOM`);
     }
 
     // 15. Download the generated image — find the new SRC that appeared (DOM fallback)
