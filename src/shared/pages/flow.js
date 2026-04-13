@@ -15,7 +15,7 @@
 import { Logger } from '../utils/logger.js';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, writeFileSync, mkdirSync } from 'fs';
 
 // Import methods from split modules
 import {
@@ -128,6 +128,58 @@ export class FlowPage {
 
     // Model preference — set by orchestrator, applied in _setGenerationSettings
     this.preferredModel = 'Nano Banana Pro';
+
+    // Network sniffer — captures generated images from network responses
+    this._networkImages = [];    // captured image buffers during generation
+    this._snifferActive = false; // whether we're currently listening
+  }
+
+  /**
+   * Start listening for image responses from Google's CDN.
+   * Call before clicking Create — images are captured automatically.
+   */
+  _startNetworkSniffer() {
+    this._networkImages = [];
+    this._snifferActive = true;
+
+    if (!this._snifferHandler) {
+      this._snifferHandler = async (response) => {
+        if (!this._snifferActive) return;
+        try {
+          const url = response.url();
+          const contentType = response.headers()['content-type'] || '';
+
+          // Only capture large images from Google's CDN
+          if (contentType.includes('image') &&
+              (url.includes('googleusercontent.com') || url.includes('gstatic.com/generate')) &&
+              !url.includes('favicon') && !url.includes('nav_logo')) {
+            const body = await response.body();
+            if (body.length > 50000) { // >50KB = real image, not thumbnail
+              this._networkImages.push({
+                url,
+                buffer: body,
+                size: body.length,
+                timestamp: Date.now()
+              });
+              Logger.debug(`[Flow/Network] Captured image: ${Math.round(body.length / 1024)}KB from ${url.substring(0, 80)}`);
+            }
+          }
+        } catch {} // Response may be already disposed
+      };
+    }
+
+    this.page?.on('response', this._snifferHandler);
+  }
+
+  /**
+   * Stop listening and return captured images.
+   * @returns {Array} captured image buffers sorted newest first
+   */
+  _stopNetworkSniffer() {
+    this._snifferActive = false;
+    const images = [...this._networkImages].sort((a, b) => b.timestamp - a.timestamp);
+    this._networkImages = [];
+    return images;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -383,19 +435,45 @@ export class FlowPage {
     // 8. Screenshot before Create (debug)
     await this._screenshot('pre-create');
 
-    // 9. Click Create
+    // 9. Start network sniffer before Create
+    this._startNetworkSniffer();
+
+    // 10. Click Create
     await this._clickCreate();
 
-    // 10. Wait for generation using % progress indicator
+    // 11. Wait for generation using % progress indicator
     await this._waitForGenerationProgress();
 
-    // 11. Screenshot after generation (debug)
+    // 12. Screenshot after generation (debug)
     await this._screenshot('post-generate');
 
-    // 12. Wait for image to render in DOM before downloading
+    // 13. Wait for image to render + stop sniffer
     await this._delay(3000);
+    const capturedImages = this._stopNetworkSniffer();
 
-    // 13. Download the generated image — find the new SRC that appeared
+    // 14. Download — Strategy 0: Network sniffer (most reliable)
+    if (capturedImages.length > 0) {
+      const newest = capturedImages[0]; // sorted newest first
+      try {
+        mkdirSync(dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, newest.buffer);
+        Logger.info(`[Flow] Image captured via network sniffer: ${Math.round(newest.size / 1024)}KB`);
+        // Skip DOM-based download
+        // Still learn picker name for context
+        try {
+          const newName = await this._getNewestPickerName();
+          if (newName) {
+            this._generatedNames.set(basename(outputPath), newName);
+            Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
+          }
+        } catch {}
+        return true;
+      } catch (e) {
+        Logger.warn(`[Flow] Network sniffer save failed: ${e.message} — falling back to DOM`);
+      }
+    }
+
+    // 15. Download the generated image — find the new SRC that appeared (DOM fallback)
     const srcsAfterGen = await this._getAllImgSrcs();
     const newSrcs = srcsAfterGen.filter(s => !srcsBeforeGen.has(s));
 
