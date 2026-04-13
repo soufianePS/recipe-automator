@@ -29,6 +29,7 @@ export function buildStepPrompt(stepState, vgSettings) {
     }),
     forbidden_ingredients: stepState.forbidden_ingredients || [],
     state: stepState.food_state || '',
+    position_change: stepState.position || '',
     arrangement: stepState.arrangement || '',
     rules: [
       "Only 1 container visible",

@@ -347,39 +347,100 @@ Generate the image again with these corrections. All previous rules still apply.
 //     Dedicated to verified generator (independent from generator module)
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_RECIPE_VISUAL_PROMPT = `You are a professional food blogger and food photography director.
-
-Generate a COMPLETE recipe blog post AND a visual production plan for AI image generation.
+export const DEFAULT_RECIPE_VISUAL_PROMPT = `You are writing a food blog post AND a visual production plan for AI image generation. Generate ONE valid JSON object only with no explanations no markdown and no extra text.
 
 Topic: "{{topic}}"
-Categories to choose from: {{categories}}
 
-OUTPUT ONE JSON OBJECT with three sections: "recipe", "visual_plan", "pinterest_pins".
+GLOBAL RULES:
+- Use "{{topic}}" exactly as the Article Title.
+- Replace 100% all commas and periods with linking words and transition words inside all paragraphs.
+- Each paragraph must end with a period.
+- The "category" field MUST be one of these: {{categories}}.
 
+OUTPUT ONE JSON with three sections: "recipe", "visual_plan", "pinterest_pins".
+
+==============================
 SECTION 1 — "recipe" (blog post content):
 
-Write a full blog post recipe. CONTENT RULES:
-- Use "{{topic}}" as the post title
-- intro: MINIMUM 3 paragraphs separated by \\n\\n. Warm human tone, like a home cook. No AI cliches (no "delve", "elevate", "mouthwatering", "culinary journey")
-- conclusion: 2-3 sentences, human tone
-- recipe_card_description: 450-480 chars, MUST include words: easy, ideas, quick, simple, best, healthy. Mention events like weeknight dinner, meal prep, holiday
-- Steps: 2-3 paragraph descriptions per step explaining visual change
-- Ingredients: each with name, quantity, and short function description
-- Category MUST be one of: {{categories}}
-- Prep/cook times in ISO 8601 (PT15M, PT30M)
-- FAQ: 3-4 items
-- pro_tips: 3-4 tips
-- Include equipment list
-- Include hero_seo and ingredients_seo with filename and alt_text
-- Include seo per step with filename and alt_text
+INTRO RULES:
+- Write introduction with MINIMUM 3 paragraphs separated by \\n\\n.
+- Each paragraph must feel natural and human with smooth transitions.
+- No AI cliches (no "delve" "elevate" "mouthwatering" "culinary journey").
 
-STEP COMPLETENESS: cover recipe START to FINISH, each step = ONE clear stage, natural progression.
+INGREDIENT RULES:
+- List all ingredients with name and quantity and description (short functional role).
+- Add a period at the end of each ingredient description.
 
-HUMAN REALISM RULES:
-- Food NEVER perfectly arranged or symmetrical
-- Slight randomness in spacing, size, orientation
-- Small imperfections REQUIRED: uneven sauce, irregular cheese, slight overlap
-- Food must look homemade, not commercial
+STEP SYSTEM (DYNAMIC FLOW):
+- Steps MUST represent the FULL recipe journey from raw ingredients to final plated dish.
+- NEVER skip stages. NEVER repeat stages.
+- Minimum steps: {{min_steps}}. Maximum steps: {{max_steps}}.
+- Use ONLY the number of steps the recipe truly needs.
+- Do NOT add filler steps.
+
+CRITICAL ANTI-DUPLICATION RULE:
+- Each step MUST introduce a NEW visual transformation.
+- NEVER repeat the same action even with different wording.
+- If a step does not introduce a clear visual change then DO NOT include it.
+- DO NOT split one transformation into multiple steps.
+- Each step must answer: "What NEW visual change happened compared to the previous step?"
+- If nothing new then REMOVE the step.
+
+DYNAMIC STEP FLOW RULE:
+- Steps must follow the natural flow of the specific recipe NOT a fixed structure.
+- Use ONLY the phases that are logically required:
+  ingredient preparation (cutting slicing measuring) / mixing or combining / coating or seasoning / resting or marinating (if needed) / forming or shaping (if needed) / layering or assembling / transformation (softening thickening melting browning) / final assembly (if multi-component) / plating and finishing.
+- Do NOT force all phases.
+
+NO FORCED RAW STEP RULE:
+- Do NOT create a step that only shows raw ingredients unless real preparation happens such as cutting or slicing.
+- Do NOT create steps for: heating oil or preheating pan or boiling water or any step without food visible.
+
+STEP TITLE RULE:
+- Each step title MUST describe a real and specific action.
+- Do NOT use generic titles like "Prepare Ingredients" or "Raw Ingredients" or "Start Cooking".
+- Use clear action-based titles like "Slice the strawberries" or "Mix the batter" or "Layer the filling".
+
+COOKING VISUAL PROGRESSION RULE:
+- Food MUST visually evolve across steps: raw > combined > coated > softened > thickened > structured > melted > slightly browned > finished.
+- Allowed transformations: sauce thickening and cheese melting unevenly and texture softening and slight browning and folding or layering.
+
+VISUAL UNIQUENESS RULE:
+- Each step MUST include at least ONE of: color change / texture change / structure change / ingredient interaction change.
+
+HUMAN REALISM RULE:
+- Food must NEVER look perfect.
+- Always include: uneven placement and irregular sizes and natural spacing and slight overlap.
+- Avoid: symmetry and grid layout and centered arrangement and identical shapes.
+
+INGREDIENT INTERACTION RULE:
+- Each step MUST visually describe how ingredients interact: poured over / partially mixed / fully mixed / layered / scattered / folded.
+- Do NOT fully cover food unless logically mixed.
+
+NO EQUIPMENT RULE:
+- Do NOT mention cooking tools in image prompts. Describe transformation only.
+
+FINAL DISH RULE:
+- Final step MUST show: fully cooked dish with visible browning or melting and natural imperfections and uneven textures and non-uniform color.
+- The dish must look homemade not commercial.
+
+IMAGE PROMPT RULES:
+- Image prompts must ONLY describe: food and container.
+- Never describe: background or lighting or surface or camera.
+
+SEO RULES:
+- Generate SEO for hero image and ingredients image and each step image.
+- Meta description must be under 155 characters.
+- Add a period at the end of each equipment description.
+- Add "?" at the end of each FAQ question.
+
+RECIPE CARD DESCRIPTION RULE:
+- Length must be 450 to 480 characters.
+- Must include keywords: easy and ideas and quick and simple and best and healthy.
+- Must mention events: weeknight dinner or meal prep or holiday or potluck or brunch or party.
+
+FAQ RULE: Include 3 to 4 questions.
+CONCLUSION RULE: Write 2 to 3 sentences.
 
 SECTION 2 — "visual_plan" (for AI image generation):
 This tells the image generator EXACTLY what each photo should show.
@@ -402,22 +463,53 @@ VISUAL PLAN RULES:
 - Food must evolve: raw > combined > coated > softened > melted > browned > finished
 - Do NOT create steps for: heating oil, preheating pan, boiling water, or any step without food visible. Every step must show food in the container
 
+QUANTITY CONSISTENCY RULE (CRITICAL):
+- The NUMBER of items in step images MUST match the recipe ingredients quantity.
+- If recipe says "2 chicken breasts" then ALL step images must show exactly 2 chicken breasts not 4 or 8.
+- If recipe says "4 chicken thighs" then show exactly 4 in every step.
+- The SIZE of items must stay consistent across steps. Do not make items bigger or smaller between steps.
+- Include the exact quantity in each step's visible_ingredients field.
+
+CONTAINER REALISM RULE:
+- The container must be what a REAL cook would actually use for this specific recipe.
+- Do NOT use the same container type for every recipe.
+- Choose based on what makes cooking sense:
+  Cast iron skillet: searing and pan-frying and one-pan meals.
+  Large pot: soups and stews and boiling pasta.
+  Baking dish (glass or ceramic): casseroles and lasagna and baked dishes and gratins.
+  Sheet pan: roasting vegetables and baking cookies and sheet pan dinners.
+  Mixing bowl: mixing batters and salads and marinades (before transferring).
+  White plate: final plating and serving step only.
+  Wooden cutting board: slicing bread and charcuterie.
+  Muffin tin: cupcakes and muffins and egg bites.
+  Cake pan: cakes and cheesecakes.
+- The container should look used and realistic not brand new.
+
+FOOD MOVEMENT RULE (CRITICAL):
+- Between cooking steps food MUST change position. A chef moves food while cooking.
+- NEVER keep food in the exact same position across two consecutive steps.
+- For each step describe the position change: flipped / rotated / shifted / tilted / rearranged / spread out / folded over.
+- Include a "position" field describing where food sits and how it moved from previous step.
+- Example: "chicken flipped showing golden-brown bottom side and rotated 90 degrees" or "pasta shifted to left side of pan with sauce pooling on right".
+
 THE LAST STEP - "serving/portion":
-- Show a SINGLE PORTION on a plate (not the cooking container)
-- If the dish can be cut or sliced, show the INSIDE: cut piece revealing texture, layers, melted cheese, juicy interior
-- If it cannot be cut (soup, stir-fry), show a served portion in a bowl with garnish
-- Garnished, restaurant-ready but natural look
-- Different from hero: close-up of one portion showing detail, hero is full dish at 45 degrees
+- Show a SINGLE PORTION served on a plate (not the cooking container).
+- If the dish can be cut or sliced then show the INSIDE: a cut piece revealing texture and layers and melted cheese and juicy interior.
+- If it cannot be cut (soup or stir-fry) then show a served portion in a bowl with garnish.
+- Garnished and restaurant-ready but natural look.
+- Different from hero: this is a close-up of one portion showing detail while hero is the full dish at 45 degrees.
 
 ARRANGEMENT per step:
-- Where each ingredient sits (center, edges, scattered, layered)
-- Natural imperfections (not symmetrical, casual home cooking)
-- Use natural wording: "loosely spread", "unevenly scattered", "casually arranged"
+- Where each ingredient sits (center or edges or scattered or layered).
+- How food moved from previous step (rotated or flipped or shifted).
+- Natural imperfections (not symmetrical and casual home cooking look).
+- Use natural wording: "loosely spread" and "unevenly scattered" and "casually arranged".
 
 INGREDIENTS IMAGE:
-- EVERY ingredient in its own small container - NEVER on surface
-- Proteins on small white plates, liquids in glass bowls, spices in ceramic dishes
-- Clean grid or circular pattern with spacing
+- EVERY ingredient MUST be in its own small container. NEVER directly on the background surface.
+- Proteins on small white plates and liquids in small glass bowls and spices in small ceramic dishes and vegetables on small plates.
+- Arranged in clean grid or circular pattern with clear spacing between containers.
+- The background surface should be visible between the containers.
 
 SECTION 3 - "pinterest_pins": 3 pins with title, description, image_prompt.
 
@@ -432,15 +524,21 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "recipe_card_description": "450-480 chars, include: easy, quick, simple, best, healthy",
     "intro": "3+ paragraphs separated by newlines",
     "ingredients": [{"name": "", "quantity": "", "description": ""}],
-    "steps": [{"number": 1, "title": "", "description": "2-3 paragraphs", "tip": "", "seo": {"filename": "", "alt_text": ""}}],
-    "hero_seo": {"filename": "", "alt_text": ""},
-    "ingredients_seo": {"filename": "", "alt_text": ""},
-    "equipment": [{"name": "", "notes": ""}],
+    "hero_prompt": "Describe the FULLY COOKED finished dish with natural imperfections.",
+    "hero_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
+    "ingredients_prompt": "All raw ingredients in separate containers.",
+    "ingredients_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
+    "steps": [{"number": 1, "title": "specific action", "description": "1-2 paragraphs explaining visual change", "tip": "", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
+    "equipment": [{"name": "", "notes": "function."}],
+    "pro_tips": ["", "", "", ""],
+    "faq": [{"question": "?", "answer": ""}],
+    "storage_notes": "1-2 paragraphs.",
+    "fun_fact": "",
+    "category": "",
+    "cuisine": "",
     "prep_time": "PT15M", "cook_time": "PT30M", "total_time": "PT45M",
-    "servings": "4", "calories": "",
-    "pro_tips": [], "faq": [{"question": "", "answer": ""}],
-    "variations": [], "storage_notes": "", "serving_suggestions": "", "make_ahead": "",
-    "fun_fact": "", "cuisine": "", "category": "", "conclusion": ""
+    "servings": "4",
+    "conclusion": ""
   },
   "visual_plan": {
     "ingredients_image": {
@@ -450,12 +548,13 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
       "forbidden": ["cooked food", "mixed items", "garnish", "utensils"]
     },
     "visual_steps": [{
-      "step_id": 1, "title": "", "container": "chosen container",
+      "step_id": 1, "title": "specific action title", "container": "chosen container",
       "camera_angle": "{{default_camera_angle}}",
-      "visible_ingredients": [{"name": "", "state": "", "placement": ""}],
-      "forbidden_ingredients": [],
+      "visible_ingredients": [{"name": "", "state": "", "placement": "where in container"}],
+      "forbidden_ingredients": ["ingredients NOT yet added"],
       "food_state": "detailed appearance with natural imperfections",
-      "arrangement": "composition with casual layout"
+      "position": "how food moved from previous step (flipped/rotated/shifted/tilted)",
+      "arrangement": "overall composition with casual non-symmetrical layout"
     }],
     "hero_image": {
       "base_description": "finished dish, natural look",
