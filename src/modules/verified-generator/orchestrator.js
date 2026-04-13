@@ -205,13 +205,20 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     }
 
     // Track stats
+    // Get file size if exists
+    let fileSizeKB = 0;
+    try { if (existsSync(outputPath)) fileSizeKB = Math.round(statSync(outputPath).size / 1024); } catch {}
+
     VGStats.trackImage({
       type: imageType || label.toLowerCase().replace(/\s+\d+$/, ''),
       stepNumber,
       title: label,
       flowStarted: Date.now(),
       flowDuration: 0,
+      fileSizeKB,
       geminiStatus: this._lastVerifyResult?.status || 'skipped',
+      geminiDetectedItems: this._lastVerifyResult?.detected_items || [],
+      geminiForbiddenFound: this._lastVerifyResult?.forbidden_found || [],
       retries: bestIssueCount < Infinity ? 1 : 0,
       similarityScore: null,
       similarityVerdict: null,

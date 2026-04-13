@@ -2148,16 +2148,30 @@
           const chatgpt = r.chatgptDuration ? Math.round(r.chatgptDuration / 1000) + 's' : '--';
           const date = r.startedAt ? new Date(r.startedAt).toLocaleString() : '';
 
-          // Image details
+          // Image details with Gemini analysis
           const imgRows = (r.images || []).map(img => {
             const statusColor = img.geminiStatus === 'PASS' ? '#4caf50' : img.geminiStatus === 'skipped' ? '#888' : '#f44336';
             const statusIcon = img.geminiStatus === 'PASS' ? '✓' : img.geminiStatus === 'skipped' ? '○' : '✗';
-            return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.03);">' +
-              '<span>' + escapeHtml(img.title || img.type) + '</span>' +
-              '<span style="color:' + statusColor + ';">' + statusIcon + ' ' + (img.geminiStatus || 'skipped') +
-              (img.retries > 0 ? ' <span style="color:#ff9800;">(' + img.retries + ' retry)</span>' : '') +
-              (img.similarityVerdict === 'TOO_SIMILAR' ? ' <span style="color:#ff5722;">similar!</span>' : '') +
-              '</span></div>';
+            const sizeInfo = img.fileSizeKB ? img.fileSizeKB + 'KB' : '';
+            const detected = (img.geminiDetectedItems || []).length > 0 ? img.geminiDetectedItems.join(', ') : '';
+            const forbidden = (img.geminiForbiddenFound || []).length > 0 ? img.geminiForbiddenFound.join(', ') : '';
+            const issues = (img.geminiIssues || []).length > 0 ? img.geminiIssues.join('; ') : '';
+
+            let detailHtml = '';
+            if (detected) detailHtml += '<div style="color:#aaa;font-size:11px;margin-top:2px;">Detected: ' + escapeHtml(detected) + '</div>';
+            if (forbidden) detailHtml += '<div style="color:#f44336;font-size:11px;">Forbidden found: ' + escapeHtml(forbidden) + '</div>';
+            if (issues) detailHtml += '<div style="color:#ff9800;font-size:11px;">Issues: ' + escapeHtml(issues) + '</div>';
+
+            return '<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.03);">' +
+              '<div style="display:flex;justify-content:space-between;">' +
+                '<span>' + escapeHtml(img.title || img.type) + ' <span style="color:#555;font-size:10px;">' + sizeInfo + '</span></span>' +
+                '<span style="color:' + statusColor + ';">' + statusIcon + ' ' + (img.geminiStatus || 'skipped') +
+                (img.retries > 0 ? ' <span style="color:#ff9800;">(' + img.retries + ' retry)</span>' : '') +
+                (img.similarityVerdict === 'TOO_SIMILAR' ? ' <span style="color:#ff5722;">similar!</span>' : '') +
+                '</span>' +
+              '</div>' +
+              detailHtml +
+            '</div>';
           }).join('');
 
           return '<div style="background:#12122a;border:1px solid ' + borderColor + ';border-radius:10px;padding:16px;margin-bottom:12px;">' +

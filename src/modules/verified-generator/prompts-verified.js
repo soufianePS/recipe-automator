@@ -577,17 +577,22 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
 
 export const DEFAULT_VG_PINTEREST_PROMPT = `Recreate the EXACT same layout, style, colors, text placement, and design from the first uploaded reference image (the Pinterest template).
 
-Use the food from the second reference image (the hero/recipe photo).
+Use the food from BOTH reference images:
+- The second image is the HERO (full finished dish)
+- The third image is the SERVING STEP (close-up portion/slice showing inside detail)
+Combine BOTH food images into the pin layout — show the hero AND the serving/slice view together for maximum visual appeal.
 
 Title text on the pin: "{{pin_title}}"
 Website: {{website}}
 
 RULES:
 - Match the template layout exactly
-- Use the actual food photo, not a different dish
+- Use BOTH food photos (hero + serving step) not just one
+- If the template has two photo areas use hero in one and serving in the other
+- If the template has one photo area combine both views creatively
 - Text must be readable and well-placed
 - Vertical Pinterest format
-- Professional, eye-catching design`;
+- Professional eye-catching design`;
 
 
 // ─────────────────────────────────────────────────────────────

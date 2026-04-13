@@ -64,12 +64,16 @@ export const VGStats = {
       title: info.title || '',
       flowStarted: info.flowStarted || Date.now(),
       flowDuration: info.flowDuration || 0,
+      downloadMethod: info.downloadMethod || 'unknown', // 'sniffer', 'new-src', 'canvas', 'filter'
+      fileSizeKB: info.fileSizeKB || 0,
       geminiStatus: info.geminiStatus || 'skipped', // 'PASS', 'HARD_FAIL', 'SOFT_FAIL', 'skipped'
       geminiModel: info.geminiModel || '',
+      geminiDetectedItems: info.geminiDetectedItems || [],
+      geminiForbiddenFound: info.geminiForbiddenFound || [],
+      geminiIssues: info.issues || [],
       retries: info.retries || 0,
       similarityScore: info.similarityScore || null,
       similarityVerdict: info.similarityVerdict || null,
-      issues: info.issues || []
     };
     _current.images.push(entry);
     _current.totalFlowTime += entry.flowDuration;
