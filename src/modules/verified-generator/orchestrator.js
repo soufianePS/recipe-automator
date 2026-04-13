@@ -15,6 +15,7 @@ import { StateManager, STATES } from '../../shared/utils/state-manager.js';
 import { SheetsAPI } from '../../shared/utils/sheets-api.js';
 import { Logger } from '../../shared/utils/logger.js';
 import { FlowAccountManager } from '../../shared/utils/flow-account-manager.js';
+import { GeminiChatPage } from '../../shared/pages/gemini-chat.js';
 import { buildVisualPlanPrompt, validateVisualPlan } from './visual-planner.js';
 import { buildStepPrompt, buildIngredientsPrompt, buildHeroPrompt, buildCorrectionPrompt } from './prompt-builder.js';
 import { verifyStepImage, verifyIngredientsImage, verifyHeroImage, verifyPinterestImage, checkStepSimilarity, shouldRetry } from './image-verifier.js';
@@ -314,12 +315,21 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const defaults = VERIFIED_GENERATOR_DEFAULTS;
 
     VGStats.chatgptStart();
-    Logger.step('ChatGPT', `Generating recipe + visual plan for: ${state.recipeTitle}`);
 
-    // Use verified generator's own ChatGPT URL if set, else fall back to generator's
-    const gptUrl = vgSettings.chatGptUrl || settings.generatorGptUrl || null;
-    const isCustomGpt = gptUrl && !gptUrl.match(/^https?:\/\/(chat\.openai\.com|chatgpt\.com)\/?$/);
-    await this.chatgpt.init(isCustomGpt ? gptUrl : null);
+    // ── Choose AI provider: ChatGPT or Gemini browser ──
+    const aiProvider = vgSettings.aiProvider || settings.aiProvider || 'chatgpt';
+    const useGemini = aiProvider === 'gemini';
+
+    if (useGemini) {
+      Logger.step('Gemini', `Generating recipe + visual plan for: ${state.recipeTitle}`);
+      if (!this._geminiChat) this._geminiChat = new GeminiChatPage(null, this.context);
+      await this._geminiChat.init();
+    } else {
+      Logger.step('ChatGPT', `Generating recipe + visual plan for: ${state.recipeTitle}`);
+      const gptUrl = vgSettings.chatGptUrl || settings.generatorGptUrl || null;
+      const isCustomGpt = gptUrl && !gptUrl.match(/^https?:\/\/(chat\.openai\.com|chatgpt\.com)\/?$/);
+      await this.chatgpt.init(isCustomGpt ? gptUrl : null);
+    }
 
     // ── Build prompt from VG's own template ──
     const template = vgSettings.prompts?.recipeVisualPlan || defaults.prompts.recipeVisualPlan;
@@ -356,8 +366,9 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       .replace(/\{\{default_camera_angle\}\}/g, vgSettings.defaultCameraAngle || defaults.defaultCameraAngle)
       .replace(/\{\{template_instructions\}\}/g, templateInstructions);
 
-    const response = await this.chatgpt.sendPromptAndGetResponse(prompt, true);
-    if (!response.success) throw new Error(`ChatGPT failed: ${response.error}`);
+    const aiChat = useGemini ? this._geminiChat : this.chatgpt;
+    const response = await aiChat.sendPromptAndGetResponse(prompt, true);
+    if (!response.success) throw new Error(`${useGemini ? 'Gemini' : 'ChatGPT'} failed: ${response.error}`);
 
     // ── Parse the response: clear separation between recipe, visual_plan, pinterest_pins ──
     const data = response.data;

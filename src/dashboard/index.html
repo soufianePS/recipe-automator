@@ -159,6 +159,13 @@
             </div>
             <div id="genError" class="error-box"></div>
 
+            <!-- AI Provider toggle -->
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:8px;">
+              <span style="font-size:12px;color:#888;">Recipe AI:</span>
+              <button id="genAiChatgpt" onclick="setAiProvider('chatgpt','gen')" class="btn" style="padding:4px 14px;font-size:12px;background:#4caf50;">ChatGPT</button>
+              <button id="genAiGemini" onclick="setAiProvider('gemini','gen')" class="btn" style="padding:4px 14px;font-size:12px;background:#333;">Gemini</button>
+            </div>
+
             <!-- Google login -->
             <div class="login-bar" id="genLoginBar">
               <span class="login-status-text" id="genLoginStatus">Checking Google login...</span>
@@ -406,6 +413,13 @@
             <div id="vgError" class="error-box"></div>
 
             <!-- Google login -->
+            <!-- AI Provider toggle -->
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:8px;">
+              <span style="font-size:12px;color:#888;">Recipe AI:</span>
+              <button id="vgAiChatgpt" onclick="setAiProvider('chatgpt','vg')" class="btn" style="padding:4px 14px;font-size:12px;background:#4caf50;">ChatGPT</button>
+              <button id="vgAiGemini" onclick="setAiProvider('gemini','vg')" class="btn" style="padding:4px 14px;font-size:12px;background:#333;">Gemini</button>
+            </div>
+
             <div class="login-bar" id="vgLoginBar">
               <span class="login-status-text" id="vgLoginStatus">Checking Google login...</span>
               <button id="vgBtnLogin" class="btn" onclick="doLogin('vg')" style="background:#4285f4;padding:6px 16px;font-size:13px;">Login to Google</button>

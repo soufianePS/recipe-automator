@@ -67,7 +67,7 @@
       if ((page === 'settings' || page === 'verified') && !settingsLoaded) { loadSettings(); settingsLoaded = true; }
       if (page === 'verified') { loadVGStats(); if (settingsLoaded) loadVGPrompts(); }
       if (page === 'sites') loadSites();
-      if (page === 'generator' || page === 'scraper' || page === 'verified') checkLoginStatus();
+      if (page === 'generator' || page === 'scraper' || page === 'verified') { checkLoginStatus(); loadAiProvider(); }
     }
 
     // Listen for hash changes
@@ -2074,6 +2074,41 @@
       } catch (e) { toast('Failed: ' + e.message, 'error'); }
     }
     window.saveVGSettings = saveVGSettings;
+
+    // AI Provider toggle (ChatGPT vs Gemini)
+    async function setAiProvider(provider, prefix) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aiProvider: provider })
+        });
+        // Update button styles
+        ['gen', 'vg'].forEach(p => {
+          const chatBtn = document.getElementById(p + 'AiChatgpt');
+          const gemBtn = document.getElementById(p + 'AiGemini');
+          if (chatBtn) chatBtn.style.background = provider === 'chatgpt' ? '#4caf50' : '#333';
+          if (gemBtn) gemBtn.style.background = provider === 'gemini' ? '#4285f4' : '#333';
+        });
+        toast('AI Provider set to ' + provider, 'success');
+      } catch (e) { toast('Failed: ' + e.message, 'error'); }
+    }
+    window.setAiProvider = setAiProvider;
+
+    // Load AI provider state on page load
+    async function loadAiProvider() {
+      try {
+        const resp = await fetch('/api/settings');
+        const s = await resp.json();
+        const provider = s.aiProvider || 'chatgpt';
+        ['gen', 'vg'].forEach(p => {
+          const chatBtn = document.getElementById(p + 'AiChatgpt');
+          const gemBtn = document.getElementById(p + 'AiGemini');
+          if (chatBtn) chatBtn.style.background = provider === 'chatgpt' ? '#4caf50' : '#333';
+          if (gemBtn) gemBtn.style.background = provider === 'gemini' ? '#4285f4' : '#333';
+        });
+      } catch {}
+    }
 
     // ================================================================
     // VG DASHBOARD — Tabs, Stats, Recipe History
