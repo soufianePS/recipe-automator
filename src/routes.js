@@ -894,6 +894,33 @@ export function setupRoutes(app, ctx) {
   // APP UPDATE (git pull)
   // ═══════════════════════════════════════════════════════════
 
+  // GET /api/vg-stats — VG verification statistics
+  app.get('/api/vg-stats', async (req, res) => {
+    try {
+      const { VGStats } = await import('./modules/verified-generator/vg-stats.js');
+      const summary = await VGStats.getSummary();
+      res.json(summary);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/vg-stats/all — all VG recipe details
+  app.get('/api/vg-stats/all', async (req, res) => {
+    try {
+      const { VGStats } = await import('./modules/verified-generator/vg-stats.js');
+      const all = await VGStats.getAll();
+      res.json(all);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/vg-stats/current — current recipe in progress
+  app.get('/api/vg-stats/current', async (req, res) => {
+    try {
+      const { VGStats } = await import('./modules/verified-generator/vg-stats.js');
+      const current = VGStats.getCurrent();
+      res.json(current || { status: 'idle' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // DELETE /api/wp-post/:id — delete a WP post and all its media
   app.delete('/api/wp-post/:id', async (req, res) => {
     try {

@@ -65,7 +65,7 @@
       // Load data for specific pages
       if (page === 'dashboard') loadDashboardData();
       if ((page === 'settings' || page === 'verified') && !settingsLoaded) { loadSettings(); settingsLoaded = true; }
-      if (page === 'verified' && settingsLoaded) loadVGPrompts();
+      if (page === 'verified') { loadVGStats(); if (settingsLoaded) loadVGPrompts(); }
       if (page === 'sites') loadSites();
       if (page === 'generator' || page === 'scraper' || page === 'verified') checkLoginStatus();
     }
@@ -2074,6 +2074,117 @@
       } catch (e) { toast('Failed: ' + e.message, 'error'); }
     }
     window.saveVGSettings = saveVGSettings;
+
+    // ================================================================
+    // VG DASHBOARD — Tabs, Stats, Recipe History
+    // ================================================================
+    function showVGTab(tab) {
+      ['overview', 'recipes', 'prompts', 'settings'].forEach(t => {
+        const panel = document.getElementById('vgPanel' + t.charAt(0).toUpperCase() + t.slice(1));
+        const btn = document.getElementById('vgTab' + t.charAt(0).toUpperCase() + t.slice(1));
+        if (panel) panel.style.display = (t === tab) ? '' : 'none';
+        if (btn) btn.style.background = (t === tab) ? '#9c27b0' : '#333';
+      });
+      if (tab === 'overview') loadVGStats();
+      if (tab === 'recipes') loadVGRecipes();
+      if (tab === 'prompts') loadVGPrompts();
+      if (tab === 'settings') loadSettings();
+    }
+    window.showVGTab = showVGTab;
+
+    async function loadVGStats() {
+      try {
+        const resp = await fetch('/api/vg-stats');
+        if (!resp.ok) return;
+        const s = await resp.json();
+        document.getElementById('vgStatTotal').textContent = s.total || 0;
+        document.getElementById('vgStatSuccess').textContent = s.success || 0;
+        document.getElementById('vgStatPassRate').textContent = (s.passRate || 0) + '%';
+        document.getElementById('vgStatAvgTime').textContent = s.avgDurationSec ? Math.round(s.avgDurationSec / 60) + 'min' : '0s';
+        document.getElementById('vgStatPasses').textContent = s.geminiPasses || 0;
+        document.getElementById('vgStatFails').textContent = s.geminiFails || 0;
+        document.getElementById('vgStatSkipped').textContent = s.geminiSkipped || 0;
+        document.getElementById('vgStatRetries').textContent = s.totalRetries || 0;
+        document.getElementById('vgStatChatgpt').textContent = s.avgChatgptSec ? s.avgChatgptSec + 's' : '0s';
+        document.getElementById('vgStatImages').textContent = s.totalImages || 0;
+        document.getElementById('vgStatToday').textContent = s.today || 0;
+        document.getElementById('vgStatFailedRecipes').textContent = s.failed || 0;
+      } catch {}
+
+      // Load current recipe
+      try {
+        const resp = await fetch('/api/vg-stats/current');
+        if (!resp.ok) return;
+        const c = await resp.json();
+        const el = document.getElementById('vgCurrentRecipe');
+        if (c.status === 'idle' || !c.title) {
+          el.innerHTML = '<span style="color:#666;">Idle — no recipe in progress</span>';
+        } else {
+          const elapsed = c.startedAt ? Math.round((Date.now() - c.startedAt) / 1000) : 0;
+          const imgs = c.images?.length || 0;
+          el.innerHTML = '<div style="color:#9c27b0;font-weight:600;margin-bottom:4px;">' + escapeHtml(c.title) + '</div>' +
+            '<div>Images: ' + imgs + ' | Passes: ' + (c.geminiPasses || 0) + ' | Fails: ' + (c.geminiFails || 0) + '</div>' +
+            '<div>Elapsed: ' + Math.round(elapsed / 60) + 'min ' + (elapsed % 60) + 's</div>';
+        }
+      } catch {}
+    }
+
+    async function loadVGRecipes() {
+      try {
+        const resp = await fetch('/api/vg-stats/all');
+        if (!resp.ok) return;
+        const recipes = await resp.json();
+        const container = document.getElementById('vgRecipesList');
+
+        if (!recipes.length) {
+          container.innerHTML = '<div style="color:#666;text-align:center;padding:20px;">No recipes yet. Run the Verified Generator to see results here.</div>';
+          return;
+        }
+
+        container.innerHTML = recipes.map(r => {
+          const isSuccess = r.status === 'success';
+          const borderColor = isSuccess ? '#4caf50' : '#f44336';
+          const duration = r.totalDuration ? Math.round(r.totalDuration / 1000 / 60) + 'min ' + Math.round((r.totalDuration / 1000) % 60) + 's' : '--';
+          const chatgpt = r.chatgptDuration ? Math.round(r.chatgptDuration / 1000) + 's' : '--';
+          const date = r.startedAt ? new Date(r.startedAt).toLocaleString() : '';
+
+          // Image details
+          const imgRows = (r.images || []).map(img => {
+            const statusColor = img.geminiStatus === 'PASS' ? '#4caf50' : img.geminiStatus === 'skipped' ? '#888' : '#f44336';
+            const statusIcon = img.geminiStatus === 'PASS' ? '✓' : img.geminiStatus === 'skipped' ? '○' : '✗';
+            return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.03);">' +
+              '<span>' + escapeHtml(img.title || img.type) + '</span>' +
+              '<span style="color:' + statusColor + ';">' + statusIcon + ' ' + (img.geminiStatus || 'skipped') +
+              (img.retries > 0 ? ' <span style="color:#ff9800;">(' + img.retries + ' retry)</span>' : '') +
+              (img.similarityVerdict === 'TOO_SIMILAR' ? ' <span style="color:#ff5722;">similar!</span>' : '') +
+              '</span></div>';
+          }).join('');
+
+          return '<div style="background:#12122a;border:1px solid ' + borderColor + ';border-radius:10px;padding:16px;margin-bottom:12px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+              '<div style="font-weight:600;color:#fff;">' + (isSuccess ? '✓' : '✗') + ' ' + escapeHtml(r.title || 'Unknown') + '</div>' +
+              '<span style="font-size:11px;color:#888;">' + date + '</span>' +
+            '</div>' +
+            '<div style="display:flex;gap:16px;font-size:12px;color:#aaa;margin-bottom:8px;">' +
+              '<span>Duration: <b>' + duration + '</b></span>' +
+              '<span>ChatGPT: <b>' + chatgpt + '</b></span>' +
+              '<span>Steps: <b>' + (r.visualSteps || 0) + '</b></span>' +
+              '<span>Passes: <b style="color:#4caf50;">' + (r.geminiPasses || 0) + '</b></span>' +
+              '<span>Fails: <b style="color:#f44336;">' + (r.geminiFails || 0) + '</b></span>' +
+              '<span>Skipped: <b style="color:#888;">' + (r.geminiSkipped || 0) + '</b></span>' +
+            '</div>' +
+            (r.draftUrl ? '<div style="margin-bottom:8px;"><a href="' + r.draftUrl + '" target="_blank" style="color:#4285f4;font-size:12px;">View Draft →</a></div>' : '') +
+            (r.error ? '<div style="color:#f44336;font-size:12px;margin-bottom:8px;">Error: ' + escapeHtml(r.error.substring(0, 150)) + '</div>' : '') +
+            '<details style="cursor:pointer;"><summary style="font-size:11px;color:#666;">Image Details (' + (r.images?.length || 0) + ' images)</summary>' +
+              '<div style="margin-top:8px;font-size:12px;">' + imgRows + '</div>' +
+            '</details>' +
+          '</div>';
+        }).join('');
+      } catch (e) {
+        document.getElementById('vgRecipesList').innerHTML = '<div style="color:#f44336;">Failed to load: ' + e.message + '</div>';
+      }
+    }
+    window.loadVGRecipes = loadVGRecipes;
 
     async function addFlowAccount() {
       const name = document.getElementById('faNewName').value.trim();

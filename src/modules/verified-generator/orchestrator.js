@@ -19,6 +19,7 @@ import { buildVisualPlanPrompt, validateVisualPlan } from './visual-planner.js';
 import { buildStepPrompt, buildIngredientsPrompt, buildHeroPrompt, buildCorrectionPrompt } from './prompt-builder.js';
 import { verifyStepImage, verifyIngredientsImage, verifyHeroImage, verifyPinterestImage, checkStepSimilarity, shouldRetry } from './image-verifier.js';
 import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
+import { VGStats } from './vg-stats.js';
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
@@ -81,13 +82,15 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
    * @param {Function} opts.verifyFn - async (outputPath) => verifier result
    * @param {Function} opts.correctionFn - (verifierResult) => correction prompt string
    * @param {string} opts.label - for logging (e.g. "Ingredients", "Step 3")
+   * @param {string} opts.imageType - for stats ('ingredients', 'step', 'hero', 'pin')
+   * @param {number} opts.stepNumber - step number for stats
    * @param {object} opts.vgSettings - verified generator settings
    */
   async _generateAndVerify(opts) {
     const {
       prompt, backgroundPath, contextPaths = [], aspectRatio, outputPath,
       isFirstImage = false, skipSimilarityCheck = false,
-      verifyFn, correctionFn, label, vgSettings,
+      verifyFn, correctionFn, label, vgSettings, imageType = '', stepNumber = 0,
       // Similarity check options
       prevImagePath = null, prevStepNum = 0, currentStepNum = 0, expectedChange = ''
     } = opts;
@@ -200,6 +203,20 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         if (bestImage) writeFileSync(outputPath, bestImage);
       }
     }
+
+    // Track stats
+    VGStats.trackImage({
+      type: imageType || label.toLowerCase().replace(/\s+\d+$/, ''),
+      stepNumber,
+      title: label,
+      flowStarted: Date.now(),
+      flowDuration: 0,
+      geminiStatus: this._lastVerifyResult?.status || 'skipped',
+      retries: bestIssueCount < Infinity ? 1 : 0,
+      similarityScore: null,
+      similarityVerdict: null,
+      issues: this._lastVerifyResult?.issues || []
+    });
   }
 
   get _stepHandlers() {
@@ -208,6 +225,13 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       [STATES.LOADING_JOB]: () => this._stepLoadJob(),
       [STATES.GENERATING_RECIPE_JSON]: () => this._stepGenerateRecipeJSON(),
       // Override image generation steps with verified versions
+      [STATES.COMPLETED]: async () => {
+        // Track recipe completion before base cleanup
+        const st = await StateManager.getState();
+        await VGStats.complete(st.draftUrl);
+        // Call base COMPLETED handler
+        await this._sharedHandlers[STATES.COMPLETED]();
+      },
       [STATES.GENERATING_INGREDIENTS]: () => this._stepVerifiedIngredients(),
       [STATES.GENERATING_STEPS]: () => this._stepVerifiedStep(),
       [STATES.GENERATING_HERO]: () => this._stepVerifiedHero(),
@@ -268,6 +292,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         statusColumn: sheetSettings.statusColumn
       }
     });
+    VGStats.startRecipe(pending.topic);
     Logger.success(`Found recipe: "${pending.topic}" (row ${pending.rowIndex})`);
   }
 
@@ -281,6 +306,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const vgSettings = this._getVGSettings(settings);
     const defaults = VERIFIED_GENERATOR_DEFAULTS;
 
+    VGStats.chatgptStart();
     Logger.step('ChatGPT', `Generating recipe + visual plan for: ${state.recipeTitle}`);
 
     // Use verified generator's own ChatGPT URL if set, else fall back to generator's
@@ -415,6 +441,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const nextIndex = ((settings.introRotationIndex || 0) + 1) % (settings.introRotationTotal || 12);
     await StateManager.saveSettings({ introRotationIndex: nextIndex });
 
+    VGStats.chatgptEnd(steps.length);
     Logger.success(`Recipe + visual plan generated: ${steps.length} visual steps, ${pinterestPins.length} pins`);
   }
 
@@ -450,7 +477,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     await this._generateAndVerify({
       prompt, backgroundPath, contextPaths: [],
       aspectRatio: settings.ingredientAspectRatio || 'PORTRAIT',
-      outputPath, isFirstImage: true, label: 'Ingredients', vgSettings,
+      outputPath, isFirstImage: true, label: 'Ingredients', imageType: 'ingredients', vgSettings,
       verifyFn: async (path) => verifyIngredientsImage(await this._getGeminiApiKey(), path, ingredientsState, vgSettings),
       correctionFn: (result) => buildCorrectionPrompt(ingredientsState, result, vgSettings)
     });
@@ -520,7 +547,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     await this._generateAndVerify({
       prompt, backgroundPath, contextPaths,
       aspectRatio: settings.stepAspectRatio || 'PORTRAIT',
-      outputPath, label: `Step ${idx + 1}`, vgSettings,
+      outputPath, label: `Step ${idx + 1}`, imageType: 'step', stepNumber: idx + 1, vgSettings,
       verifyFn: async (path) => verifyStepImage(await this._getGeminiApiKey(), path, visualStep, vgSettings),
       correctionFn: (result) => buildCorrectionPrompt(visualStep, result, vgSettings),
       // Similarity detection
@@ -598,7 +625,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     await this._generateAndVerify({
       prompt, backgroundPath: heroTmpPath, contextPaths,
       aspectRatio: settings.heroAspectRatio || 'LANDSCAPE',
-      outputPath, label: 'Hero', vgSettings,
+      outputPath, label: 'Hero', imageType: 'hero', vgSettings,
       verifyFn: async (path) => verifyHeroImage(await this._getGeminiApiKey(), path, heroState, vgSettings),
       correctionFn: (result) => buildCorrectionPrompt(heroState, result, vgSettings)
     });
@@ -691,7 +718,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       prompt, backgroundPath: templatePath, contextPaths,
       aspectRatio: settings.pinterestAspectRatio || 'PORTRAIT',
       outputPath, skipSimilarityCheck: true,
-      label: `Pin ${pendingIdx + 1}`, vgSettings,
+      label: `Pin ${pendingIdx + 1}`, imageType: 'pin', stepNumber: pendingIdx + 1, vgSettings,
       verifyFn: async (path) => verifyPinterestImage(await this._getGeminiApiKey(), path, recipeTitle, vgSettings),
       correctionFn: null // No correction for pins — just retry with same prompt
     });

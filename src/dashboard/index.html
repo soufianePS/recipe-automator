@@ -299,11 +299,79 @@
     <section id="page-verified" class="page-section">
       <div class="page-header">
         <h1 class="page-title">Verified Generator</h1>
+        <!-- VG Sub-navigation -->
+        <div style="display:flex;gap:8px;margin-left:auto;">
+          <button class="btn" onclick="showVGTab('overview')" id="vgTabOverview" style="background:#9c27b0;padding:6px 16px;font-size:12px;">Overview</button>
+          <button class="btn" onclick="showVGTab('recipes')" id="vgTabRecipes" style="background:#333;padding:6px 16px;font-size:12px;">Recipes</button>
+          <button class="btn" onclick="showVGTab('prompts')" id="vgTabPrompts" style="background:#333;padding:6px 16px;font-size:12px;">Prompts</button>
+          <button class="btn" onclick="showVGTab('settings')" id="vgTabSettings" style="background:#333;padding:6px 16px;font-size:12px;">Settings</button>
+        </div>
         <span class="badge" style="background:#9c27b0;">Verified Mode</span>
       </div>
       <div class="page-content">
 
-        <!-- Status card -->
+        <!-- ═══ TAB: OVERVIEW ═══ -->
+        <div id="vgPanelOverview">
+
+        <!-- Stats Cards Row -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+          <div class="card" style="margin:0"><div class="card-body" style="text-align:center;padding:16px;">
+            <div id="vgStatTotal" style="font-size:28px;font-weight:700;color:#9c27b0;">0</div>
+            <div style="font-size:11px;color:#888;margin-top:4px;">Total Recipes</div>
+          </div></div>
+          <div class="card" style="margin:0"><div class="card-body" style="text-align:center;padding:16px;">
+            <div id="vgStatSuccess" style="font-size:28px;font-weight:700;color:#4caf50;">0</div>
+            <div style="font-size:11px;color:#888;margin-top:4px;">Success</div>
+          </div></div>
+          <div class="card" style="margin:0"><div class="card-body" style="text-align:center;padding:16px;">
+            <div id="vgStatPassRate" style="font-size:28px;font-weight:700;color:#2196f3;">0%</div>
+            <div style="font-size:11px;color:#888;margin-top:4px;">Gemini Pass Rate</div>
+          </div></div>
+          <div class="card" style="margin:0"><div class="card-body" style="text-align:center;padding:16px;">
+            <div id="vgStatAvgTime" style="font-size:28px;font-weight:700;color:#ff9800;">0s</div>
+            <div style="font-size:11px;color:#888;margin-top:4px;">Avg Duration</div>
+          </div></div>
+        </div>
+
+        <!-- Detail Stats -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
+          <div class="card" style="margin:0"><div class="card-body" style="padding:14px;">
+            <div style="font-size:12px;color:#888;margin-bottom:8px;">Gemini Verification</div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>PASS</span><span id="vgStatPasses" style="color:#4caf50;font-weight:600;">0</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>FAIL</span><span id="vgStatFails" style="color:#f44336;font-weight:600;">0</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Skipped</span><span id="vgStatSkipped" style="color:#888;font-weight:600;">0</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Retries</span><span id="vgStatRetries" style="color:#ff9800;font-weight:600;">0</span>
+            </div>
+          </div></div>
+          <div class="card" style="margin:0"><div class="card-body" style="padding:14px;">
+            <div style="font-size:12px;color:#888;margin-bottom:8px;">Timing</div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Avg ChatGPT</span><span id="vgStatChatgpt" style="font-weight:600;">0s</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Total Images</span><span id="vgStatImages" style="font-weight:600;">0</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Today</span><span id="vgStatToday" style="font-weight:600;">0</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Failed</span><span id="vgStatFailedRecipes" style="color:#f44336;font-weight:600;">0</span>
+            </div>
+          </div></div>
+          <div class="card" style="margin:0"><div class="card-body" style="padding:14px;">
+            <div style="font-size:12px;color:#888;margin-bottom:8px;">Current Recipe</div>
+            <div id="vgCurrentRecipe" style="font-size:12px;color:#ccc;">Idle — no recipe in progress</div>
+          </div></div>
+        </div>
+
+        <!-- Status + Controls card -->
         <div class="card">
           <div class="card-header">Status</div>
           <div class="card-body">
@@ -364,49 +432,39 @@
           </div>
         </div>
 
-        <!-- Verified Generator Settings -->
+        <!-- Activity Feed (in overview) -->
         <div class="card">
-          <div class="card-header">Verified Generator Settings</div>
+          <div class="card-header">
+            Activity
+            <button class="btn btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
+          </div>
           <div class="card-body">
-            <div class="form-row">
-              <div class="form-group">
-                <label>Min Visual Steps</label>
-                <input type="number" id="vgMinSteps" value="4" min="2" max="12" />
-              </div>
-              <div class="form-group">
-                <label>Max Visual Steps</label>
-                <input type="number" id="vgMaxSteps" value="8" min="3" max="15" />
-              </div>
-              <div class="form-group">
-                <label>Max Verification Retries</label>
-                <input type="number" id="vgMaxRetries" value="3" min="1" max="5" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Soft Fail Action</label>
-                <select id="vgSoftFailAction">
-                  <option value="accept">Accept (log warning)</option>
-                  <option value="retry">Retry</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>Default Container</label>
-                <input type="text" id="vgContainer" value="white ceramic bowl" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Default Camera Angle</label>
-                <input type="text" id="vgCameraAngle" value="top-down" />
-              </div>
-              <div class="form-group">
-                <label>Default Lighting</label>
-                <input type="text" id="vgLighting" value="natural soft light" />
+            <div id="vgActivityFeed" class="activity-feed">
+              <div class="activity-item activity-info">
+                <span class="time">--:--:--</span>
+                <span>Waiting for activity...</span>
               </div>
             </div>
           </div>
         </div>
+
+        </div><!-- end vgPanelOverview -->
+
+        <!-- ═══ TAB: RECIPES ═══ -->
+        <div id="vgPanelRecipes" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              Recipe History
+              <button class="btn btn-secondary btn-sm" onclick="loadVGRecipes()">Refresh</button>
+            </div>
+            <div class="card-body">
+              <div id="vgRecipesList" style="font-size:13px;color:#888;">Loading...</div>
+            </div>
+          </div>
+        </div><!-- end vgPanelRecipes -->
+
+        <!-- ═══ TAB: PROMPTS ═══ -->
+        <div id="vgPanelPrompts" style="display:none;">
 
         <!-- Prompt Templates -->
         <div class="card">
@@ -460,25 +518,62 @@
               <textarea id="vgPromptCorrection" rows="4" placeholder="Template for correction after verification fails..."></textarea>
               <div class="prompt-hint">Placeholders: {{issues_list}}, {{fixes_list}}</div>
             </div>
-            <button class="btn btn-save" onclick="saveVGSettings()" style="padding:10px 30px;font-size:13px;">Save Verified Generator Settings</button>
+            <button class="btn btn-save" onclick="saveVGSettings()" style="padding:10px 30px;font-size:13px;">Save Prompts</button>
           </div>
         </div>
 
-        <!-- Activity Feed -->
+        </div><!-- end vgPanelPrompts -->
+
+        <!-- ═══ TAB: SETTINGS ═══ -->
+        <div id="vgPanelSettings" style="display:none;">
+
+        <!-- Verified Generator Settings -->
         <div class="card">
-          <div class="card-header">
-            Activity
-            <button class="btn btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
-          </div>
+          <div class="card-header">Generation Settings</div>
           <div class="card-body">
-            <div id="vgActivityFeed" class="activity-feed">
-              <div class="activity-item activity-info">
-                <span class="time">--:--:--</span>
-                <span>Waiting for activity...</span>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Min Visual Steps</label>
+                <input type="number" id="vgMinSteps" value="4" min="2" max="12" />
+              </div>
+              <div class="form-group">
+                <label>Max Visual Steps</label>
+                <input type="number" id="vgMaxSteps" value="8" min="3" max="15" />
+              </div>
+              <div class="form-group">
+                <label>Max Verification Retries</label>
+                <input type="number" id="vgMaxRetries" value="3" min="1" max="5" />
               </div>
             </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Soft Fail Action</label>
+                <select id="vgSoftFailAction">
+                  <option value="accept">Accept (log warning)</option>
+                  <option value="retry">Retry</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Default Container</label>
+                <input type="text" id="vgContainer" value="white ceramic bowl" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Default Camera Angle</label>
+                <input type="text" id="vgCameraAngle" value="top-down" />
+              </div>
+              <div class="form-group">
+                <label>Default Lighting</label>
+                <input type="text" id="vgLighting" value="natural soft light" />
+              </div>
+            </div>
+            <button class="btn btn-save" onclick="saveVGSettings()" style="padding:10px 30px;font-size:13px;">Save Settings</button>
           </div>
         </div>
+
+        </div><!-- end vgPanelSettings -->
+
       </div>
     </section>
 
