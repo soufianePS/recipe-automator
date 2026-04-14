@@ -116,7 +116,9 @@ export const VGStats = {
   async getAll() {
     try {
       const data = await readFile(getStatsFile(), 'utf-8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      // Ensure it's always an array (file might be corrupted as {})
+      return Array.isArray(parsed) ? parsed : [];
     } catch { return []; }
   },
 
@@ -159,9 +161,14 @@ export const VGStats = {
 
   /** Save a recipe entry */
   async _save(entry) {
-    const all = await this.getAll();
-    all.unshift(entry);
-    if (all.length > 200) all.length = 200;
-    await writeFile(getStatsFile(), JSON.stringify(all, null, 2));
+    try {
+      const all = await this.getAll();
+      all.unshift(entry);
+      if (all.length > 200) all.length = 200;
+      await writeFile(getStatsFile(), JSON.stringify(all, null, 2));
+    } catch (e) {
+      // Don't crash the batch if stats can't be saved
+      console.error('[VGStats] Save failed:', e.message);
+    }
   }
 };

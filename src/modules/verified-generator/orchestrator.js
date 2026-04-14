@@ -235,8 +235,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       // Override image generation steps with verified versions
       [STATES.COMPLETED]: async () => {
         // Track recipe completion before base cleanup
-        const st = await StateManager.getState();
-        await VGStats.complete(st.draftUrl);
+        try {
+          const st = await StateManager.getState();
+          await VGStats.complete(st.draftUrl);
+        } catch (e) { Logger.warn(`VGStats save error: ${e.message}`); }
         // Call base COMPLETED handler
         await this._sharedHandlers[STATES.COMPLETED]();
       },
