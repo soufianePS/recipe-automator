@@ -21,8 +21,8 @@ import { buildStepPrompt, buildIngredientsPrompt, buildHeroPrompt, buildCorrecti
 import { verifyStepImage, verifyIngredientsImage, verifyHeroImage, verifyPinterestImage, checkStepSimilarity, shouldRetry } from './image-verifier.js';
 import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
 import { VGStats } from './vg-stats.js';
-import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, copyFileSync, statSync } from 'fs';
+import { join, dirname, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,30 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
   }
 
   /**
+   * Copy a file to data/tmp/ with a unique prefix to avoid filename collisions in Flow project.
+   * E.g. "photo.jpg" → "data/tmp/bg-1-photo.jpg" or "data/tmp/pin-2-photo.jpg"
+   * Returns the new path. If already prepared with same prefix, returns cached path.
+   */
+  _prepareFile(originalPath, prefix) {
+    if (!this._preparedFiles) this._preparedFiles = new Map();
+
+    // Check cache — same prefix = same file already prepared
+    if (this._preparedFiles.has(prefix)) return this._preparedFiles.get(prefix);
+
+    const tmpDir = join(__dirname, '..', '..', '..', 'data', 'tmp');
+    mkdirSync(tmpDir, { recursive: true });
+
+    const ext = extname(originalPath) || '.jpg';
+    const newName = `${prefix}${ext}`;
+    const newPath = join(tmpDir, newName);
+
+    copyFileSync(originalPath, newPath);
+    this._preparedFiles.set(prefix, newPath);
+    Logger.debug(`[VG] Prepared file: ${basename(originalPath)} → ${newName}`);
+    return newPath;
+  }
+
+  /**
    * Generate an image with Flow, verify with Gemini, retry on failure.
    * If retry generation fails (Flow download error), falls back to best previous image.
    *
@@ -110,10 +134,8 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
       // Try to generate — if retry fails (Flow download error), fall back to best image
       try {
-        // Close session before retry to get a fresh project
-        if (attempt > 0) {
-          try { await this.flow.closeSession(); } catch {}
-        }
+        // Stay in same project on retry — network sniffer guarantees we capture
+        // only the new generation, regardless of how many images are on canvas.
 
         const ok = await this._generateWithRateLimitRetry(() =>
           this.flow.generate(currentPrompt, backgroundPath, contextPaths, aspectRatio, outputPath, { skipSimilarityCheck })
@@ -128,7 +150,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         Logger.warn(`[VerifiedGen] ${label} retry ${attempt} generation failed: ${genErr.message}`);
         if (bestImage) {
           Logger.info(`[VerifiedGen] ${label}: falling back to best previous image`);
-          writeFileSync(outputPath, bestImage);
+          try { writeFileSync(outputPath, bestImage); } catch (e) {
+            // Windows UNKNOWN error — check if file was written anyway
+            if (!existsSync(outputPath)) throw new Error(`Failed to write fallback image: ${e.message}`);
+          }
         }
         break; // Accept what we have
       }
@@ -201,7 +226,13 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
       if (attempt === maxRetries - 1) {
         Logger.warn(`[VerifiedGen] ${label}: max retries reached — accepting best attempt`);
-        if (bestImage) writeFileSync(outputPath, bestImage);
+        if (bestImage) {
+          try { writeFileSync(outputPath, bestImage); } catch (e) {
+            // Windows UNKNOWN error — file may already be written by generate()
+            if (!existsSync(outputPath)) throw new Error(`Failed to write best image: ${e.message}`);
+            Logger.debug(`[VG] Write threw but file exists: ${e.message}`);
+          }
+        }
       }
     }
 
@@ -302,7 +333,13 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         statusColumn: sheetSettings.statusColumn
       }
     });
-    VGStats.startRecipe(pending.topic);
+    // Clear prepared files cache for new recipe
+    this._preparedFiles = new Map();
+
+    VGStats.startRecipe(pending.topic, pending.rowIndex, {
+      sheetTabName: sheetSettings.sheetTabName,
+      statusColumn: sheetSettings.statusColumn
+    });
     Logger.success(`Found recipe: "${pending.topic}" (row ${pending.rowIndex})`);
   }
 
@@ -489,7 +526,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
     const bgIndex = (state.backgroundQueueIndex || 0) % state.backgroundQueue.length;
-    const backgroundPath = state.backgroundQueue[bgIndex];
+    const backgroundPath = this._prepareFile(state.backgroundQueue[bgIndex], `bg-${bgIndex + 1}`);
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, FILENAMES.ingredients);
 
@@ -532,10 +569,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // Build prompt from structured state
     const prompt = buildStepPrompt(visualStep, vgSettings);
 
-    // Background
+    // Background — prefixed to avoid collisions in same Flow project
     if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
     const bgIndex = (state.backgroundQueueIndex || 0) % state.backgroundQueue.length;
-    const backgroundPath = state.backgroundQueue[bgIndex];
+    const backgroundPath = this._prepareFile(state.backgroundQueue[bgIndex], `bg-${bgIndex + 1}`);
 
     // Output path
     const outputDir = this._getOutputDir(state, settings);
@@ -614,20 +651,14 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // Build prompt from structured state
     const prompt = buildHeroPrompt(heroState, vgSettings);
 
-    // Write hero background to temp file
+    // Write hero background to temp file with unique prefix
     const tmpDir = join(__dirname, '..', '..', '..', 'data', 'tmp');
     mkdirSync(tmpDir, { recursive: true });
-    const heroTmpPath = join(tmpDir, FILENAMES.heroBgTemp);
+    const heroTmpPath = join(tmpDir, 'hero-bg.jpg');
     if (!state.selectedHeroBackground?.base64) {
       throw new Error('Hero background image not loaded — re-run from start');
     }
-    try {
-      writeFileSync(heroTmpPath, Buffer.from(state.selectedHeroBackground.base64, 'base64'));
-    } catch (e) {
-      Logger.warn('Hero bg write failed, retrying with fresh path...');
-      const altPath = join(tmpDir, 'hero_bg_alt.jpg');
-      writeFileSync(altPath, Buffer.from(state.selectedHeroBackground.base64, 'base64'));
-    }
+    writeFileSync(heroTmpPath, Buffer.from(state.selectedHeroBackground.base64, 'base64'));
 
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, state.recipeJSON?.hero_seo?.filename || FILENAMES.hero);
@@ -681,11 +712,9 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const pin = pins[pendingIdx];
     Logger.step('Flow', `Pinterest pin ${pendingIdx + 1}/${pins.length}: ${pin.title}`);
 
-    // Fresh project for each pin
-    Logger.info(`[Pinterest] Closing Flow session — fresh project for pin ${pendingIdx + 1}`);
-    try { await this.flow.closeSession(); } catch {}
+    // Stay in same project — network sniffer handles image capture regardless of canvas clutter
 
-    // Pick template
+    // Pick template — prefixed to avoid collisions with step backgrounds
     const isScraper = settings.mode === 'scrape';
     const templateFolder = isScraper
       ? settings.pinterestTemplateFolderScraper
@@ -702,8 +731,9 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       throw new Error(`No template images found in: ${templateFolder}`);
     }
 
-    const templatePath = templateImages[pendingIdx % templateImages.length];
-    Logger.info(`Using template: ${basename(templatePath)}`);
+    const originalTemplatePath = templateImages[pendingIdx % templateImages.length];
+    const templatePath = this._prepareFile(originalTemplatePath, `pin-${pendingIdx + 1}`);
+    Logger.info(`Using template: ${basename(originalTemplatePath)} → ${basename(templatePath)}`);
 
     // Context: hero + last step
     const contextPaths = [];

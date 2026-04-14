@@ -107,6 +107,12 @@ export const SheetsAPI = {
     await this.writeRange(sheetId, range, [['processing']], settings);
   },
 
+  async markPending(settings, rowIndex) {
+    const { sheetId, sheetTabName, statusColumn } = settings;
+    const range = `${sheetTabName}!${statusColumn}${rowIndex}`;
+    await this.writeRange(sheetId, range, [['pending']], settings);
+  },
+
   async markError(settings, rowIndex, errorMsg = '') {
     const { sheetId, sheetTabName, statusColumn } = settings;
     const range = _buildRange(sheetTabName, statusColumn, rowIndex, 1);

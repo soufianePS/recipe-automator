@@ -858,8 +858,12 @@ export class BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, step.seo?.filename || FILENAMES.stepDefault(idx));
 
-    // Collect previous step image FILE PATHS as context
-    const contextPaths = this._collectStepContextPaths(state.steps, outputDir, idx);
+    // Use only last step image as context (not all previous steps)
+    const contextPaths = [];
+    if (idx > 0) {
+      const prevPath = join(outputDir, state.steps[idx - 1]?.seo?.filename || FILENAMES.stepDefault(idx - 1));
+      if (existsSync(prevPath)) contextPaths.push(prevPath);
+    }
 
     const ok = await this._generateWithRateLimitRetry(() =>
       this.flow.generate(prompt, backgroundPath, contextPaths, settings.stepAspectRatio || 'PORTRAIT', outputPath)

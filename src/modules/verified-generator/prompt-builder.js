@@ -32,8 +32,7 @@ export function buildStepPrompt(stepState, vgSettings) {
     position_change: stepState.position || '',
     arrangement: stepState.arrangement || '',
     rules: [
-      "Only 1 container visible",
-      "No extra bowls, plates, utensils, or props",
+      "Show only the specified container — no extra bowls, plates, utensils, or props",
       "No garnish unless listed in visible_ingredients",
       "No ingredients outside visible_ingredients list",
       "Show ONLY this step, not future steps",
@@ -42,7 +41,7 @@ export function buildStepPrompt(stepState, vgSettings) {
       "KEEP the uploaded background exactly — same surface, same texture, same color",
       "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
       "Do NOT make food look perfectly arranged or symmetrical",
-      "Follow the arrangement description for composition"
+      "Follow the position_change description for food placement and movement"
     ]
   };
 

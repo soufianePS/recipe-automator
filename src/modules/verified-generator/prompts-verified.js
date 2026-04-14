@@ -18,7 +18,7 @@ Given the recipe JSON below, create a VISUAL PRODUCTION PLAN — a structured JS
 CRITICAL RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps (adapt to recipe complexity)
 - Each step must show ONE clear visual change from the previous step
-- Use the SAME container throughout all steps (chosen by ChatGPT based on recipe type)
+- Each step specifies its own container (containers CAN change between steps when the recipe requires it)
 - Every step must list EXACT visible ingredients and FORBIDDEN ingredients
 - Forbidden = anything that has NOT been added yet at this step + any garnish/decoration (unless it's the last step)
 - For continuity: only allow previous image as context when same container + small change
@@ -148,7 +148,7 @@ STRICT RULES:
 export const DEFAULT_VERIFIER_PROMPT = `You are validating a recipe step image for accuracy.
 
 EXPECTED STEP:
-- Container: {{container}} (exactly 1 allowed)
+- Container: {{container}}
 - Camera angle: {{camera_angle}}
 
 ALLOWED visible ingredients:
@@ -163,15 +163,15 @@ IMPORTANT: The background surface may contain elements like rings, cables, cloth
 
 VALIDATION CHECKS:
 1. List every visible food element in the image
-2. Count how many food containers/bowls/plates are visible (ignore background objects)
+2. Check if the main container matches the expected type ({{container}})
 3. Check if any FORBIDDEN ingredient appears
 4. Check if any ingredient from a FUTURE step is visible
 5. Check if previously mixed ingredients reappear separately
 6. Check if the food state matches the expected description
 
 SEVERITY RULES:
-- HARD_FAIL: forbidden ingredient found, wrong container count, future ingredient visible, food completely wrong state
-- SOFT_FAIL: framing slightly off, minor texture difference, bowl not perfectly centered
+- HARD_FAIL: forbidden ingredient found, future ingredient visible, food completely wrong state, totally wrong container type
+- SOFT_FAIL: framing slightly off, minor texture difference, container slightly different style but same category
 - PASS: everything matches expected state
 
 OUTPUT JSON ONLY (no markdown, no explanation):
@@ -445,14 +445,22 @@ CONCLUSION RULE: Write 2 to 3 sentences.
 SECTION 2 — "visual_plan" (for AI image generation):
 This tells the image generator EXACTLY what each photo should show.
 
-CONTAINER SELECTION - choose the BEST for this recipe:
-- White ceramic bowl: soups, salads, pasta, stir-fry, rice bowls
-- Glass/ceramic baking dish: casseroles, lasagna, baked pasta
-- Cast iron skillet: pan-fried, seared meats, one-pan dishes
-- Sheet pan/baking tray: roasted vegetables, sheet pan dinners
-- White plate: plated dishes, sandwiches, steaks
-- Wooden cutting board: breads, charcuterie, sliced items
-Use the SAME container for ALL visual steps.
+CONTAINER SELECTION PER STEP — use the container a REAL cook would use at EACH phase:
+- Mixing bowl: mixing batters and marinades and doughs
+- Cast iron skillet: searing and pan-frying and sautéing
+- Large pot: soups and stews and boiling pasta
+- Saucepan: sauces and melting chocolate and heating liquids
+- Glass/ceramic baking dish: casseroles and lasagna and baked dishes
+- Sheet pan/baking tray: roasting vegetables and baking cookies
+- Muffin tin/ramekins: cupcakes and muffins and lava cakes and egg bites
+- Cake pan: cakes and cheesecakes
+- White plate: final serving/plating step
+- Wooden cutting board: slicing bread and charcuterie
+- Wok: stir-fry dishes
+CRITICAL: The container CAN and SHOULD change between steps when the recipe requires it.
+Real cooking uses multiple containers: bowl (mix) → skillet (cook) → plate (serve).
+Each step MUST specify which container is used at that exact phase.
+Do NOT force the same container for ALL steps unless the recipe truly uses only one.
 
 VISUAL PLAN RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps
@@ -463,6 +471,31 @@ VISUAL PLAN RULES:
 - Food must evolve: raw > combined > coated > softened > melted > browned > finished
 - Do NOT create steps for: heating oil, preheating pan, boiling water, or any step without food visible. Every step must show food in the container
 
+NO SKIPPED TRANSFORMATION RULE (CRITICAL):
+- Steps MUST cover EVERY major visual transformation from raw to served.
+- NEVER jump from mixing to final plated dish — show the cooking phase in between.
+- If food goes into an oven or pan or pot then show it INSIDE that vessel before showing the result.
+- Example for lava cake: mix batter → pour into ramekins → baked ramekins (cracked tops) → served portion on plate.
+- Example for pasta: boil pasta → sauté sauce → combine pasta with sauce → served bowl.
+- Example for fried chicken: coat chicken → fry in skillet (golden pieces) → served plate.
+- If you cannot think of a clear visual for a cooking phase then describe what it looks like MID-COOK (bubbling and browning and rising and melting).
+
+STEP MERGING RULE:
+- If adding an ingredient does NOT create a visible change (salt and vanilla extract and oil spray) then merge it into the NEXT step that DOES create a visible change.
+- Each step MUST have an OBVIOUS visual difference from the previous step.
+- If two consecutive steps would look nearly identical then combine them into one step.
+
+FOOD SHUFFLING BETWEEN STEPS (CRITICAL):
+- A real cook moves food while cooking. The food MUST NOT stay frozen in the same position.
+- Between EVERY two consecutive steps at least ONE of these must happen:
+  * Food shifted to different position in container
+  * Pieces flipped showing other side
+  * Ingredients rearranged or spread differently
+  * New ingredient poured or scattered changes the layout
+  * Food transferred to a different container
+- Describe the shuffle in the "position" field: "chicken pieces flipped showing golden-brown underside and shifted toward center" or "batter poured from bowl into 4 greased ramekins filling each 3/4 full"
+- The position field is MANDATORY for every step — never leave it empty
+
 QUANTITY CONSISTENCY RULE (CRITICAL):
 - The NUMBER of items in step images MUST match the recipe ingredients quantity.
 - If recipe says "2 chicken breasts" then ALL step images must show exactly 2 chicken breasts not 4 or 8.
@@ -471,26 +504,22 @@ QUANTITY CONSISTENCY RULE (CRITICAL):
 - Include the exact quantity in each step's visible_ingredients field.
 
 CONTAINER REALISM RULE:
-- The container must be what a REAL cook would actually use for this specific recipe.
-- Do NOT use the same container type for every recipe.
-- Choose based on what makes cooking sense:
-  Cast iron skillet: searing and pan-frying and one-pan meals.
-  Large pot: soups and stews and boiling pasta.
-  Baking dish (glass or ceramic): casseroles and lasagna and baked dishes and gratins.
-  Sheet pan: roasting vegetables and baking cookies and sheet pan dinners.
-  Mixing bowl: mixing batters and salads and marinades (before transferring).
-  White plate: final plating and serving step only.
-  Wooden cutting board: slicing bread and charcuterie.
-  Muffin tin: cupcakes and muffins and egg bites.
-  Cake pan: cakes and cheesecakes.
+- Each step uses the container that makes cooking sense for THAT phase.
 - The container should look used and realistic not brand new.
+- Container transitions must be logical: you mix in a bowl THEN transfer to a baking dish THEN serve on a plate.
+- NEVER serve from the mixing bowl (transfer to the cooking vessel or serving plate).
+- NEVER cook in a plate (plates are for serving only).
 
 FOOD MOVEMENT RULE (CRITICAL):
-- Between cooking steps food MUST change position. A chef moves food while cooking.
+- Between cooking steps food MUST change position or change container. A chef moves food while cooking.
 - NEVER keep food in the exact same position across two consecutive steps.
-- For each step describe the position change: flipped / rotated / shifted / tilted / rearranged / spread out / folded over.
-- Include a "position" field describing where food sits and how it moved from previous step.
-- Example: "chicken flipped showing golden-brown bottom side and rotated 90 degrees" or "pasta shifted to left side of pan with sauce pooling on right".
+- Types of movement:
+  * SAME container: flipped / rotated / shifted / tilted / rearranged / spread out / folded over / stirred
+  * DIFFERENT container: transferred / poured / scooped / placed / unmolded
+- The "position" field MUST describe BOTH where food sits AND how it changed from the previous step.
+- Example same container: "chicken pieces flipped showing golden-brown bottom side and shifted toward center of skillet"
+- Example container change: "batter poured from mixing bowl into 4 greased ramekins filling each 3/4 full"
+- Example container change: "baked lava cake unmolded onto white plate and tilted to show molten center flowing out"
 
 THE LAST STEP - "serving/portion":
 - Show a SINGLE PORTION served on a plate (not the cooking container).

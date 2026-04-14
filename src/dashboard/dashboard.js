@@ -2222,7 +2222,10 @@
               '<span>Fails: <b style="color:#f44336;">' + (r.geminiFails || 0) + '</b></span>' +
               '<span>Skipped: <b style="color:#888;">' + (r.geminiSkipped || 0) + '</b></span>' +
             '</div>' +
-            (r.draftUrl ? '<div style="margin-bottom:8px;"><a href="' + r.draftUrl + '" target="_blank" style="color:#4285f4;font-size:12px;">View Draft →</a></div>' : '') +
+            (r.draftUrl ? '<div style="margin-bottom:8px;display:flex;align-items:center;gap:12px;">' +
+              '<a href="' + r.draftUrl + '" target="_blank" style="color:#4285f4;font-size:12px;">View Draft →</a>' +
+              '<button onclick="deleteVGRecipe(' + recipes.indexOf(r) + ', this)" style="background:#f44336;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;">Delete from WP</button>' +
+            '</div>' : '') +
             (r.error ? '<div style="color:#f44336;font-size:12px;margin-bottom:8px;">Error: ' + escapeHtml(r.error.substring(0, 150)) + '</div>' : '') +
             '<details style="cursor:pointer;"><summary style="font-size:11px;color:#666;">Image Details (' + (r.images?.length || 0) + ' images)</summary>' +
               '<div style="margin-top:8px;font-size:12px;">' + imgRows + '</div>' +
@@ -2234,6 +2237,28 @@
       }
     }
     window.loadVGRecipes = loadVGRecipes;
+
+    async function deleteVGRecipe(index, btn) {
+      if (!confirm('Delete this recipe from WordPress (post + all images) and mark sheet as pending?')) return;
+      btn.disabled = true;
+      btn.textContent = 'Deleting...';
+      try {
+        const resp = await fetch('/api/vg-recipe/' + index, { method: 'DELETE' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Delete failed');
+        let msg = 'Deleted: ' + (data.title || 'Recipe');
+        if (data.wpDeleted) msg += ' | WP post + ' + (data.mediaDeleted || 0) + ' media removed';
+        if (data.sheetReset) msg += ' | Sheet reset to pending';
+        if (!data.wpDeleted && data.wpError) msg += ' | WP error: ' + data.wpError;
+        toast(msg, 'success');
+        loadVGRecipes(); // Refresh list
+      } catch (e) {
+        toast('Delete failed: ' + e.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Delete from WP';
+      }
+    }
+    window.deleteVGRecipe = deleteVGRecipe;
 
     async function addFlowAccount() {
       const name = document.getElementById('faNewName').value.trim();

@@ -96,6 +96,7 @@ export class GeneratorOrchestrator extends BaseOrchestrator {
     // ── Choose AI provider: ChatGPT or Gemini browser ──
     const aiProvider = settings.aiProvider || 'chatgpt';
     const useGemini = aiProvider === 'gemini';
+    const isCustomGpt = !useGemini && settings.generatorGptUrl && !settings.generatorGptUrl.match(/^https?:\/\/(chat\.openai\.com|chatgpt\.com)\/?$/);
 
     if (useGemini) {
       Logger.step('Gemini', `Generating recipe for: ${state.recipeTitle}`);
@@ -103,7 +104,6 @@ export class GeneratorOrchestrator extends BaseOrchestrator {
       await this._geminiChat.init();
     } else {
       Logger.step('ChatGPT', `Generating recipe for: ${state.recipeTitle}`);
-      const isCustomGpt = settings.generatorGptUrl && !settings.generatorGptUrl.match(/^https?:\/\/(chat\.openai\.com|chatgpt\.com)\/?$/);
       await this.chatgpt.init(isCustomGpt ? settings.generatorGptUrl : null);
     }
 

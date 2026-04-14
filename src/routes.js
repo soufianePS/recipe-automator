@@ -935,6 +935,65 @@ export function setupRoutes(app, ctx) {
     }
   });
 
+  // DELETE /api/vg-recipe/:index — delete VG recipe: WP post+media, mark sheet pending, remove from stats
+  app.delete('/api/vg-recipe/:index', async (req, res) => {
+    try {
+      const { VGStats } = await import('./modules/verified-generator/vg-stats.js');
+      const index = parseInt(req.params.index);
+      const all = await VGStats.getAll();
+      if (isNaN(index) || index < 0 || index >= all.length) {
+        return res.status(400).json({ error: 'Invalid recipe index' });
+      }
+
+      const recipe = all[index];
+      const settings = await StateManager.getSettings();
+      const results = { wpDeleted: false, sheetReset: false, statsRemoved: false };
+
+      // 1. Delete WP post + media
+      if (recipe.draftUrl) {
+        const match = recipe.draftUrl.match(/post=(\d+)/);
+        if (match) {
+          const postId = parseInt(match[1]);
+          try {
+            const wpResult = await WordPressAPI.deletePostWithMedia(settings, postId);
+            results.wpDeleted = true;
+            results.mediaDeleted = wpResult.mediaDeleted;
+            Logger.info(`[VG Delete] WP post ${postId} deleted: ${wpResult.mediaDeleted} media removed`);
+          } catch (e) {
+            Logger.warn(`[VG Delete] WP delete failed: ${e.message}`);
+            results.wpError = e.message;
+          }
+        }
+      }
+
+      // 2. Mark sheet row back to "pending"
+      if (recipe.sheetRowIndex && recipe.sheetSettings) {
+        try {
+          const sheetSettings = {
+            ...settings,
+            sheetTabName: recipe.sheetSettings.sheetTabName,
+            statusColumn: recipe.sheetSettings.statusColumn
+          };
+          await SheetsAPI.markPending(sheetSettings, recipe.sheetRowIndex);
+          results.sheetReset = true;
+          Logger.info(`[VG Delete] Sheet row ${recipe.sheetRowIndex} reset to pending`);
+        } catch (e) {
+          Logger.warn(`[VG Delete] Sheet reset failed: ${e.message}`);
+          results.sheetError = e.message;
+        }
+      }
+
+      // 3. Remove from vg-stats
+      await VGStats.removeRecipe(index);
+      results.statsRemoved = true;
+      Logger.success(`[VG Delete] Recipe "${recipe.title}" fully deleted`);
+
+      res.json({ ok: true, title: recipe.title, ...results });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/update/check — check if updates are available
   app.get('/api/update/check', async (req, res) => {
     try {

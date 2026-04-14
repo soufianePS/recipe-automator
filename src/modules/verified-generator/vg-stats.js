@@ -18,10 +18,12 @@ let _current = null;
 export const VGStats = {
 
   /** Start tracking a new recipe */
-  startRecipe(title) {
+  startRecipe(title, sheetRowIndex = null, sheetSettings = null) {
     _current = {
       title,
       startedAt: Date.now(),
+      sheetRowIndex: sheetRowIndex || null,
+      sheetSettings: sheetSettings || null,
       chatgptStarted: null,
       chatgptFinished: null,
       chatgptDuration: null,
@@ -157,6 +159,15 @@ export const VGStats = {
       passRate: totalImages > 0 ? Math.round((totalPasses / (totalPasses + totalFails)) * 100) : 0,
       recent: all.slice(0, 20)
     };
+  },
+
+  /** Remove a recipe by index */
+  async removeRecipe(index) {
+    const all = await this.getAll();
+    if (index < 0 || index >= all.length) throw new Error('Invalid recipe index');
+    const removed = all.splice(index, 1)[0];
+    await writeFile(getStatsFile(), JSON.stringify(all, null, 2));
+    return removed;
   },
 
   /** Save a recipe entry */
