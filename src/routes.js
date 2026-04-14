@@ -14,6 +14,7 @@ import { ScraperOrchestrator } from './modules/scraper/orchestrator.js';
 import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orchestrator.js';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { VERIFIED_GENERATOR_DEFAULTS } from './modules/verified-generator/prompts-verified.js';
 
 /**
  * Register all route handlers on the Express app.
@@ -85,6 +86,10 @@ export function setupRoutes(app, ctx) {
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  app.get('/api/vg-default-prompts', (req, res) => {
+    res.json(VERIFIED_GENERATOR_DEFAULTS.prompts);
   });
 
   app.get('/api/settings/export', async (req, res) => {

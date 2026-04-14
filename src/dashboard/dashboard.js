@@ -1183,31 +1183,40 @@
 
     async function loadVGPrompts() {
       try {
+        // Fetch current defaults from server (prompts-verified.js) — always up to date
+        const defaultsResp = await fetch('/api/vg-default-prompts');
+        const serverDefaults = await defaultsResp.json();
+
         const resp = await fetch('/api/settings');
         const settings = await resp.json();
         const vgPrompts = settings?.verifiedGenerator?.prompts || {};
-        document.getElementById('vgPromptRecipeVisualPlan').value = vgPrompts.recipeVisualPlan || VG_DEFAULT_PROMPTS.recipeVisualPlan;
-        document.getElementById('vgPromptPinterest').value = vgPrompts.pinterest || VG_DEFAULT_PROMPTS.pinterest;
-        document.getElementById('vgPromptFlowImage').value = vgPrompts.flowImage || VG_DEFAULT_PROMPTS.flowImage;
-        document.getElementById('vgPromptFlowIngredients').value = vgPrompts.flowIngredients || VG_DEFAULT_PROMPTS.flowIngredients;
-        document.getElementById('vgPromptFlowHero').value = vgPrompts.flowHero || VG_DEFAULT_PROMPTS.flowHero;
-        document.getElementById('vgPromptVerifier').value = vgPrompts.verifier || VG_DEFAULT_PROMPTS.verifier;
-        document.getElementById('vgPromptVerifierIngredients').value = vgPrompts.verifierIngredients || VG_DEFAULT_PROMPTS.verifierIngredients;
-        document.getElementById('vgPromptVerifierHero').value = vgPrompts.verifierHero || VG_DEFAULT_PROMPTS.verifierHero;
-        document.getElementById('vgPromptVerifierPinterest').value = vgPrompts.verifierPinterest || VG_DEFAULT_PROMPTS.verifierPinterest;
-        document.getElementById('vgPromptCorrection').value = vgPrompts.correction || VG_DEFAULT_PROMPTS.correction;
+
+        // Use saved prompts if they exist, otherwise use server defaults (NOT hardcoded old ones)
+        const promptFields = {
+          vgPromptRecipeVisualPlan: vgPrompts.recipeVisualPlan || serverDefaults.recipeVisualPlan || '',
+          vgPromptPinterest: vgPrompts.pinterest || serverDefaults.pinterest || '',
+          vgPromptFlowImage: vgPrompts.flowImage || serverDefaults.flowImage || '',
+          vgPromptFlowIngredients: vgPrompts.flowIngredients || serverDefaults.flowIngredients || '',
+          vgPromptFlowHero: vgPrompts.flowHero || serverDefaults.flowHero || '',
+          vgPromptVerifier: vgPrompts.verifier || serverDefaults.verifier || '',
+          vgPromptVerifierIngredients: vgPrompts.verifierIngredients || serverDefaults.verifierIngredients || '',
+          vgPromptVerifierHero: vgPrompts.verifierHero || serverDefaults.verifierHero || '',
+          vgPromptVerifierPinterest: vgPrompts.verifierPinterest || serverDefaults.verifierPinterest || '',
+          vgPromptCorrection: vgPrompts.correction || serverDefaults.correction || '',
+        };
+        for (const [id, value] of Object.entries(promptFields)) {
+          document.getElementById(id).value = value;
+        }
       } catch (e) {
-        // Silently use defaults if settings fetch fails
-        document.getElementById('vgPromptRecipeVisualPlan').value = VG_DEFAULT_PROMPTS.recipeVisualPlan;
-        document.getElementById('vgPromptPinterest').value = VG_DEFAULT_PROMPTS.pinterest;
-        document.getElementById('vgPromptFlowImage').value = VG_DEFAULT_PROMPTS.flowImage;
-        document.getElementById('vgPromptFlowIngredients').value = VG_DEFAULT_PROMPTS.flowIngredients;
-        document.getElementById('vgPromptFlowHero').value = VG_DEFAULT_PROMPTS.flowHero;
-        document.getElementById('vgPromptVerifier').value = VG_DEFAULT_PROMPTS.verifier;
-        document.getElementById('vgPromptVerifierIngredients').value = VG_DEFAULT_PROMPTS.verifierIngredients;
-        document.getElementById('vgPromptVerifierHero').value = VG_DEFAULT_PROMPTS.verifierHero;
-        document.getElementById('vgPromptVerifierPinterest').value = VG_DEFAULT_PROMPTS.verifierPinterest;
-        document.getElementById('vgPromptCorrection').value = VG_DEFAULT_PROMPTS.correction;
+        // Fallback to hardcoded defaults if server fetch fails
+        const fields = ['vgPromptRecipeVisualPlan', 'vgPromptPinterest', 'vgPromptFlowImage',
+          'vgPromptFlowIngredients', 'vgPromptFlowHero', 'vgPromptVerifier',
+          'vgPromptVerifierIngredients', 'vgPromptVerifierHero', 'vgPromptVerifierPinterest', 'vgPromptCorrection'];
+        const keys = ['recipeVisualPlan', 'pinterest', 'flowImage', 'flowIngredients', 'flowHero',
+          'verifier', 'verifierIngredients', 'verifierHero', 'verifierPinterest', 'correction'];
+        fields.forEach((id, i) => {
+          document.getElementById(id).value = VG_DEFAULT_PROMPTS[keys[i]] || '';
+        });
       }
     }
 
