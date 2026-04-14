@@ -27,6 +27,16 @@ CRITICAL RULES:
 - The ingredients image must show ALL raw ingredients laid out separately
 - The hero image must show the final finished dish
 
+CAMERA ANGLE SELECTION PER STEP:
+- Choose the BEST angle for each step based on what needs to be visible:
+  * "top-down": flat lays and ingredients and mixing bowls and sheet pans
+  * "45-degree angle": most cooking steps and skillets and pots and plated dishes (shows depth and volume)
+  * "slight overhead (30-degree)": baking dishes and casseroles and layered items
+  * "eye-level": tall items like stacked pancakes and layered cakes and drinks
+- Do NOT use the same angle for every step. Mix angles for visual variety.
+- Ingredients image: "top-down" (flat lay works best)
+- Hero image: "45-degree angle" (magazine style)
+
 RECIPE JSON:
 {{recipe_json}}
 
@@ -46,7 +56,7 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
       "step_id": 1,
       "title": "short action title",
       "container": "choose based on recipe type",
-      "camera_angle": "{{default_camera_angle}}",
+      "camera_angle": "choose best angle for this step",
       "visible_ingredients": [
         { "name": "ingredient", "state": "visual state description" }
       ],
@@ -462,6 +472,17 @@ Real cooking uses multiple containers: bowl (mix) → skillet (cook) → plate (
 Each step MUST specify which container is used at that exact phase.
 Do NOT force the same container for ALL steps unless the recipe truly uses only one.
 
+CAMERA ANGLE SELECTION PER STEP:
+- Choose the BEST angle for each step based on what needs to be visible:
+  * "top-down": flat lays and mixing bowls and sheet pans (good for seeing all ingredients)
+  * "45-degree angle": most cooking steps and skillets and pots and plated dishes (shows depth and volume)
+  * "slight overhead (30-degree)": baking dishes and casseroles and layered items
+  * "eye-level": tall items like stacked pancakes and layered cakes and drinks in glasses
+- Do NOT use the same angle for every step. Mix angles for visual variety.
+- Ingredients image: always "top-down" (flat lay)
+- Hero image: always "45-degree angle" (magazine style)
+- Steps: vary between angles based on what shows the food best
+
 VISUAL PLAN RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps
 - Each step = ONE clear visual change from previous
@@ -572,13 +593,13 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
   "visual_plan": {
     "ingredients_image": {
       "layout": "describe arrangement",
-      "camera_angle": "{{default_camera_angle}}",
+      "camera_angle": "top-down",
       "items": [{"name": "", "state": "", "presentation": "in small glass bowl", "placement": "position"}],
       "forbidden": ["cooked food", "mixed items", "garnish", "utensils"]
     },
     "visual_steps": [{
       "step_id": 1, "title": "specific action title", "container": "chosen container",
-      "camera_angle": "{{default_camera_angle}}",
+      "camera_angle": "choose best angle for this step",
       "visible_ingredients": [{"name": "", "state": "", "placement": "where in container"}],
       "forbidden_ingredients": ["ingredients NOT yet added"],
       "food_state": "detailed appearance with natural imperfections",
@@ -604,22 +625,26 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
 // 12. PINTEREST PROMPT — dedicated to verified generator
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_VG_PINTEREST_PROMPT = `Recreate the EXACT same layout, style, colors, text placement, and design from the first uploaded reference image (the Pinterest template).
+export const DEFAULT_VG_PINTEREST_PROMPT = `Create a Pinterest food pin using THREE uploaded reference images:
 
-Use the food from BOTH reference images:
-- The second image is the HERO (full finished dish)
-- The third image is the SERVING STEP (close-up portion/slice showing inside detail)
-Combine BOTH food images into the pin layout — show the hero AND the serving/slice view together for maximum visual appeal.
+IMAGE ROLES:
+1. FIRST image = DESIGN TEMPLATE (layout reference only — copy the text placement and section arrangement and color scheme and font style but NOT the food photos in it)
+2. SECOND image = HERO PHOTO (the actual finished dish — use this REAL photo in the pin)
+3. THIRD image = SERVING/SLICE PHOTO (close-up portion showing inside detail — use this REAL photo in the pin)
+
+CRITICAL: The food in the SECOND and THIRD images are the REAL recipe photos. You MUST use BOTH of them in the final pin. Do NOT generate new food images. Do NOT use the food from the first template image. The template is ONLY for layout and style reference.
 
 Title text on the pin: "{{pin_title}}"
 Website: {{website}}
 
 RULES:
-- Match the template layout exactly
-- Use BOTH food photos (hero + serving step) not just one
-- If the template has two photo areas use hero in one and serving in the other
-- If the template has one photo area combine both views creatively
-- Text must be readable and well-placed
+- Copy the LAYOUT from the template: where text goes and where photos go and colors and fonts
+- Place the HERO photo (image 2) and SERVING photo (image 3) into the photo areas of the layout
+- If the template has two photo areas then put hero in one and serving in the other
+- If the template has one photo area then split it to show both hero and serving photos
+- The food must come from image 2 and image 3 ONLY — never from the template
+- Do NOT replace or modify the background of the food photos
+- Text must be readable and well-placed matching the template style
 - Vertical Pinterest format
 - Professional eye-catching design`;
 

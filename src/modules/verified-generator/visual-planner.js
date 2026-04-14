@@ -23,14 +23,13 @@ export function buildVisualPlanPrompt(recipeJSON, vgSettings) {
   const minSteps = vgSettings?.minVisualSteps || defaults.minVisualSteps;
   const maxSteps = vgSettings?.maxVisualSteps || defaults.maxVisualSteps;
   const container = vgSettings?.defaultContainer || '';
-  const cameraAngle = vgSettings?.defaultCameraAngle || defaults.defaultCameraAngle;
 
-  // Replace placeholders
+  // Replace placeholders (camera_angle is now chosen per step by the AI)
   let prompt = template
     .replace(/\{\{min_steps\}\}/g, String(minSteps))
     .replace(/\{\{max_steps\}\}/g, String(maxSteps))
     .replace(/\{\{default_container\}\}/g, container)
-    .replace(/\{\{default_camera_angle\}\}/g, cameraAngle)
+    .replace(/\{\{default_camera_angle\}\}/g, 'choose best angle for this step')
     .replace(/\{\{recipe_json\}\}/g, JSON.stringify(recipeJSON, null, 2));
 
   return prompt;
@@ -68,11 +67,17 @@ export function validateVisualPlan(rawPlan, vgSettings) {
   }
 
   // Validate each step has required fields
+  const validAngles = ['top-down', '45-degree angle', 'slight overhead (30-degree)', 'eye-level'];
   for (let i = 0; i < rawPlan.visual_steps.length; i++) {
     const step = rawPlan.visual_steps[i];
     if (!step.title) step.title = `Step ${i + 1}`;
     if (!step.container) step.container = vgSettings?.defaultContainer || 'white ceramic bowl';
-    if (!step.camera_angle) step.camera_angle = vgSettings?.defaultCameraAngle || defaults.defaultCameraAngle;
+    if (!step.camera_angle) {
+      // AI should always provide this — pick a sensible angle based on step position
+      const isLastStep = i === rawPlan.visual_steps.length - 1;
+      step.camera_angle = isLastStep ? '45-degree angle' : (i % 2 === 0 ? '45-degree angle' : 'top-down');
+      Logger.warn(`[VisualPlan] Step ${i + 1} missing camera_angle — auto-assigned: ${step.camera_angle}`);
+    }
     if (!Array.isArray(step.visible_ingredients)) step.visible_ingredients = [];
     if (!Array.isArray(step.forbidden_ingredients)) step.forbidden_ingredients = [];
     if (!step.food_state) step.food_state = '';

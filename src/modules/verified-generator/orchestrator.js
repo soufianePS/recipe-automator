@@ -402,7 +402,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       .replace(/\{\{categories\}\}/g, settings.wpCategories || 'Breakfast, Lunch, Dinner, Dessert')
       .replace(/\{\{min_steps\}\}/g, String(vgSettings.minVisualSteps || defaults.minVisualSteps))
       .replace(/\{\{max_steps\}\}/g, String(vgSettings.maxVisualSteps || defaults.maxVisualSteps))
-      .replace(/\{\{default_camera_angle\}\}/g, vgSettings.defaultCameraAngle || defaults.defaultCameraAngle)
+      .replace(/\{\{default_camera_angle\}\}/g, 'choose best angle for this step')
       .replace(/\{\{template_instructions\}\}/g, templateInstructions);
 
     const aiChat = useGemini ? this._geminiChat : this.chatgpt;
