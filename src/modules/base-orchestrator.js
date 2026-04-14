@@ -970,8 +970,13 @@ export class BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, state.recipeJSON?.hero_seo?.filename || FILENAMES.hero);
 
-    // Collect step image file paths as context
-    const contextPaths = this._collectStepContextPaths(state.steps, outputDir, state.steps.length);
+    // Only use last step image as context for hero
+    const contextPaths = [];
+    if (state.steps?.length > 0) {
+      const lastStep = state.steps[state.steps.length - 1];
+      const lastPath = join(outputDir, lastStep.seo?.filename || FILENAMES.stepDefault(state.steps.length - 1));
+      if (existsSync(lastPath)) contextPaths.push(lastPath);
+    }
 
     const ok = await this._generateWithRateLimitRetry(() =>
       this.flow.generate(prompt, heroTmpPath, contextPaths, settings.heroAspectRatio || 'LANDSCAPE', outputPath)
