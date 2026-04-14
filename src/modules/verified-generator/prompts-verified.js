@@ -237,7 +237,7 @@ OUTPUT JSON ONLY:
 // 7. VERIFIER PROMPT — HERO IMAGE
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_VERIFIER_HERO_PROMPT = `You are validating a recipe hero/final image.
+export const DEFAULT_VERIFIER_HERO_PROMPT = `You are validating a recipe hero/final image. This is the MOST IMPORTANT image — it must look stunning and appetizing.
 
 EXPECTED:
 - Finished dish: {{base_description}}
@@ -254,12 +254,23 @@ VALIDATION CHECKS:
 2. Does it match the expected description?
 3. Are there any forbidden elements?
 4. Is the presentation clean and professional?
+5. Does the food have rich vibrant colors (not washed-out or pale)?
+6. Does the food look generous and abundant (not flat or sparse)?
+7. Would this image make a reader hungry and want to cook this recipe?
+
+SEVERITY RULES:
+- HARD_FAIL: wrong food entirely, no food visible, forbidden elements, food looks raw/uncooked
+- HARD_FAIL: food is washed-out or extremely pale with no color contrast
+- HARD_FAIL: food looks flat or empty or unappetizing
+- SOFT_FAIL: food looks slightly pale but acceptable, minor presentation issue
+- PASS: food looks delicious and appetizing with good colors and texture
 
 OUTPUT JSON ONLY:
 {
   "status": "PASS",
   "detected_items": [],
   "forbidden_found": [],
+  "appetizing": true,
   "issues": []
 }`;
 

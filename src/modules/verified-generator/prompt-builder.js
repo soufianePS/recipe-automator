@@ -10,13 +10,39 @@ import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
 /**
  * Build a Flow prompt for a recipe step image.
  */
-export function buildStepPrompt(stepState, vgSettings) {
+export function buildStepPrompt(stepState, vgSettings, opts = {}) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
+  const isServingStep = opts.isLastStep || false;
+
+  const rules = [
+    "Show only the specified container — no extra bowls, plates, utensils, or props",
+    "No garnish unless listed in visible_ingredients",
+    "No ingredients outside visible_ingredients list",
+    "Show ONLY this step, not future steps",
+    "All food must be inside the container",
+    "No text, no watermark",
+    "KEEP the uploaded background exactly — same surface, same texture, same color",
+    "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
+    "Do NOT make food look perfectly arranged or symmetrical",
+    "Follow the position_change description for food placement and movement"
+  ];
+
+  // Serving/last step gets extra quality rules
+  if (isServingStep) {
+    rules.push(
+      "This is the SERVING step — the food MUST look delicious and appetizing",
+      "Rich vibrant colors — no washed-out or pale food",
+      "Show texture detail: glossy sauce and melted cheese and crispy edges and juicy interior",
+      "The portion must look generous and satisfying — not flat or empty",
+      "Professional food blog quality — the image a reader would save or share",
+      "Close-up angle showing the best features of the dish"
+    );
+  }
 
   const jsonPrompt = {
-    task: "Photorealistic food photography",
+    task: isServingStep ? "Photorealistic food photography — SERVING SHOT (must look delicious and appetizing)" : "Photorealistic food photography",
     step_id: stepState.step_id,
-    image_type: "recipe_step",
+    image_type: isServingStep ? "serving_step" : "recipe_step",
     container: stepState.container || defaults.defaultContainer,
     camera: stepState.camera_angle || defaults.defaultCameraAngle,
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
@@ -31,18 +57,7 @@ export function buildStepPrompt(stepState, vgSettings) {
     state: stepState.food_state || '',
     position_change: stepState.position || '',
     arrangement: stepState.arrangement || '',
-    rules: [
-      "Show only the specified container — no extra bowls, plates, utensils, or props",
-      "No garnish unless listed in visible_ingredients",
-      "No ingredients outside visible_ingredients list",
-      "Show ONLY this step, not future steps",
-      "All food must be inside the container",
-      "No text, no watermark",
-      "KEEP the uploaded background exactly — same surface, same texture, same color",
-      "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
-      "Do NOT make food look perfectly arranged or symmetrical",
-      "Follow the position_change description for food placement and movement"
-    ]
+    rules
   };
 
   // Remove empty arrangement to keep prompt clean
@@ -96,7 +111,7 @@ export function buildHeroPrompt(heroState, vgSettings) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
 
   const jsonPrompt = {
-    task: "Photorealistic food photography — hero shot",
+    task: "Photorealistic food photography — HERO SHOT (the BEST image of the entire recipe — must be stunning and appetizing)",
     image_type: "hero",
     description: heroState.base_description || "finished dish",
     container: heroState.container || defaults.defaultContainer,
@@ -107,8 +122,13 @@ export function buildHeroPrompt(heroState, vgSettings) {
     allowed_additions: heroState.allowed_additions || [],
     forbidden: heroState.forbidden || ["raw ingredients", "extra bowls", "utensils"],
     rules: [
-      "Show the FINISHED dish only — fully cooked, appetizing",
-      "Magazine-quality presentation and plating",
+      "Show the FINISHED dish only — fully cooked and appetizing",
+      "This is the HERO IMAGE — it must be the most beautiful and mouth-watering photo of the entire recipe",
+      "Rich vibrant colors — golden browns and deep sauces and fresh garnish. NO washed-out or pale food",
+      "Visible texture: crispy edges and glossy sauce and melted cheese and caramelized surfaces and steam",
+      "The dish must look generous and abundant — not flat or sparse or empty-looking",
+      "Magazine-cover quality: this image must make a reader instantly hungry and want to cook this recipe",
+      "Natural but beautiful — slight imperfections but overall stunning presentation",
       "Follow the arrangement description for garnish placement and sauce drizzle",
       "No raw ingredients visible",
       "No extra containers or utensils",

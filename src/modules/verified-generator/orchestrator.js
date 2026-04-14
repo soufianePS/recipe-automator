@@ -567,7 +567,8 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     Logger.step('Flow', `Step ${idx + 1}/${state.steps.length}: ${visualStep.title}`);
 
     // Build prompt from structured state
-    const prompt = buildStepPrompt(visualStep, vgSettings);
+    const isLastStep = idx === state.steps.length - 1;
+    const prompt = buildStepPrompt(visualStep, vgSettings, { isLastStep });
 
     // Background — prefixed to avoid collisions in same Flow project
     if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
