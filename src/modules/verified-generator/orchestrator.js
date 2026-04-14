@@ -633,7 +633,13 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const outputPath = join(outputDir, state.recipeJSON?.hero_seo?.filename || FILENAMES.hero);
 
     // Context: all verified step images
-    const contextPaths = this._collectStepContextPaths(state.steps, outputDir, state.steps.length);
+    // Only use last step image as context for hero (not all steps)
+    const contextPaths = [];
+    if (state.steps?.length > 0) {
+      const lastStep = state.steps[state.steps.length - 1];
+      const lastPath = join(outputDir, lastStep.seo?.filename || FILENAMES.stepDefault(state.steps.length - 1));
+      if (existsSync(lastPath)) contextPaths.push(lastPath);
+    }
 
     await this._generateAndVerify({
       prompt, backgroundPath: heroTmpPath, contextPaths,
