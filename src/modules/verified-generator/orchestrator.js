@@ -664,13 +664,27 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, state.recipeJSON?.hero_seo?.filename || FILENAMES.hero);
 
-    // Context: all verified step images
-    // Only use last step image as context for hero (not all steps)
+    // Context: only use last step image for hero
     const contextPaths = [];
     if (state.steps?.length > 0) {
-      const lastStep = state.steps[state.steps.length - 1];
-      const lastPath = join(outputDir, lastStep.seo?.filename || FILENAMES.stepDefault(state.steps.length - 1));
-      if (existsSync(lastPath)) contextPaths.push(lastPath);
+      const lastIdx = state.steps.length - 1;
+      const lastStep = state.steps[lastIdx];
+      const seoPath = join(outputDir, lastStep.seo?.filename || '');
+      const defaultPath = join(outputDir, FILENAMES.stepDefault(lastIdx));
+
+      if (lastStep.seo?.filename && existsSync(seoPath)) {
+        contextPaths.push(seoPath);
+      } else if (existsSync(defaultPath)) {
+        contextPaths.push(defaultPath);
+      } else {
+        // Scan backwards for the latest existing step image
+        for (let i = lastIdx - 1; i >= 0; i--) {
+          const sp = join(outputDir, state.steps[i].seo?.filename || '');
+          const dp = join(outputDir, FILENAMES.stepDefault(i));
+          if (state.steps[i].seo?.filename && existsSync(sp)) { contextPaths.push(sp); break; }
+          else if (existsSync(dp)) { contextPaths.push(dp); break; }
+        }
+      }
     }
 
     await this._generateAndVerify({
@@ -736,17 +750,45 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const templatePath = this._prepareFile(originalTemplatePath, `pin-${pendingIdx + 1}`);
     Logger.info(`Using template: ${basename(originalTemplatePath)} → ${basename(templatePath)}`);
 
-    // Context: hero + last step
+    // Context: hero + last step (serving image)
     const contextPaths = [];
     const outputDir = this._getOutputDir(state, settings);
     const heroFilename = state.recipeJSON?.hero_seo?.filename || FILENAMES.hero;
     const heroPath = join(outputDir, heroFilename);
     if (existsSync(heroPath)) contextPaths.push(heroPath);
 
+    // Find the LAST step image — try SEO filename first, then fallback to step-N.jpg
     if (state.steps?.length > 0) {
-      const lastStep = state.steps[state.steps.length - 1];
-      const lastStepPath = join(outputDir, lastStep.seo?.filename || FILENAMES.stepDefault(state.steps.length - 1));
-      if (existsSync(lastStepPath)) contextPaths.push(lastStepPath);
+      const lastIdx = state.steps.length - 1;
+      const lastStep = state.steps[lastIdx];
+      const seoPath = join(outputDir, lastStep.seo?.filename || '');
+      const defaultPath = join(outputDir, FILENAMES.stepDefault(lastIdx));
+
+      if (lastStep.seo?.filename && existsSync(seoPath)) {
+        contextPaths.push(seoPath);
+        Logger.info(`[Pinterest] Using last step context (SEO name): ${lastStep.seo.filename}`);
+      } else if (existsSync(defaultPath)) {
+        contextPaths.push(defaultPath);
+        Logger.info(`[Pinterest] Using last step context (default name): ${FILENAMES.stepDefault(lastIdx)}`);
+      } else {
+        // Scan backwards to find the latest step image that exists
+        for (let i = lastIdx - 1; i >= 0; i--) {
+          const stepSeoPath = join(outputDir, state.steps[i].seo?.filename || '');
+          const stepDefaultPath = join(outputDir, FILENAMES.stepDefault(i));
+          if (state.steps[i].seo?.filename && existsSync(stepSeoPath)) {
+            contextPaths.push(stepSeoPath);
+            Logger.warn(`[Pinterest] Last step image missing — using step ${i + 1} instead: ${state.steps[i].seo.filename}`);
+            break;
+          } else if (existsSync(stepDefaultPath)) {
+            contextPaths.push(stepDefaultPath);
+            Logger.warn(`[Pinterest] Last step image missing — using step ${i + 1} instead: ${FILENAMES.stepDefault(i)}`);
+            break;
+          }
+        }
+        if (contextPaths.length < 2) {
+          Logger.warn('[Pinterest] No step image found for context — using hero only');
+        }
+      }
     }
 
     // Build prompt from VG's own Pinterest template
