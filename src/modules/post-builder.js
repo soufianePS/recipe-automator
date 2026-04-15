@@ -280,7 +280,7 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
             const q = esc(item.question || item.q || '');
             const a = sanitizeAIText(item.answer || item.a || '');
             const id = `faq-question-${Date.now()}-${i}`;
-            return { id, jsonQuestion: q, jsonAnswer: a, question: `<strong>${q}</strong>`, answer: a };
+            return { id, jsonQuestion: q, jsonAnswer: a, question: q, answer: a };
           });
           const yoastJson = faqItems.map(f => ({
             id: f.id,
@@ -293,8 +293,8 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
           let faqInner = '';
           faqItems.forEach(f => {
             faqInner += `<div class="schema-faq-section" id="${f.id}">`;
-            faqInner += `<strong class="schema-faq-question faq-q-open">${f.question}</strong>`;
-            faqInner += `<p class="schema-faq-answer faq-q-open">${f.answer}</p>`;
+            faqInner += `<strong class="schema-faq-question">${f.question}</strong>`;
+            faqInner += `<p class="schema-faq-answer">${f.answer}</p>`;
             faqInner += `</div>`;
           });
           blocks.push(`<!-- wp:yoast/faq-block ${yoastAttrs} -->\n<div class="schema-faq wp-block-yoast-faq-block">${faqInner}</div>\n<!-- /wp:yoast/faq-block -->`);
