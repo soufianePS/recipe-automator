@@ -78,13 +78,21 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   const h2Block = t => `<!-- wp:heading -->\n<h2 class="wp-block-heading">${esc(t)}</h2>\n<!-- /wp:heading -->`;
   const h3Block = t => `<!-- wp:heading {"level":3} -->\n<h3 class="wp-block-heading">${esc(t)}</h3>\n<!-- /wp:heading -->`;
   const listBlock = (items, opts = {}) => {
+    const attrs = {};
+    const styles = {};
+    if (opts.fontSize) styles.typography = { fontSize: opts.fontSize };
+    if (opts.textColor) styles.color = { ...(styles.color || {}), text: opts.textColor };
+    if (opts.bgColor) styles.color = { ...(styles.color || {}), background: opts.bgColor };
+    if (Object.keys(styles).length) attrs.style = styles;
+    const jsonAttrs = Object.keys(attrs).length ? ' ' + JSON.stringify(attrs) : '';
     const cssRules = [
       opts.fontSize ? `font-size:${opts.fontSize}` : '',
       opts.textColor ? `color:${opts.textColor}` : '',
       opts.bgColor ? `background-color:${opts.bgColor};padding:12px` : ''
     ].filter(Boolean).join(';');
     const styleAttr = cssRules ? ` style="${cssRules}"` : '';
-    return `<!-- wp:list -->\n<ul${styleAttr}>${items.map(t => `<li>${t}</li>`).join('')}</ul>\n<!-- /wp:list -->`;
+    const listItems = items.map(t => `<!-- wp:list-item -->\n<li>${t}</li>\n<!-- /wp:list-item -->`).join('\n');
+    return `<!-- wp:list${jsonAttrs} -->\n<ul class="wp-block-list"${styleAttr}>\n${listItems}\n</ul>\n<!-- /wp:list -->`;
   };
 
   // Split intro into paragraphs — matches layout needs
@@ -266,12 +274,30 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
         break;
       }
       case 'faq': {
-        const faqOpts = { fontSize: block.fontSize, textColor: block.textColor, bgColor: block.bgColor, lineHeight: block.lineHeight };
         if (recipe?.faq?.length) {
-          recipe.faq.forEach(item => {
-            blocks.push(h3Block(item.question || item.q));
-            blocks.push(pBlock(sanitizeAIText(item.answer || item.a), faqOpts));
+          // Use Yoast FAQ block for proper schema markup and SEO
+          const faqItems = recipe.faq.map((item, i) => {
+            const q = esc(item.question || item.q || '');
+            const a = sanitizeAIText(item.answer || item.a || '');
+            const id = `faq-question-${Date.now()}-${i}`;
+            return { id, jsonQuestion: q, jsonAnswer: a, question: `<strong>${q}</strong>`, answer: a };
           });
+          const yoastJson = faqItems.map(f => ({
+            id: f.id,
+            question: [f.jsonQuestion],
+            answer: [f.jsonAnswer],
+            jsonQuestion: f.jsonQuestion,
+            jsonAnswer: f.jsonAnswer
+          }));
+          const yoastAttrs = JSON.stringify({ questions: yoastJson });
+          let faqInner = '';
+          faqItems.forEach(f => {
+            faqInner += `<div class="schema-faq-section" id="${f.id}">`;
+            faqInner += `<strong class="schema-faq-question faq-q-open">${f.question}</strong>`;
+            faqInner += `<p class="schema-faq-answer faq-q-open">${f.answer}</p>`;
+            faqInner += `</div>`;
+          });
+          blocks.push(`<!-- wp:yoast/faq-block ${yoastAttrs} -->\n<div class="schema-faq wp-block-yoast-faq-block">${faqInner}</div>\n<!-- /wp:yoast/faq-block -->`);
         }
         break;
       }
@@ -360,25 +386,27 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   // Replace recipe card placeholder with actual card block
   let html = blocks.map(b => b === '__RECIPE_CARD_PLACEHOLDER__' ? recipeCardBlock : b).filter(Boolean).join('\n\n');
 
-  // Recipe Schema JSON-LD (hidden — only for Google, not visible on page)
-  const schema = {
-    '@context': 'https://schema.org/', '@type': 'Recipe',
-    name: postTitle,
-    description: recipe?.recipe_card_description || recipe?.meta_description || intro,
-    image: state.heroImage?.wpImageUrl ? [state.heroImage.wpImageUrl] : [],
-    author: { '@type': 'Person', name: wpDisplayName },
-    prepTime: recipe?.prep_time || 'PT15M',
-    cookTime: recipe?.cook_time || 'PT30M',
-    totalTime: recipe?.total_time || 'PT45M',
-    recipeYield: String(recipe?.servings || '4'),
-    recipeCategory: recipe?.category || 'Main Course',
-    recipeIngredient: ingredients.map(i => typeof i === 'string' ? i : `${i.quantity} ${i.name}`),
-    recipeInstructions: state.steps.map(s => ({ '@type': 'HowToStep', name: s.title, text: s.description || s.title, ...(s.wpImageUrl ? { image: s.wpImageUrl } : {}) }))
-  };
-  if (recipe?.cuisine) schema.recipeCuisine = recipe.cuisine;
-  if (recipe?.focus_keyword) schema.keywords = recipe.focus_keyword;
-
-  html += `\n\n<!-- wp:html -->\n<script type="application/ld+json">\n${JSON.stringify(schema, null, 2)}\n</script>\n<!-- /wp:html -->`;
+  // Recipe Schema JSON-LD — only add if NO recipe card plugin handles schema
+  // WPRM and Tasty Recipes both output their own Recipe schema, so skip to avoid duplicates
+  if (!recipeCardId) {
+    const schema = {
+      '@context': 'https://schema.org/', '@type': 'Recipe',
+      name: postTitle,
+      description: recipe?.recipe_card_description || recipe?.meta_description || intro,
+      image: state.heroImage?.wpImageUrl ? [state.heroImage.wpImageUrl] : [],
+      author: { '@type': 'Person', name: wpDisplayName },
+      prepTime: recipe?.prep_time || 'PT15M',
+      cookTime: recipe?.cook_time || 'PT30M',
+      totalTime: recipe?.total_time || 'PT45M',
+      recipeYield: String(recipe?.servings || '4'),
+      recipeCategory: recipe?.category || 'Main Course',
+      recipeIngredient: ingredients.map(i => typeof i === 'string' ? i : `${i.quantity} ${i.name}`),
+      recipeInstructions: state.steps.map(s => ({ '@type': 'HowToStep', name: s.title, text: s.description || s.title, ...(s.wpImageUrl ? { image: s.wpImageUrl } : {}) }))
+    };
+    if (recipe?.cuisine) schema.recipeCuisine = recipe.cuisine;
+    if (recipe?.focus_keyword) schema.keywords = recipe.focus_keyword;
+    html += `\n\n<!-- wp:html -->\n<script type="application/ld+json">\n${JSON.stringify(schema, null, 2)}\n</script>\n<!-- /wp:html -->`;
+  }
 
   const post = await WordPressAPI.createDraftPost(
     settings, postTitle, html, state.heroImage?.wpImageId || 0,
