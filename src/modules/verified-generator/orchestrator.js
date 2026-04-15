@@ -613,7 +613,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     await StateManager.storeImageData(`step_${idx}`, imgBuf.toString('base64'));
 
     const steps = [...state.steps];
-    steps[idx] = { ...steps[idx], base64: true };
+    steps[idx] = { ...steps[idx], base64: true, savedFilename: basename(outputPath) };
     await StateManager.updateState({ steps, backgroundQueueIndex: bgIndex + 1 });
     Logger.success(`Step ${idx + 1} image generated (verified)`);
     await this._advanceStep();
@@ -667,24 +667,8 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // Context: only use last step image for hero
     const contextPaths = [];
     if (state.steps?.length > 0) {
-      const lastIdx = state.steps.length - 1;
-      const lastStep = state.steps[lastIdx];
-      const seoPath = join(outputDir, lastStep.seo?.filename || '');
-      const defaultPath = join(outputDir, FILENAMES.stepDefault(lastIdx));
-
-      if (lastStep.seo?.filename && existsSync(seoPath)) {
-        contextPaths.push(seoPath);
-      } else if (existsSync(defaultPath)) {
-        contextPaths.push(defaultPath);
-      } else {
-        // Scan backwards for the latest existing step image
-        for (let i = lastIdx - 1; i >= 0; i--) {
-          const sp = join(outputDir, state.steps[i].seo?.filename || '');
-          const dp = join(outputDir, FILENAMES.stepDefault(i));
-          if (state.steps[i].seo?.filename && existsSync(sp)) { contextPaths.push(sp); break; }
-          else if (existsSync(dp)) { contextPaths.push(dp); break; }
-        }
-      }
+      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
+      if (lastStepPath) contextPaths.push(lastStepPath);
     }
 
     await this._generateAndVerify({
@@ -757,37 +741,13 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const heroPath = join(outputDir, heroFilename);
     if (existsSync(heroPath)) contextPaths.push(heroPath);
 
-    // Find the LAST step image — try SEO filename first, then fallback to step-N.jpg
     if (state.steps?.length > 0) {
-      const lastIdx = state.steps.length - 1;
-      const lastStep = state.steps[lastIdx];
-      const seoPath = join(outputDir, lastStep.seo?.filename || '');
-      const defaultPath = join(outputDir, FILENAMES.stepDefault(lastIdx));
-
-      if (lastStep.seo?.filename && existsSync(seoPath)) {
-        contextPaths.push(seoPath);
-        Logger.info(`[Pinterest] Using last step context (SEO name): ${lastStep.seo.filename}`);
-      } else if (existsSync(defaultPath)) {
-        contextPaths.push(defaultPath);
-        Logger.info(`[Pinterest] Using last step context (default name): ${FILENAMES.stepDefault(lastIdx)}`);
+      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
+      if (lastStepPath) {
+        contextPaths.push(lastStepPath);
+        Logger.info(`[Pinterest] Using last step context: ${basename(lastStepPath)}`);
       } else {
-        // Scan backwards to find the latest step image that exists
-        for (let i = lastIdx - 1; i >= 0; i--) {
-          const stepSeoPath = join(outputDir, state.steps[i].seo?.filename || '');
-          const stepDefaultPath = join(outputDir, FILENAMES.stepDefault(i));
-          if (state.steps[i].seo?.filename && existsSync(stepSeoPath)) {
-            contextPaths.push(stepSeoPath);
-            Logger.warn(`[Pinterest] Last step image missing — using step ${i + 1} instead: ${state.steps[i].seo.filename}`);
-            break;
-          } else if (existsSync(stepDefaultPath)) {
-            contextPaths.push(stepDefaultPath);
-            Logger.warn(`[Pinterest] Last step image missing — using step ${i + 1} instead: ${FILENAMES.stepDefault(i)}`);
-            break;
-          }
-        }
-        if (contextPaths.length < 2) {
-          Logger.warn('[Pinterest] No step image found for context — using hero only');
-        }
+        Logger.warn('[Pinterest] No step image found for context — using hero only');
       }
     }
 
@@ -823,5 +783,35 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     updatedPins[pendingIdx] = { ...updatedPins[pendingIdx], base64: true };
     await StateManager.updateState({ pinterestPins: updatedPins });
     Logger.success(`Pinterest pin ${pendingIdx + 1} image generated (verified)`);
+  }
+
+  /**
+   * Find a step image on disk — tries savedFilename (guaranteed), then SEO name, then step-N.jpg.
+   * If the target step isn't found, scans backwards to find the closest existing step.
+   * @returns {string|null} absolute path to the image, or null if nothing found
+   */
+  _findStepImage(steps, targetIdx, outputDir) {
+    for (let i = targetIdx; i >= 0; i--) {
+      const step = steps[i];
+      // 1. savedFilename — the actual filename written to disk (most reliable)
+      if (step.savedFilename) {
+        const p = join(outputDir, step.savedFilename);
+        if (existsSync(p)) return p;
+      }
+      // 2. SEO filename from ChatGPT
+      if (step.seo?.filename) {
+        const p = join(outputDir, step.seo.filename);
+        if (existsSync(p)) return p;
+      }
+      // 3. Default step-N.jpg
+      const p = join(outputDir, FILENAMES.stepDefault(i));
+      if (existsSync(p)) return p;
+
+      // Only scan backwards if target step wasn't found
+      if (i === targetIdx) {
+        Logger.warn(`[Context] Step ${i + 1} image not found — scanning backwards`);
+      }
+    }
+    return null;
   }
 }
