@@ -24,18 +24,23 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     "KEEP the uploaded background exactly — same surface, same texture, same color",
     "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
     "Do NOT make food look perfectly arranged or symmetrical",
-    "Follow the position_change description for food placement and movement"
+    "Follow the position_change description for food placement and movement",
+    // IMAGE QUALITY RULES — apply to ALL steps
+    "WARM COLOR TONES — food must have warm inviting colors. Golden-brown for cooked items. Rich deep colors for sauces. Vibrant greens for vegetables. NO grey or washed-out food",
+    "SHARP FOCUS — the food must be in crisp sharp focus with visible texture detail. You should see grain in rice and fibers in meat and bubbles in sauce and flakes in pastry",
+    "DEPTH AND DIMENSION — food must look 3D with volume. Not flat. Sauce should glisten. Cheese should stretch or melt unevenly. Meat should have visible sear marks",
+    "MOISTURE AND FRESHNESS — food must look fresh and moist. Vegetables look crisp. Sauces look glossy. Nothing looks dried out or stale"
   ];
 
   // Serving/last step gets extra quality rules
   if (isServingStep) {
     rules.push(
-      "This is the SERVING step — the food MUST look delicious and appetizing",
-      "Rich vibrant colors — no washed-out or pale food",
+      "This is the SERVING step — the food MUST look absolutely delicious and appetizing",
       "Show texture detail: glossy sauce and melted cheese and crispy edges and juicy interior",
       "The portion must look generous and satisfying — not flat or empty",
       "Professional food blog quality — the image a reader would save or share",
-      "Close-up angle showing the best features of the dish"
+      "Close-up angle showing the best features of the dish",
+      "This image must make someone immediately hungry when they see it"
     );
   }
 
@@ -124,11 +129,12 @@ export function buildHeroPrompt(heroState, vgSettings) {
     rules: [
       "Show the FINISHED dish only — fully cooked and appetizing",
       "This is the HERO IMAGE — it must be the most beautiful and mouth-watering photo of the entire recipe",
-      "Rich vibrant colors — golden browns and deep sauces and fresh garnish. NO washed-out or pale food",
-      "Visible texture: crispy edges and glossy sauce and melted cheese and caramelized surfaces and steam",
-      "The dish must look generous and abundant — not flat or sparse or empty-looking",
-      "Magazine-cover quality: this image must make a reader instantly hungry and want to cook this recipe",
-      "Natural but beautiful — slight imperfections but overall stunning presentation",
+      "WARM RICH COLORS — golden-brown seared surfaces and deep rich sauces and bright fresh herbs. Absolutely NO grey or washed-out or pale food",
+      "VISIBLE TEXTURE in sharp focus — crispy edges and glossy sauce and melted cheese and caramelized surfaces and visible grain and fiber",
+      "DEPTH AND VOLUME — food must look 3D and abundant. Sauce pooling naturally. Toppings piled generously. Nothing flat or sparse",
+      "MOISTURE — sauce must glisten. Meat must look juicy. Vegetables must look fresh and crisp. Nothing dry or stale",
+      "Magazine-cover quality: this image alone must make someone want to cook this recipe",
+      "Natural but beautiful — slight imperfections but overall stunning and appetizing",
       "Follow the arrangement description for garnish placement and sauce drizzle",
       "No raw ingredients visible",
       "No extra containers or utensils",

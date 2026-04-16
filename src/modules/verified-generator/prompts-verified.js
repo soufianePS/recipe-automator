@@ -155,7 +155,7 @@ STRICT RULES:
 // 5. VERIFIER PROMPT TEMPLATE — Gemini vision check
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_VERIFIER_PROMPT = `You are validating a recipe step image for accuracy.
+export const DEFAULT_VERIFIER_PROMPT = `You are validating a recipe step image for ACCURACY and QUALITY.
 
 EXPECTED STEP:
 - Container: {{container}}
@@ -171,7 +171,7 @@ Expected food state: {{food_state}}
 
 IMPORTANT: The background surface may contain elements like rings, cables, cloth edges, table texture, etc. These are part of the BACKGROUND — ignore them completely. Only check the FOOD and CONTAINER, not background surface elements.
 
-VALIDATION CHECKS:
+ACCURACY CHECKS:
 1. List every visible food element in the image
 2. Check if the main container matches the expected type ({{container}})
 3. Check if any FORBIDDEN ingredient appears
@@ -179,10 +179,20 @@ VALIDATION CHECKS:
 5. Check if previously mixed ingredients reappear separately
 6. Check if the food state matches the expected description
 
+IMAGE QUALITY CHECKS:
+7. Does the food have warm rich colors? (golden-brown, deep sauces, vibrant vegetables — NOT grey, pale, or washed-out)
+8. Is the food in sharp focus with visible texture? (you should see grain, fibers, bubbles, flakes)
+9. Does the food look 3D with depth and volume? (NOT flat or compressed)
+10. Does the food look moist and fresh? (NOT dried out or stale)
+11. Would this image look professional on a food blog?
+
 SEVERITY RULES:
 - HARD_FAIL: forbidden ingredient found, future ingredient visible, food completely wrong state, totally wrong container type
+- HARD_FAIL: food is grey or completely washed-out with no color
+- HARD_FAIL: image is blurry or food is unrecognizable
 - SOFT_FAIL: framing slightly off, minor texture difference, container slightly different style but same category
-- PASS: everything matches expected state
+- SOFT_FAIL: food is slightly pale but still recognizable
+- PASS: food matches expected state AND looks appetizing with good colors and texture
 
 OUTPUT JSON ONLY (no markdown, no explanation):
 {
@@ -191,8 +201,11 @@ OUTPUT JSON ONLY (no markdown, no explanation):
   "forbidden_found": [],
   "container_count": 1,
   "state_match": true,
+  "quality_score": 8,
   "issues": []
-}`;
+}
+
+quality_score: 1-10 rating of image quality (colors, texture, appeal). Below 5 = SOFT_FAIL.`;
 
 
 // ─────────────────────────────────────────────────────────────
@@ -283,25 +296,27 @@ OUTPUT JSON ONLY:
 // 9. SIMILARITY CHECK PROMPT — compare step N vs step N-1
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_SIMILARITY_CHECK_PROMPT = `You are comparing two recipe step images to check if they look too similar.
+export const DEFAULT_SIMILARITY_CHECK_PROMPT = `You are comparing two recipe step images. Each step MUST look visually distinct to a reader scrolling the blog.
 
 IMAGE 1: Previous step (step {{prev_step}})
 IMAGE 2: Current step (step {{current_step}})
 
 The current step should show: {{expected_change}}
 
-COMPARE:
-1. Is the food color noticeably different?
-2. Is the sauce/liquid amount or consistency visibly different?
-3. Are ingredients arranged differently or have new items appeared?
-4. Is there a clear visual transformation (raw→cooked, dry→sauced, etc.)?
-5. Would a reader scrolling see TWO distinct images or feel like the same photo?
+COMPARE THESE SPECIFIC ELEMENTS:
+1. FOOD COLOR — is the color noticeably different? (raw white → golden brown? pale → sauced?)
+2. FOOD TEXTURE — has the texture visibly changed? (chunky → smooth? dry → glossy? raw → cooked?)
+3. FOOD POSITION — has the food moved, flipped, shifted, or transferred to a different container?
+4. NEW INGREDIENTS — are there new visible ingredients that weren't in the previous step?
+5. CONTAINER — did the container change? (bowl → skillet? pan → plate?)
+6. VOLUME/AMOUNT — did the food visibly reduce, expand, or change shape?
+7. READER TEST — would a food blog reader scrolling quickly see TWO clearly different photos or think it is the same photo shown twice?
 
-SCORING:
-- 0-40: Very different images (clearly distinct steps)
-- 41-60: Moderately different (acceptable)
-- 61-80: Somewhat similar (borderline)
-- 81-100: Too similar (looks like the same photo)
+STRICT SCORING (be harsh — blog readers notice when steps look the same):
+- 0-30: Very different images (different container, major color change, clear transformation)
+- 31-55: Moderately different (same container but clear food state change)
+- 56-75: Somewhat similar (same container, slight change, reader might notice)
+- 76-100: Too similar (looks like the same photo with minor tweaks)
 
 OUTPUT JSON ONLY:
 {
@@ -311,7 +326,7 @@ OUTPUT JSON ONLY:
   "verdict": "DISTINCT"
 }
 
-verdict must be: "DISTINCT" (0-60), "BORDERLINE" (61-80), or "TOO_SIMILAR" (81-100)`;
+verdict must be: "DISTINCT" (0-55), "BORDERLINE" (56-75), or "TOO_SIMILAR" (76-100)`;
 
 
 // ─────────────────────────────────────────────────────────────
@@ -668,10 +683,10 @@ export const VERIFIED_GENERATOR_DEFAULTS = {
   minVisualSteps: 4,
   maxVisualSteps: 8,
   maxVerificationRetries: 3,
-  softFailAction: 'accept',       // 'accept' or 'retry'
+  softFailAction: 'retry',        // 'accept' or 'retry' — retry soft fails for better quality
   defaultContainer: 'white ceramic bowl',
   defaultCameraAngle: 'top-down',
-  defaultLighting: 'natural soft light',
+  defaultLighting: 'bright natural window light from the left with warm tones and soft shadows',
   prompts: {
     visualPlan: DEFAULT_VISUAL_PLAN_PROMPT,
     flowImage: DEFAULT_FLOW_IMAGE_PROMPT,
