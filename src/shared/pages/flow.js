@@ -395,22 +395,25 @@ export class FlowPage {
     // then attach via picker like everything else.
     for (const ctxPath of contextFilePaths) {
       if (!existsSync(ctxPath)) continue;
-      const pickerName = this._generatedNames.get(ctxPath);
+      const ctxName = basename(ctxPath);
+      // Try picker by previously-stored name first, then by basename (for previously-uploaded context)
+      const pickerName = this._generatedNames.get(ctxPath) || ctxName;
       let ctxAttached = false;
-      if (pickerName) {
-        Logger.info(`[Flow] Attaching context from picker: ${pickerName}`);
-        ctxAttached = await this._attachFromPicker(pickerName);
-      }
+      Logger.info(`[Flow] Attaching context from picker: ${pickerName}`);
+      ctxAttached = await this._attachFromPicker(pickerName);
       if (!ctxAttached) {
         // Upload to canvas, then attach via picker
-        const ctxName = basename(ctxPath);
         Logger.info(`[Flow] Context not in picker, uploading to canvas: ${ctxName}`);
         await this._uploadBgToCanvas(ctxPath);
         ctxAttached = await this._attachFromPicker(ctxName);
+        if (ctxAttached) {
+          // Remember that this path is now on canvas under this basename
+          this._generatedNames.set(ctxPath, ctxName);
+        }
       }
       if (!ctxAttached) {
         // Last resort: paste via clipboard
-        Logger.warn(`[Flow] Picker failed for context, pasting via clipboard: ${basename(ctxPath)}`);
+        Logger.warn(`[Flow] Picker failed for context, pasting via clipboard: ${ctxName}`);
         await this._uploadFile(ctxPath);
       }
     }
@@ -623,15 +626,15 @@ export class FlowPage {
         // 3f. Attach context images
         for (const ctxPath of contextFilePaths) {
           if (!existsSync(ctxPath)) continue;
-          const pickerName = this._generatedNames.get(ctxPath);
-          if (pickerName) {
-            Logger.info(`[Flow] Attaching context: ${pickerName}`);
-            await this._attachFromPicker(pickerName);
-          } else {
-            const ctxName = basename(ctxPath);
+          const ctxName = basename(ctxPath);
+          const pickerName = this._generatedNames.get(ctxPath) || ctxName;
+          Logger.info(`[Flow] Attaching context: ${pickerName}`);
+          let ok = await this._attachFromPicker(pickerName);
+          if (!ok) {
             Logger.info(`[Flow] Context not in session, uploading: ${ctxName}`);
             await this._uploadBgToCanvas(ctxPath);
-            await this._attachFromPicker(ctxName);
+            ok = await this._attachFromPicker(ctxName);
+            if (ok) this._generatedNames.set(ctxPath, ctxName);
           }
         }
 

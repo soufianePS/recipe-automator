@@ -92,6 +92,82 @@ export function setupRoutes(app, ctx) {
     res.json(VERIFIED_GENERATOR_DEFAULTS.prompts);
   });
 
+  // Standalone Pinterest pin test — skips recipe generation, uses provided image paths
+  // Generates 3 pins with 3 different templates, all in ONE Flow project (reusing hero + result)
+  app.post('/api/test/pin-generation', async (req, res) => {
+    try {
+      const { heroPath, resultPath, templatePaths, pinTitle } = req.body || {};
+      if (!heroPath || !resultPath || !Array.isArray(templatePaths) || templatePaths.length === 0) {
+        return res.status(400).json({ error: 'heroPath, resultPath, templatePaths (array) required' });
+      }
+      const { existsSync } = await import('fs');
+      if (!existsSync(heroPath)) return res.status(400).json({ error: `hero not found: ${heroPath}` });
+      if (!existsSync(resultPath)) return res.status(400).json({ error: `result not found: ${resultPath}` });
+      for (const t of templatePaths) {
+        if (!existsSync(t)) return res.status(400).json({ error: `template not found: ${t}` });
+      }
+
+      const settings = await StateManager.getSettings();
+      const { chromium } = await import('playwright');
+      const { FlowPage } = await import('./shared/pages/flow.js');
+      const { FlowAccountManager } = await import('./shared/utils/flow-account-manager.js');
+      const account = await FlowAccountManager.getActiveAccount();
+      const profileDir = FlowAccountManager.getProfileDir(account) || 'C:/Users/xassi/AppData/Local/soufiane flow';
+      Logger.info(`[PinTest] Using account: ${account?.name || 'default'} at ${profileDir}`);
+
+      Logger.info('[PinTest] Launching browser...');
+      const context = await chromium.launchPersistentContext(profileDir, { headless: false, viewport: { width: 1366, height: 768 } });
+      const browser = context.browser();
+      const flow = new FlowPage(browser, context);
+
+      const websiteUrl = settings.wpUrl || 'https://example.com';
+      const websiteDomain = websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+      const title = pinTitle || 'Test Pin';
+      const pinterestTemplate = settings.verifiedGenerator?.prompts?.pinterest || VERIFIED_GENERATOR_DEFAULTS.prompts.pinterest;
+      const prompt = pinterestTemplate
+        .replace(/\{\{pin_title\}\}/g, title)
+        .replace(/\{\{pin_description\}\}/g, '')
+        .replace(/\{\{recipe_title\}\}/g, title)
+        .replace(/\{\{website\}\}/g, websiteDomain);
+
+      const { join } = await import('path');
+      const results = [];
+
+      // Generate each pin in the SAME Flow project — hero + result stay on canvas, only template changes
+      for (let i = 0; i < templatePaths.length; i++) {
+        const templatePath = templatePaths[i];
+        const outputPath = join(process.cwd(), 'data', `test-pin-${i + 1}.jpg`);
+        Logger.info(`[PinTest] Pin ${i + 1}/${templatePaths.length} — template: ${templatePath}`);
+
+        const ok = await flow.generate(
+          prompt,
+          templatePath,             // background = new template per pin
+          [heroPath, resultPath],   // context = hero + result (stays on canvas from first pin)
+          'PORTRAIT',
+          outputPath,
+          { skipSimilarityCheck: true }
+        );
+
+        results.push({ pin: i + 1, ok, outputPath, template: templatePath });
+        if (!ok) Logger.warn(`[PinTest] Pin ${i + 1} failed`);
+      }
+
+      try { await flow.closeSession(); } catch {}
+      await context.close().catch(() => {});
+
+      const successCount = results.filter(r => r.ok).length;
+      res.json({
+        ok: successCount > 0,
+        successCount,
+        totalPins: templatePaths.length,
+        results
+      });
+    } catch (e) {
+      Logger.error('[PinTest] Error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.get('/api/settings/export', async (req, res) => {
     try {
       const settings = await StateManager.getSettings();
