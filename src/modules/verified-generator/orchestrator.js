@@ -711,7 +711,15 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const pin = pins[pendingIdx];
     Logger.step('Flow', `Pinterest pin ${pendingIdx + 1}/${pins.length}: ${pin.title}`);
 
-    // Stay in same project — network sniffer handles image capture regardless of canvas clutter
+    // CLEAN SLATE FOR PINS: close recipe project, open fresh Pinterest project on first pin.
+    // This prevents the picker from showing step images and only keeps hero + last step as refs.
+    if (pendingIdx === 0 && !state.pinterestProjectReady) {
+      Logger.info('[Pinterest] Closing recipe project, opening fresh Pinterest project...');
+      try { await this.flow.closeSession(); } catch {}
+      // Clear prepared files cache so bg-*, hero-bg etc. get re-copied with fresh picker names
+      this._preparedFiles = new Map();
+      await StateManager.updateState({ pinterestProjectReady: true });
+    }
 
     // Pick template — prefixed to avoid collisions with step backgrounds
     const isScraper = settings.mode === 'scrape';
