@@ -12,13 +12,21 @@ import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
 /**
  * Verify a generated step image against its expected visual state.
  *
+ * When opts.previousImagePath is provided, also performs cross-step consistency
+ * checks (e.g. did chickpea color flip-flop, did food disappear, etc.) by sending
+ * BOTH images to Gemini in a single call.
+ *
  * @param {string} apiKey — Gemini API key
  * @param {string} imagePath — path to the generated image
  * @param {object} stepState — the visual step state from the plan
  * @param {object} vgSettings — verifiedGenerator settings
+ * @param {object} [opts]
+ * @param {string} [opts.previousImagePath] — previous step image path for cross-check
+ * @param {string} [opts.recipeDescription] — the actual blog description that will appear on WP
+ * @param {string} [opts.previousStepTitle] — title of previous step (for context)
  * @returns {object} { status: 'PASS'|'HARD_FAIL'|'SOFT_FAIL', ... }
  */
-export async function verifyStepImage(apiKey, imagePath, stepState, vgSettings) {
+export async function verifyStepImage(apiKey, imagePath, stepState, vgSettings, opts = {}) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
   const template = vgSettings?.prompts?.verifier || defaults.prompts.verifier;
 
@@ -32,14 +40,43 @@ export async function verifyStepImage(apiKey, imagePath, stepState, vgSettings) 
     .map(ing => `- ${ing}`)
     .join('\n');
 
-  const prompt = template
+  let prompt = template
     .replace(/\{\{container\}\}/g, stepState.container || defaults.defaultContainer)
     .replace(/\{\{camera_angle\}\}/g, stepState.camera_angle || defaults.defaultCameraAngle)
     .replace(/\{\{visible_ingredients_list\}\}/g, visibleList || '- (none specified)')
     .replace(/\{\{forbidden_ingredients_list\}\}/g, forbiddenList || '- (none specified)')
     .replace(/\{\{food_state\}\}/g, stepState.food_state || '');
 
-  const result = await geminiVision(apiKey, imagePath, prompt);
+  const { existsSync } = await import('fs');
+  const hasPrev = opts.previousImagePath && existsSync(opts.previousImagePath);
+  const hasDesc = opts.recipeDescription && opts.recipeDescription.trim().length > 0;
+
+  // If we have a previous image OR description, append cross-check section to prompt
+  if (hasPrev || hasDesc) {
+    let extra = '\n\n──────────────────────────────────────────\nCROSS-STEP CONTEXT CHECK (also verify these):\n';
+    if (hasPrev) {
+      extra += '\nIMAGE 1 = previous step (titled "' + (opts.previousStepTitle || 'previous') + '")';
+      extra += '\nIMAGE 2 = current step (the one being verified)\n';
+      extra += '\nCROSS-STEP CHECKS:\n';
+      extra += '- Are the SAME ingredients consistent in color, size, and style between IMAGE 1 and IMAGE 2? (e.g. if chickpeas were golden in IMAGE 1, they should still look golden in IMAGE 2 — not pale)\n';
+      extra += '- Do the visible ingredient amounts make sense (food should not magically appear/disappear)?\n';
+      extra += '- Does IMAGE 2 show a CLEAR visual progression from IMAGE 1?\n';
+      extra += '- HARD_FAIL if same ingredient drastically changed color, texture, or quantity for no recipe reason\n';
+    }
+    if (hasDesc) {
+      extra += '\nBLOG DESCRIPTION (this is what the reader will read alongside the image):\n"' + opts.recipeDescription.replace(/\s+/g, ' ').trim().slice(0, 800) + '"\n';
+      extra += '\nDESCRIPTION MATCH CHECKS:\n';
+      extra += '- Does the image visually match what the description says?\n';
+      extra += '- If the description mentions specific things (e.g. "scattered pumpkin seeds", "creamy white folds"), are they actually visible in the image?\n';
+      extra += '- HARD_FAIL if the image shows something completely different from what the description claims\n';
+    }
+    prompt += extra;
+  }
+
+  // Single image OR multi-image call depending on whether we have a previous image
+  const result = hasPrev
+    ? await geminiVisionMultiImage(apiKey, [opts.previousImagePath, imagePath], prompt)
+    : await geminiVision(apiKey, imagePath, prompt);
 
   if (!result) {
     Logger.warn('[Verifier] Gemini returned no result — treating as PASS (safety valve)');
@@ -50,7 +87,8 @@ export async function verifyStepImage(apiKey, imagePath, stepState, vgSettings) 
   result.status = (result.status || 'PASS').toUpperCase();
   if (result.status === 'FAIL') result.status = 'HARD_FAIL';
 
-  Logger.info(`[Verifier] Step "${stepState.title}": ${result.status}${result.issues?.length ? ' — ' + result.issues.join('; ') : ''}`);
+  const ctxTag = hasPrev && hasDesc ? ' [+prev+desc]' : hasPrev ? ' [+prev]' : hasDesc ? ' [+desc]' : '';
+  Logger.info(`[Verifier]${ctxTag} Step "${stepState.title}": ${result.status}${result.issues?.length ? ' — ' + result.issues.join('; ') : ''}`);
 
   return result;
 }

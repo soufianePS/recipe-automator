@@ -607,20 +607,26 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
     }
 
-    // Similarity check: compare with previous step image
-    let prevImagePath = null;
-    if (idx > 0) {
-      const prevPath = join(outputDir, state.steps[idx - 1]?.seo?.filename || FILENAMES.stepDefault(idx - 1));
-      if (existsSync(prevPath)) prevImagePath = prevPath;
-    }
+    // Similarity check + cross-step verifier: previous step image (saved-name aware)
+    const prevImagePath = idx > 0 ? this._findStepImage(state.steps, idx - 1, outputDir) : null;
+    const prevStepTitle = idx > 0 ? (state.steps[idx - 1]?.title || `Step ${idx}`) : '';
+
+    // Description that the reader will actually see in the blog post (helps Gemini cross-check)
+    const recipeDescription = step?.description || visualStep.food_state || '';
 
     await this._generateAndVerify({
       prompt, backgroundPath, contextPaths,
       aspectRatio: settings.stepAspectRatio || 'PORTRAIT',
       outputPath, label: `Step ${idx + 1}`, imageType: 'step', stepNumber: idx + 1, vgSettings,
-      verifyFn: async (path) => verifyStepImage(await this._getGeminiApiKey(), path, visualStep, vgSettings),
+      verifyFn: async (path) => verifyStepImage(
+        await this._getGeminiApiKey(),
+        path,
+        visualStep,
+        vgSettings,
+        { previousImagePath: prevImagePath, recipeDescription, previousStepTitle: prevStepTitle }
+      ),
       correctionFn: (result) => buildCorrectionPrompt(visualStep, result, vgSettings),
-      // Similarity detection
+      // Similarity detection (still runs separately for the overall similarity score)
       prevImagePath,
       prevStepNum: idx,
       currentStepNum: idx + 1,
