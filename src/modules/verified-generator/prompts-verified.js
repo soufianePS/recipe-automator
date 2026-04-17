@@ -403,6 +403,15 @@ INTRO RULES:
 - Each paragraph must feel natural and human with smooth transitions.
 - No AI cliches (no "delve" "elevate" "mouthwatering" "culinary journey").
 
+INTERNAL LINKING RULE (CRITICAL for SEO):
+- You will receive a list of EXISTING recipes from this blog in the {{related_recipes}} variable.
+- Pick 2 or 3 recipes that are topically related to "{{topic}}" and link to them naturally.
+- Place ONE link in the intro (2nd or 3rd paragraph) and ONE or TWO in the conclusion.
+- Use the EXACT markdown syntax: [Recipe Title](https://full-url) with the exact title and url from the list.
+- Write natural sentences around the links like "If you love this recipe, try our [Easy Overnight Oats](url) for another quick breakfast."
+- Do NOT invent recipes — only use what is provided in {{related_recipes}}.
+- If the {{related_recipes}} list is empty, skip linking and write normally.
+
 INGREDIENT RULES:
 - List all ingredients with name and quantity and description (short functional role).
 - Add a period at the end of each ingredient description.

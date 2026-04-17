@@ -13,6 +13,7 @@
 import { BaseOrchestrator, sanitizeRecipeJSON, FILENAMES } from '../base-orchestrator.js';
 import { StateManager, STATES } from '../../shared/utils/state-manager.js';
 import { SheetsAPI } from '../../shared/utils/sheets-api.js';
+import { WordPressAPI } from '../../shared/utils/wordpress-api.js';
 import { Logger } from '../../shared/utils/logger.js';
 import { FlowAccountManager } from '../../shared/utils/flow-account-manager.js';
 import { GeminiChatPage } from '../../shared/pages/gemini-chat.js';
@@ -396,6 +397,23 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       await StateManager.saveSettings(settings);
     }
 
+    // Fetch related recipes from WordPress for internal linking (best-effort; failures are non-fatal)
+    let relatedRecipesBlock = 'No related recipes available — skip internal linking.';
+    try {
+      const firstCategory = (settings.wpCategories || 'Breakfast, Lunch, Dinner, Dessert').split(',')[0].trim();
+      const relatedPosts = await WordPressAPI.listPostsByCategory(settings, firstCategory, 8);
+      if (relatedPosts.length > 0) {
+        relatedRecipesBlock = relatedPosts
+          .map((p, i) => `${i + 1}. "${p.title}" — ${p.url}${p.excerpt ? ` (${p.excerpt})` : ''}`)
+          .join('\n');
+        Logger.info(`[VerifiedGen] Fetched ${relatedPosts.length} related recipes for internal linking`);
+      } else {
+        Logger.info('[VerifiedGen] No related recipes found on site — skipping internal linking');
+      }
+    } catch (e) {
+      Logger.warn(`[VerifiedGen] Failed to fetch related recipes: ${e.message}`);
+    }
+
     // Fill placeholders in the VG prompt template
     const prompt = template
       .replace(/\{\{topic\}\}/g, state.recipeTitle)
@@ -403,6 +421,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       .replace(/\{\{min_steps\}\}/g, String(vgSettings.minVisualSteps || defaults.minVisualSteps))
       .replace(/\{\{max_steps\}\}/g, String(vgSettings.maxVisualSteps || defaults.maxVisualSteps))
       .replace(/\{\{default_camera_angle\}\}/g, 'choose best angle for this step')
+      .replace(/\{\{related_recipes\}\}/g, relatedRecipesBlock)
       .replace(/\{\{template_instructions\}\}/g, templateInstructions);
 
     const aiChat = useGemini ? this._geminiChat : this.chatgpt;

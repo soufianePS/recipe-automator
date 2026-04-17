@@ -296,6 +296,49 @@ export const WordPressAPI = {
     return newCat.id;
   },
 
+  /**
+   * List existing published recipes — used for internal linking.
+   * Prefers posts in the given category; falls back to recent posts from any category.
+   * Returns [{ title, url, excerpt, slug }]
+   */
+  async listPostsByCategory(settings, categoryName, limit = 8) {
+    const { wpUrl, wpUsername, wpAppPassword } = settings;
+    const authHeader = this._authHeader(wpUsername, wpAppPassword);
+    let posts = [];
+
+    try {
+      let categoryId = null;
+      if (categoryName) {
+        const catResp = await fetchWithRetry(
+          `${wpUrl}/wp-json/wp/v2/categories?search=${encodeURIComponent(categoryName)}&per_page=5`,
+          { headers: { 'Authorization': authHeader } }
+        );
+        if (catResp.ok) {
+          const cats = await catResp.json();
+          const exact = cats.find(c => c.name.toLowerCase() === categoryName.toLowerCase());
+          if (exact) categoryId = exact.id;
+        }
+      }
+
+      const url = categoryId
+        ? `${wpUrl}/wp-json/wp/v2/posts?categories=${categoryId}&per_page=${limit}&status=publish,draft&orderby=date&order=desc`
+        : `${wpUrl}/wp-json/wp/v2/posts?per_page=${limit}&status=publish,draft&orderby=date&order=desc`;
+
+      const resp = await fetchWithRetry(url, { headers: { 'Authorization': authHeader } });
+      if (!resp.ok) return [];
+      const raw = await resp.json();
+      posts = raw.map(p => ({
+        title: p.title?.rendered?.replace(/<[^>]+>/g, '').trim() || '',
+        url: p.link || '',
+        slug: p.slug || '',
+        excerpt: (p.excerpt?.rendered || '').replace(/<[^>]+>/g, '').trim().slice(0, 140)
+      })).filter(p => p.title && p.url);
+    } catch (e) {
+      Logger.warn(`[WP] listPostsByCategory failed: ${e.message}`);
+    }
+    return posts;
+  },
+
   async findOrCreateTag(settings, tagName) {
     const { wpUrl, wpUsername, wpAppPassword } = settings;
     const authHeader = this._authHeader(wpUsername, wpAppPassword);
