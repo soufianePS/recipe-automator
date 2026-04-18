@@ -15,6 +15,7 @@ import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orch
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { VERIFIED_GENERATOR_DEFAULTS } from './modules/verified-generator/prompts-verified.js';
+import { LIST_STYLES, getListStyleCSS, getListStyleOptions } from './shared/utils/list-styles.js';
 
 /**
  * Register all route handlers on the Express app.
@@ -90,6 +91,17 @@ export function setupRoutes(app, ctx) {
 
   app.get('/api/vg-default-prompts', (req, res) => {
     res.json(VERIFIED_GENERATOR_DEFAULTS.prompts);
+  });
+
+  // List of all available list-marker styles (for dashboard dropdown)
+  app.get('/api/list-styles', (req, res) => {
+    res.json({ options: getListStyleOptions() });
+  });
+
+  // Get CSS for a specific style (for "Copy CSS" button)
+  app.get('/api/list-styles/:styleKey/css', (req, res) => {
+    const css = getListStyleCSS(req.params.styleKey);
+    res.type('text/plain').send(css);
   });
 
   // Standalone Pinterest pin test — skips recipe generation, uses provided image paths

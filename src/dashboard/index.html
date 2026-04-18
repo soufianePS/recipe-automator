@@ -721,6 +721,21 @@
                   <b>None</b>: Recipe content in post only, no card.
                 </div>
               </div>
+              <div class="form-group" style="margin-bottom:12px">
+                <label>List Marker Style</label>
+                <select id="sListStyle">
+                  <option value="default">Default (plain dots)</option>
+                </select>
+                <div class="prompt-hint">
+                  Styles all bulleted lists in your posts (ingredients, pro tips, FAQs, etc.). Applied via CSS — affects old and new posts.
+                  <br/>After picking a style, click <b>Copy CSS</b> below, then paste into WP → Appearance → Customize → Additional CSS.
+                </div>
+                <div style="margin-top:8px; display:flex; gap:8px">
+                  <button class="btn btn-test" type="button" onclick="copyListStyleCSS()">Copy CSS to Clipboard</button>
+                  <button class="btn btn-test" type="button" onclick="previewListStyleCSS()">Preview CSS</button>
+                </div>
+                <pre id="listStyleCssPreview" style="display:none; max-height:300px; overflow:auto; background:#f4f4f4; padding:10px; font-size:12px; margin-top:8px; border-radius:4px"></pre>
+              </div>
               <button class="btn btn-test" onclick="testWP()">Test WordPress Connection</button>
               <div id="wpTestResult" class="test-result"></div>
             </div>

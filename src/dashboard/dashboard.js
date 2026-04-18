@@ -1140,6 +1140,10 @@
         const cardPlugin = settings.recipeCardPlugin || (wprmEnabled ? 'wprm' : 'none');
         document.getElementById('sRecipeCardPlugin').value = cardPlugin;
 
+        // Populate list style dropdown + set saved value
+        await populateListStyles();
+        document.getElementById('sListStyle').value = settings.listStyle || 'default';
+
         postTemplate = settings.postTemplate || JSON.parse(JSON.stringify(DEFAULT_TEMPLATE));
         renderTemplate();
 
@@ -1389,6 +1393,7 @@
         wpCategories: document.getElementById('sWpCategories').value.trim(),
         recipeCardPlugin: document.getElementById('sRecipeCardPlugin').value,
         wprmEnabled: document.getElementById('sRecipeCardPlugin').value === 'wprm',
+        listStyle: document.getElementById('sListStyle').value || 'default',
         backgroundsFolderPath: document.getElementById('sBackgroundsFolder').value.trim(),
         selectedSubfolder: document.getElementById('sSubfolder').value,
         heroAspectRatio: document.getElementById('sHeroAspectRatio').value,
@@ -2401,3 +2406,51 @@
         startBatchPoll();
       }
     }).catch(() => {});
+
+    // ================================================================
+    // LIST STYLE (CSS marker for ingredient/tip lists)
+    // ================================================================
+    async function populateListStyles() {
+      try {
+        const res = await fetch('/api/list-styles');
+        const data = await res.json();
+        const sel = document.getElementById('sListStyle');
+        if (!sel) return;
+        sel.innerHTML = '';
+        (data.options || []).forEach(opt => {
+          const o = document.createElement('option');
+          o.value = opt.key;
+          o.textContent = opt.label;
+          o.title = opt.description || '';
+          sel.appendChild(o);
+        });
+      } catch (e) { console.warn('Failed to load list styles:', e); }
+    }
+
+    async function copyListStyleCSS() {
+      const key = document.getElementById('sListStyle').value;
+      try {
+        const res = await fetch('/api/list-styles/' + encodeURIComponent(key) + '/css');
+        const css = await res.text();
+        await navigator.clipboard.writeText(css);
+        alert('CSS copied to clipboard! Paste into WP → Appearance → Customize → Additional CSS.');
+      } catch (e) {
+        alert('Failed to copy CSS: ' + e.message);
+      }
+    }
+
+    async function previewListStyleCSS() {
+      const key = document.getElementById('sListStyle').value;
+      const box = document.getElementById('listStyleCssPreview');
+      try {
+        const res = await fetch('/api/list-styles/' + encodeURIComponent(key) + '/css');
+        const css = await res.text();
+        box.textContent = css;
+        box.style.display = box.style.display === 'none' ? 'block' : 'none';
+      } catch (e) {
+        box.textContent = 'Failed to load preview: ' + e.message;
+        box.style.display = 'block';
+      }
+    }
+    window.copyListStyleCSS = copyListStyleCSS;
+    window.previewListStyleCSS = previewListStyleCSS;
