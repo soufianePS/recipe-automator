@@ -415,6 +415,7 @@ INTERNAL LINKING RULE (CRITICAL for SEO):
 INGREDIENT RULES:
 - List all ingredients with name and quantity and description (short functional role).
 - Add a period at the end of each ingredient description.
+- Every ingredient name MUST specify exact variety when one exists — e.g. "penne" not "pasta", "russet potato" not "potato", "sharp cheddar" not "cheese", "boneless chicken breast" not "chicken". Never use generic terms for pasta rice potato cheese meat bread tomato onion sugar flour or oil.
 
 STEP SYSTEM (DYNAMIC FLOW):
 - Steps MUST represent the FULL recipe journey from raw ingredients to final plated dish.
@@ -522,6 +523,7 @@ VISUAL PLAN RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps
 - Each step = ONE clear visual change from previous
 - List EXACT visible and FORBIDDEN ingredients per step
+- visible_ingredients entries and every step/hero image prompt MUST repeat the exact ingredient variety used in the recipe (e.g., "cooked penne" not "cooked pasta", "shredded mozzarella" not "shredded cheese"). Flow needs the specific shape.
 - Forbidden = anything NOT yet added + garnish (unless last step)
 - Each step VISUALLY DISTINCT - different color, texture, sauce amount, state
 - Food must evolve: raw > combined > coated > softened > melted > browned > finished
