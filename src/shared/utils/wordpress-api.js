@@ -211,11 +211,17 @@ export const WordPressAPI = {
         const meta = await sharp(imageBuffer).metadata();
         Logger.info(`Image: ${meta.width}x${meta.height} (${(imageBuffer.length / 1024).toFixed(0)}KB)`);
         imageBuffer = await sharp(imageBuffer)[WEBP_FORMAT]({ quality: WEBP_QUALITY }).toBuffer();
-        uploadFilename = filename.replace(/\.(jpe?g|png)$/i, '.webp');
+        // Force a .webp extension regardless of what came in (ChatGPT sometimes returns filenames without extension)
+        const baseFilename = filename.replace(/\.(jpe?g|png|webp)$/i, '');
+        uploadFilename = baseFilename + '.webp';
         Logger.debug(`Converted to WebP: ${(imageBuffer.length / 1024).toFixed(0)}KB`);
       } catch (e) {
         Logger.warn('WebP conversion failed, using original:', e.message);
       }
+    }
+    // Ensure filename has a recognizable image extension even without sharp
+    if (!/\.(jpe?g|png|webp)$/i.test(uploadFilename)) {
+      uploadFilename = uploadFilename + '.jpg';
     }
 
     // Build multipart form data manually
@@ -337,6 +343,35 @@ export const WordPressAPI = {
       Logger.warn(`[WP] listPostsByCategory failed: ${e.message}`);
     }
     return posts;
+  },
+
+  /**
+   * List published recipes from ALL categories for internal linking.
+   * Fetches 2-3 posts per category so ChatGPT can pick the most relevant ones.
+   * Returns [{ title, url, excerpt, slug, category }]
+   */
+  async listPostsFromAllCategories(settings, perCategory = 3) {
+    const categories = (settings.wpCategories || 'Breakfast, Lunch, Dinner, Dessert')
+      .split(',').map(c => c.trim()).filter(Boolean);
+    const allPosts = [];
+    const seenUrls = new Set();
+
+    for (const catName of categories) {
+      try {
+        const posts = await this.listPostsByCategory(settings, catName, perCategory);
+        for (const p of posts) {
+          if (!seenUrls.has(p.url)) {
+            seenUrls.add(p.url);
+            allPosts.push({ ...p, category: catName });
+          }
+        }
+      } catch (e) {
+        Logger.debug(`[WP] Failed to list posts for category "${catName}": ${e.message}`);
+      }
+    }
+
+    Logger.info(`[WP] Fetched ${allPosts.length} posts across ${categories.length} categories for internal linking`);
+    return allPosts;
   },
 
   async findOrCreateTag(settings, tagName) {
@@ -466,6 +501,23 @@ export const WordPressAPI = {
     if (cuisine) tags.cuisine = [cuisine];
     if (focusKeyword) tags.keyword = focusKeyword.split(',').map(k => k.trim());
 
+    // WPRM renders units itself; passing "19g" displays "19gg". Strip non-numeric chars from numeric fields only.
+    const stripUnit = (v) => typeof v === 'string' ? v.replace(/[^\d.]/g, '') : (v ?? '');
+    const n = recipeJSON?.nutrition || {};
+    const wprmNutrition = {
+      serving_size: n.serving_size || '',  // free-form text, don't strip
+      calories: stripUnit(n.calories),
+      carbohydrates: stripUnit(n.carbohydrates),
+      protein: stripUnit(n.protein),
+      fat: stripUnit(n.fat),
+      saturated_fat: stripUnit(n.saturated_fat),
+      trans_fat: stripUnit(n.trans_fat),
+      cholesterol: stripUnit(n.cholesterol),
+      sodium: stripUnit(n.sodium),
+      fiber: stripUnit(n.fiber),
+      sugar: stripUnit(n.sugar)
+    };
+
     const recipeData = {
       title: postTitle, status: 'draft',
       recipe: {
@@ -475,7 +527,7 @@ export const WordPressAPI = {
         image_id: state.heroImage?.wpImageId || 0,
         author_display: 'default',
         ingredients: [{ name: '', ingredients: wprmIngredients }],
-        instructions_flat: instructionsFlat, tags, nutrition: {},
+        instructions_flat: instructionsFlat, tags, nutrition: wprmNutrition,
         ingredient_links_type: 'global', unit_system: 'default'
       }
     };
