@@ -34,7 +34,7 @@ CAMERA ANGLE SELECTION PER STEP:
   * "slight overhead (30-degree)": baking dishes and casseroles and layered items
   * "eye-level": tall items like stacked pancakes and layered cakes and drinks
 - Do NOT use the same angle for every step. Mix angles for visual variety.
-- Ingredients image: "top-down" (flat lay works best)
+- Ingredients image: "slight overhead (30-degree)" — shows 3D depth of standing bottles, whole produce, and packaged products; pure top-down is only acceptable when all items are genuinely flat (no standing packages)
 - Hero image: "45-degree angle" (magazine style)
 
 RECIPE JSON:
@@ -45,7 +45,7 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
   "ingredients_image": {
     "image_type": "ingredients",
     "layout": "Describe a NATURAL asymmetric scatter across the ENTIRE surface edge-to-edge. Specify WHICH items stay in their whole form (whole vegetables, bottles/boxes/jars standing upright WITH visible fake brand labels), WHICH are in small ramekins (ONLY finely chopped herbs, spices, grated cheese, diced small items). Explicitly say items are at DIFFERENT heights and DIFFERENT distances apart. NO grid, NO circle, NO matching bowls for every item.",
-    "camera_angle": "top-down",
+    "camera_angle": "slight overhead (30-degree)",
     "items": [
       { "name": "ingredient name", "state": "DEFAULT = whole/raw uncut as-purchased (whole apple, whole cucumber, whole banana, whole pineapple, whole head of garlic, whole onion). ONLY mark as 'chopped'/'diced'/'grated'/'sliced' when the item comes PRE-PROCESSED from the store (bagged pre-shredded cheese, canned diced tomatoes) OR when the image is of a mid-recipe PREPARATION step — NEVER for the initial ingredients image.", "presentation": "whole | small ramekin | standing bottle | standing box/bag | large plate — pick the most natural one, vary across items", "brand": "believable fake brand name for packaged products only (e.g. 'Heath Riles BBQ', 'Great Value', 'GRAZA'); leave empty for raw/fresh produce" }
     ],
@@ -555,7 +555,7 @@ CAMERA ANGLE SELECTION PER STEP:
   * "slight overhead (30-degree)": baking dishes and casseroles and layered items
   * "eye-level": tall items like stacked pancakes and layered cakes and drinks in glasses
 - Do NOT use the same angle for every step. Mix angles for visual variety.
-- Ingredients image: always "top-down" (flat lay)
+- Ingredients image: "slight overhead (30-degree)" by default to show 3D depth of standing bottles, whole produce, and packaged products. Only use pure "top-down" (90°) when every single item is genuinely flat (no standing packages, no whole 3D produce).
 - Hero image: always "45-degree angle" (magazine style)
 - Steps: vary between angles based on what shows the food best
 
@@ -670,7 +670,7 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
   "visual_plan": {
     "ingredients_image": {
       "layout": "Natural asymmetric scatter edge-to-edge, NO grid, NO circle, NO matching bowls. Specify WHICH items stay in their whole form (whole vegetables, bottles/boxes/jars standing upright with visible brand labels) versus WHICH go in small ramekins (ONLY chopped herbs, spices, grated cheese). Items at different heights and different distances. For every packaged product (oils, spices, sauces, flours, sugars, canned goods) specify a believable fake brand name so the image shows real-looking packaging.",
-      "camera_angle": "top-down",
+      "camera_angle": "slight overhead (30-degree)",
       "items": [{"name": "", "state": "DEFAULT = whole/raw uncut as-purchased. Only mark as 'chopped'/'diced'/'grated' if the item is store-bought pre-processed (canned diced tomatoes, bagged shredded cheese). For the initial ingredients image, fresh produce stays WHOLE.", "presentation": "whole | small ramekin | standing bottle | standing box | large plate — choose the most natural per item, VARY across items", "brand": "fake brand name for packaged products (e.g. 'Heath Riles BBQ', 'Great Value Flour', 'Sun Harvest Sugar') — leave empty for raw/fresh items", "placement": "position"}],
       "forbidden": ["cooked food", "mixed items", "garnish", "utensils", "grid layout", "identical bowls for every item", "blank unlabeled packaging"]
     },
@@ -736,7 +736,7 @@ export const VERIFIED_GENERATOR_DEFAULTS = {
   maxVerificationRetries: 3,
   softFailAction: 'retry',        // 'accept' or 'retry' — retry soft fails for better quality
   defaultContainer: 'white ceramic bowl',
-  defaultCameraAngle: 'top-down',
+  defaultCameraAngle: 'slight overhead (30-degree)',
   defaultLighting: 'bright natural window light from the left with warm tones and soft shadows',
   prompts: {
     visualPlan: DEFAULT_VISUAL_PLAN_PROMPT,
