@@ -22,11 +22,25 @@ import { buildStepPrompt, buildIngredientsPrompt, buildHeroPrompt, buildCorrecti
 import { verifyStepImage, verifyIngredientsImage, verifyHeroImage, verifyPinterestImage, checkStepSimilarity, shouldRetry } from './image-verifier.js';
 import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
 import { VGStats } from './vg-stats.js';
+import { fetchNutrition } from '../../shared/utils/nutrition-api.js';
+import { checkContentQuality, applyContentFixes } from '../../shared/utils/content-quality.js';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, copyFileSync, statSync } from 'fs';
 import { join, dirname, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** Convert a string to Title Case, preserving small words like "and", "of", "with" */
+function toTitleCase(str) {
+  if (!str) return str;
+  const smallWords = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'on', 'at', 'to', 'in', 'of', 'with', 'by', 'from', 'as', 'is', 'vs']);
+  return str.split(/\s+/).map((word, i) => {
+    if (i === 0 || !smallWords.has(word.toLowerCase())) {
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }
+    return word.toLowerCase();
+  }).join(' ');
+}
 
 export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
   constructor(browser, context, serverCtx) {
@@ -397,16 +411,17 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       await StateManager.saveSettings(settings);
     }
 
-    // Fetch related recipes from WordPress for internal linking (best-effort; failures are non-fatal)
+    // Fetch related recipes from ALL categories for internal linking (best-effort; failures are non-fatal)
     let relatedRecipesBlock = 'No related recipes available — skip internal linking.';
+    this._relatedPosts = []; // store for post-processing auto-linker
     try {
-      const firstCategory = (settings.wpCategories || 'Breakfast, Lunch, Dinner, Dessert').split(',')[0].trim();
-      const relatedPosts = await WordPressAPI.listPostsByCategory(settings, firstCategory, 8);
+      const relatedPosts = await WordPressAPI.listPostsFromAllCategories(settings, 3);
       if (relatedPosts.length > 0) {
+        this._relatedPosts = relatedPosts;
         relatedRecipesBlock = relatedPosts
-          .map((p, i) => `${i + 1}. "${p.title}" — ${p.url}${p.excerpt ? ` (${p.excerpt})` : ''}`)
+          .map((p, i) => `${i + 1}. [${p.category}] "${p.title}" — ${p.url}${p.excerpt ? ` (${p.excerpt})` : ''}`)
           .join('\n');
-        Logger.info(`[VerifiedGen] Fetched ${relatedPosts.length} related recipes for internal linking`);
+        Logger.info(`[VerifiedGen] Fetched ${relatedPosts.length} related recipes across all categories for internal linking`);
       } else {
         Logger.info('[VerifiedGen] No related recipes found on site — skipping internal linking');
       }
@@ -462,6 +477,44 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       throw new Error('Invalid recipe JSON: missing steps array.');
     }
 
+    // ── Title Case fix ──
+    if (recipe.post_title) {
+      recipe.post_title = toTitleCase(recipe.post_title);
+      Logger.info(`[TitleCase] "${recipe.post_title}"`);
+    }
+
+    // ── Content Quality Gate: check per-section, re-prompt only bad parts ──
+    if (settings.contentQualityEnabled !== false) {
+      try {
+        const qualityResult = await checkContentQuality(recipe, settings);
+        if (!qualityResult.passed && qualityResult.fixPrompts.length > 0) {
+          const aiChat = useGemini ? this._geminiChat : this.chatgpt;
+          recipe = await applyContentFixes(recipe, qualityResult.fixPrompts, aiChat);
+        }
+      } catch (e) {
+        Logger.warn(`[Quality] Content quality check failed (non-fatal): ${e.message}`);
+      }
+    }
+
+    // ── Nutrition API: fetch real nutrition data ──
+    // Collect keys from every Flow account (for rotation) + settings fallback.
+    const accountNutritionKeys = await FlowAccountManager.getAllNutritionKeys();
+    const nutritionKeys = [...new Set([...accountNutritionKeys, settings.nutritionApiKey].filter(Boolean))];
+    if (nutritionKeys.length > 0) {
+      try {
+        const nutrition = await fetchNutrition(
+          nutritionKeys,
+          recipe.ingredients || [],
+          recipe.servings || 4
+        );
+        if (nutrition) {
+          recipe.nutrition = nutrition;
+        }
+      } catch (e) {
+        Logger.warn(`[Nutrition] API call failed (non-fatal): ${e.message}`);
+      }
+    }
+
     const visualPlan = validateVisualPlan(rawVisualPlan, vgSettings);
 
     // Normalize ingredients format (support both array of strings and array of objects)
@@ -503,6 +556,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       steps,
       currentStepIndex: 0,
       pinterestPins,
+      _relatedPosts: this._relatedPosts || [],
       seoData: {
         post_title: recipe.post_title || state.recipeTitle,
         slug: recipe.slug || '',
@@ -589,10 +643,20 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const isLastStep = idx === state.steps.length - 1;
     const prompt = buildStepPrompt(visualStep, vgSettings, { isLastStep });
 
-    // Background — prefixed to avoid collisions in same Flow project
-    if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
-    const bgIndex = (state.backgroundQueueIndex || 0) % state.backgroundQueue.length;
-    const backgroundPath = this._prepareFile(state.backgroundQueue[bgIndex], `bg-${bgIndex + 1}`);
+    // Background — serving step uses the HERO background (same surface as hero image),
+    // earlier steps use the kitchen pool so each step has a distinct surface.
+    let backgroundPath;
+    let bgIndex = state.backgroundQueueIndex || 0;
+    if (isLastStep && state.selectedHeroBackground?.base64) {
+      const heroBgTmpPath = join(__dirname, '..', '..', '..', 'data', 'tmp', 'hero-bg.jpg');
+      try { writeFileSync(heroBgTmpPath, Buffer.from(state.selectedHeroBackground.base64, 'base64')); } catch {}
+      backgroundPath = this._prepareFile(heroBgTmpPath, 'bg-hero');
+      Logger.info('[Step] Final serving step using HERO background');
+    } else {
+      if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
+      bgIndex = bgIndex % state.backgroundQueue.length;
+      backgroundPath = this._prepareFile(state.backgroundQueue[bgIndex], `bg-${bgIndex + 1}`);
+    }
 
     // Output path
     const outputDir = this._getOutputDir(state, settings);
