@@ -44,12 +44,12 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
 {
   "ingredients_image": {
     "image_type": "ingredients",
-    "layout": "flat lay arrangement on background",
+    "layout": "Describe a NATURAL asymmetric scatter across the ENTIRE surface edge-to-edge. Specify WHICH items stay in their whole form (whole vegetables, bottles/boxes/jars standing upright WITH visible fake brand labels), WHICH are in small ramekins (ONLY finely chopped herbs, spices, grated cheese, diced small items). Explicitly say items are at DIFFERENT heights and DIFFERENT distances apart. NO grid, NO circle, NO matching bowls for every item.",
     "camera_angle": "top-down",
     "items": [
-      { "name": "ingredient name", "state": "visual description", "presentation": "how displayed" }
+      { "name": "ingredient name", "state": "DEFAULT = whole/raw uncut as-purchased (whole apple, whole cucumber, whole banana, whole pineapple, whole head of garlic, whole onion). ONLY mark as 'chopped'/'diced'/'grated'/'sliced' when the item comes PRE-PROCESSED from the store (bagged pre-shredded cheese, canned diced tomatoes) OR when the image is of a mid-recipe PREPARATION step — NEVER for the initial ingredients image.", "presentation": "whole | small ramekin | standing bottle | standing box/bag | large plate — pick the most natural one, vary across items", "brand": "believable fake brand name for packaged products only (e.g. 'Heath Riles BBQ', 'Great Value', 'GRAZA'); leave empty for raw/fresh produce" }
     ],
-    "forbidden": ["cooked food", "mixed items", "garnish", "utensils"]
+    "forbidden": ["cooked food", "mixed items", "garnish", "utensils", "grid layout", "identical bowls for every item", "blank unlabeled packaging"]
   },
   "visual_steps": [
     {
@@ -110,22 +110,45 @@ STRICT RULES:
 // 3. FLOW INGREDIENTS PROMPT TEMPLATE
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_FLOW_INGREDIENTS_PROMPT = `Photorealistic food photography. {{lighting}}.
+export const DEFAULT_FLOW_INGREDIENTS_PROMPT = `Photorealistic food photography, editorial style, natural soft daylight. {{lighting}}.
 
-SCENE:
-- Background: exact same as the uploaded reference image
-- {{layout}}
-- {{camera_angle}} angle
+BACKGROUND — FILL ENTIRE FRAME:
+- The ENTIRE frame from edge to edge must be the uploaded reference surface (wooden board, marble, linen, etc.)
+- No blank space, no white borders, no cropping — the reference surface fills 100% of the image
+- Preserve the exact grain, color, stripes, and texture of the uploaded reference
 
 INGREDIENTS TO SHOW (each separate, not mixed):
 {{ingredients_list}}
 
+LAYOUT — NATURAL SCATTER, NOT A GRID:
+- Items placed organically with asymmetric spacing — NO perfect grid, NO circle, NO straight line
+- VARY the container types: 1-2 large plates or wooden boards for the star ingredients, a few small ceramic ramekins ONLY for finely chopped or grated items (herbs, spices, cheese)
+- Use INGREDIENTS IN THEIR REAL FORM when possible: whole vegetables as-is (whole potatoes, whole garlic bulb, whole onion), bottles standing upright, boxes and bags standing upright, jars with labels facing forward
+- MIX heights: tall bottles and boxes standing (upright) + flat items (bowls, herbs on surface) create visual depth
+- VARY bowl and plate sizes — some large, some small, some tiny — never all identical
+- Items should be DIFFERENT distances apart — some clustered together, some with gaps, none perfectly aligned
+- Fill the composition edge-to-edge — ingredients reach near all 4 sides of the frame, not clustered in the center
+
+REAL PRODUCT PACKAGING (CRITICAL FOR AUTHENTICITY):
+- Packaged ingredients MUST show realistic product packaging with visible BRAND LABELS — invent believable brand names if needed (e.g., "Heath Riles BBQ", "Great Value Baking Soda", "GRAZA High Heat Oil", "Frontier Spice Co.", "Sun Harvest Flour")
+- Bottles, jars, cans, boxes, bags, cartons MUST have full product labels with readable brand name + product type + typical packaging design elements (color bands, mascot, product photo on the box, etc.)
+- Labels face forward toward camera so brand/product is readable
+- Avoid blank, sterile, unlabeled containers — every packaged item must look like a real grocery-store product
+- It's fine to invent brand names (fake brands are acceptable) — the goal is authentic grocery-product appearance, NOT real trademarks
+
+{{layout}}
+
 STRICT RULES:
-- Every ingredient must be clearly visible and separate
-- No ingredient is cooked or mixed
-- No garnish, no utensils, no extra props
-- All items arranged neatly on the background
-- No text, no watermark`;
+- Every ingredient must be clearly visible and identifiable
+- Raw ingredients only — nothing cooked or mixed
+- No garnish unless it's an actual ingredient in the recipe
+- No utensils, no cutting boards as separate items (the board IS the background)
+- NO grid layout, NO circular arrangement, NO rows
+- NO matching bowls for every ingredient — use the item's natural form whenever possible
+- {{camera_angle}} angle
+- No watermark
+- No floating text overlays or captions
+- Text on packaging is REQUIRED (brand names, product types, nutrition banners) — this is natural product photography, not blank containers`;
 
 
 // ─────────────────────────────────────────────────────────────
@@ -215,11 +238,18 @@ quality_score: 1-10 rating of image quality (colors, texture, appeal). Below 5 =
 export const DEFAULT_VERIFIER_INGREDIENTS_PROMPT = `You are validating a recipe ingredients flat-lay image.
 
 EXPECTED:
-- All ingredients laid out separately on the background
+- All ingredients clearly visible and identifiable (in whatever form — whole, in bowls, in standing packaging — ALL acceptable)
 - Camera angle: {{camera_angle}}
 
 REQUIRED ingredients (must ALL be visible):
 {{ingredients_list}}
+
+ACCEPTABLE PRESENTATIONS (do NOT fail for any of these):
+- Whole vegetables / meats / produce placed directly on the background
+- Standing bottles, boxes, bags, jars with visible (even fake) brand labels
+- Small ramekins or bowls for chopped/grated items
+- Mixed scatter layouts with varied heights and spacing
+- Items reaching near the frame edges
 
 FORBIDDEN:
 - No cooked food
@@ -227,7 +257,9 @@ FORBIDDEN:
 - No garnish
 - No utensils or extra props
 
-IMPORTANT: The background surface may contain elements like rings, cables, cloth, table texture. These are part of the BACKGROUND — ignore them. Only check the FOOD items.
+IMPORTANT:
+- Text on packaging (brand names, product labels) is EXPECTED and fine — this is real-product aesthetic, NOT a watermark
+- The background surface may contain elements like rings, cables, cloth, table texture. These are part of the BACKGROUND — ignore them. Only check the FOOD items.
 
 VALIDATION CHECKS:
 1. List every visible food item (ignore background surface elements)
@@ -503,10 +535,18 @@ CONTAINER SELECTION PER STEP — use the container a REAL cook would use at EACH
 - White plate: final serving/plating step
 - Wooden cutting board: slicing bread and charcuterie
 - Wok: stir-fry dishes
+- Blender jar: blending smoothies, sauces, purees, soups — shows the appliance base + transparent jar filled with ingredients
+- Food processor bowl: chopping, pureeing, pulse-mixing — shows the appliance with ingredients inside
+- Air fryer basket: air-frying crispy items — shows the perforated basket with food
+- Slow cooker / Instant Pot inner pot: slow-cooked stews, roasts, pressure-cooked dishes
+- Grill pan / outdoor grill grate: grilled meats and vegetables with char marks
+- Deep fryer basket: deep-fried items with hot oil visible
+- Waffle iron: waffles cooking in the iron
 CRITICAL: The container CAN and SHOULD change between steps when the recipe requires it.
-Real cooking uses multiple containers: bowl (mix) → skillet (cook) → plate (serve).
+Real cooking uses multiple containers: bowl (mix) → blender (puree) → glass (serve).
 Each step MUST specify which container is used at that exact phase.
 Do NOT force the same container for ALL steps unless the recipe truly uses only one.
+APPLIANCE RULE: If the recipe truly needs a specific appliance (air fryer, blender, slow cooker, instant pot, grill, waffle iron, food processor), the step that uses it MUST use that appliance as the container — NEVER substitute with a generic bowl or pot.
 
 CAMERA ANGLE SELECTION PER STEP:
 - Choose the BEST angle for each step based on what needs to be visible:
@@ -613,7 +653,7 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "ingredients": [{"name": "", "quantity": "", "description": ""}],
     "hero_prompt": "Describe the FULLY COOKED finished dish with natural imperfections.",
     "hero_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
-    "ingredients_prompt": "All raw ingredients in separate containers.",
+    "ingredients_prompt": "Natural asymmetric scatter of raw ingredients across the ENTIRE background edge-to-edge. Use each item in its real form when possible (whole vegetables, bottles and boxes standing upright). Only finely chopped/grated items go in small ramekins. Mix heights and distances. NO grid, NO matching bowls for every ingredient.",
     "ingredients_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
     "steps": [{"number": 1, "title": "specific action", "description": "1-2 paragraphs explaining visual change", "tip": "", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
     "equipment": [{"name": "", "notes": "function."}],
@@ -629,10 +669,10 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
   },
   "visual_plan": {
     "ingredients_image": {
-      "layout": "describe arrangement",
+      "layout": "Natural asymmetric scatter edge-to-edge, NO grid, NO circle, NO matching bowls. Specify WHICH items stay in their whole form (whole vegetables, bottles/boxes/jars standing upright with visible brand labels) versus WHICH go in small ramekins (ONLY chopped herbs, spices, grated cheese). Items at different heights and different distances. For every packaged product (oils, spices, sauces, flours, sugars, canned goods) specify a believable fake brand name so the image shows real-looking packaging.",
       "camera_angle": "top-down",
-      "items": [{"name": "", "state": "", "presentation": "in small glass bowl", "placement": "position"}],
-      "forbidden": ["cooked food", "mixed items", "garnish", "utensils"]
+      "items": [{"name": "", "state": "DEFAULT = whole/raw uncut as-purchased. Only mark as 'chopped'/'diced'/'grated' if the item is store-bought pre-processed (canned diced tomatoes, bagged shredded cheese). For the initial ingredients image, fresh produce stays WHOLE.", "presentation": "whole | small ramekin | standing bottle | standing box | large plate — choose the most natural per item, VARY across items", "brand": "fake brand name for packaged products (e.g. 'Heath Riles BBQ', 'Great Value Flour', 'Sun Harvest Sugar') — leave empty for raw/fresh items", "placement": "position"}],
+      "forbidden": ["cooked food", "mixed items", "garnish", "utensils", "grid layout", "identical bowls for every item", "blank unlabeled packaging"]
     },
     "visual_steps": [{
       "step_id": 1, "title": "specific action title", "container": "chosen container",

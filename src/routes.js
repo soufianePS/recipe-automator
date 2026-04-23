@@ -285,6 +285,63 @@ export function setupRoutes(app, ctx) {
     }
   });
 
+  // ── API: Kitchens (multi-kitchen background pools) ─────────────
+  app.get('/api/kitchens', async (_req, res) => {
+    try { res.json(await StateManager.getKitchens()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/kitchens', async (req, res) => {
+    try {
+      const { name } = req.body || {};
+      const k = await StateManager.createKitchen(name);
+      Logger.info(`Kitchen created: ${k.name} (${k.id})`);
+      res.json({ ok: true, kitchen: k });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/kitchens/active', async (req, res) => {
+    try {
+      const { id } = req.body || {};
+      await StateManager.setActiveKitchen(id);
+      Logger.info(`Active kitchen: ${id}`);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/kitchens/:id', async (req, res) => {
+    try {
+      const { name } = req.body || {};
+      const k = await StateManager.renameKitchen(req.params.id, name);
+      res.json({ ok: true, kitchen: k });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/kitchens/:id', async (req, res) => {
+    try {
+      await StateManager.deleteKitchen(req.params.id);
+      Logger.info(`Kitchen deleted: ${req.params.id}`);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/kitchens/:id/backgrounds', async (req, res) => {
+    try {
+      const { files } = req.body || {};
+      if (!Array.isArray(files)) return res.status(400).json({ error: 'Expected { files: [{name, base64}] }' });
+      const count = await StateManager.addKitchenBackgrounds(req.params.id, files);
+      Logger.info(`${files.length} background(s) added to kitchen ${req.params.id} (total: ${count})`);
+      res.json({ ok: true, count });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/kitchens/:id/backgrounds/:index', async (req, res) => {
+    try {
+      await StateManager.deleteKitchenBackground(req.params.id, parseInt(req.params.index));
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── API: Automation Controls ─────────────────────────────────
 
   app.post('/api/start', async (req, res) => {
@@ -981,6 +1038,21 @@ export function setupRoutes(app, ctx) {
       Logger.error('[FlowAccounts] Browser open failed:', e.message);
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // LIGHTHOUSE AUDIT
+  // ═══════════════════════════════════════════════════════════
+
+  app.get('/api/lighthouse', async (req, res) => {
+    try {
+      const url = req.query.url;
+      if (!url) return res.status(400).json({ error: 'Missing url query param' });
+      const { runLighthouseAudit } = await import('./shared/utils/lighthouse-audit.js');
+      const result = await runLighthouseAudit(url);
+      if (!result) return res.status(500).json({ error: 'Audit failed — see server log' });
+      res.json(result);
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // ═══════════════════════════════════════════════════════════

@@ -729,12 +729,29 @@ export class BaseOrchestrator {
     if (!heroBgs?.length) throw new Error('No hero backgrounds loaded. Set backgrounds folder in Settings.');
     const heroPick = heroBgs[Math.floor(Math.random() * heroBgs.length)];
 
-    // Steps/ingredients backgrounds from folder
+    // Steps/ingredients backgrounds — from ACTIVE KITCHEN pool (shared for steps + ingredients)
     let backgroundQueue = [];
-    if (settings.backgroundsFolderPath && settings.selectedSubfolder) {
+    const tmpDir = join(__dirname, '..', '..', 'data', 'tmp');
+    mkdirSync(tmpDir, { recursive: true });
+    const activeKitchen = await StateManager.getActiveKitchen();
+    const kitchenBgs = activeKitchen?.backgrounds || [];
+    if (kitchenBgs.length > 0) {
+      // Shuffle then write to tmp files so Flow can upload
+      const shuffled = [...kitchenBgs];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      shuffled.forEach((bg, i) => {
+        const p = join(tmpDir, FILENAMES.fallbackBg(i));
+        writeFileSync(p, Buffer.from(bg.base64, 'base64'));
+        backgroundQueue.push(p);
+      });
+      Logger.info(`[Kitchen] Using "${activeKitchen.name}" — ${kitchenBgs.length} backgrounds`);
+    } else if (settings.backgroundsFolderPath && settings.selectedSubfolder) {
+      // Legacy fallback: folder-based backgrounds
       const folderPath = join(settings.backgroundsFolderPath, settings.selectedSubfolder);
       backgroundQueue = StateManager.listImagesInFolder(folderPath);
-      // Shuffle the queue
       for (let i = backgroundQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [backgroundQueue[i], backgroundQueue[j]] = [backgroundQueue[j], backgroundQueue[i]];
@@ -742,12 +759,9 @@ export class BaseOrchestrator {
     }
 
     if (!backgroundQueue.length) {
-      // Fallback to old steps backgrounds
+      // Last-resort fallback: legacy steps backgrounds
       const stepsBgs = await StateManager.getStepsBackgrounds();
-      if (!stepsBgs?.length) throw new Error('No step backgrounds configured. Set a backgrounds folder in Settings.');
-      // Write fallback to temp files
-      const tmpDir = join(__dirname, '..', '..', 'data', 'tmp');
-      mkdirSync(tmpDir, { recursive: true });
+      if (!stepsBgs?.length) throw new Error(`No backgrounds in kitchen "${activeKitchen?.name || 'active'}". Upload backgrounds in Settings → Kitchens.`);
       stepsBgs.forEach((bg, i) => {
         const p = join(tmpDir, FILENAMES.fallbackBg(i));
         writeFileSync(p, Buffer.from(bg.base64, 'base64'));
@@ -761,7 +775,7 @@ export class BaseOrchestrator {
       backgroundQueue,
       backgroundQueueIndex: 0
     });
-    Logger.success(`Hero: ${heroPick.name}, Backgrounds folder: ${backgroundQueue.length} images`);
+    Logger.success(`Hero: ${heroPick.name}, Backgrounds pool: ${backgroundQueue.length} images`);
   }
 
   // ═══════════════════════════════════════════════════════
@@ -791,20 +805,24 @@ export class BaseOrchestrator {
     }
 
     // Clean tmp from previous recipe (prevent stale images)
+    // IMPORTANT: preserve current backgroundQueue files (kitchen backgrounds written before ChatGPT)
     try {
       const tmpDir = join(__dirname, '..', '..', 'data', 'tmp');
       if (existsSync(tmpDir)) {
         const { readdirSync, unlinkSync } = await import('fs');
+        // Build whitelist of files currently used as backgrounds — those must NOT be deleted
+        const stateNow = await StateManager.getState();
+        const keepSet = new Set((stateNow.backgroundQueue || []).map(p => typeof p === 'string' ? p : ''));
         const cleanDir = (dir) => {
           if (!existsSync(dir)) return;
           for (const f of readdirSync(dir, { withFileTypes: true })) {
             const p = join(dir, f.name);
             if (f.isDirectory()) cleanDir(p);
-            else try { unlinkSync(p); } catch {}
+            else if (!keepSet.has(p)) try { unlinkSync(p); } catch {}
           }
         };
         cleanDir(tmpDir);
-        Logger.info('Cleaned tmp files for fresh start');
+        Logger.info('Cleaned tmp files for fresh start (preserved ' + keepSet.size + ' background file(s))');
       }
     } catch {}
 

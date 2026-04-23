@@ -413,6 +413,79 @@ export const StateManager = {
     await writeJSON(siteFile('backgrounds.json'), data);
   },
 
+  // --- Multi-kitchen system (step + ingredient background pool per kitchen) ---
+  async _loadBgFile() {
+    return await readJSON(siteFile('backgrounds.json'), { hero: [], steps: [], kitchens: [], activeKitchenId: null });
+  },
+  async _saveBgFile(data) {
+    await writeJSON(siteFile('backgrounds.json'), data);
+  },
+  _ensureDefaultKitchen(data) {
+    if (!Array.isArray(data.kitchens)) data.kitchens = [];
+    if (data.kitchens.length === 0) {
+      const id = 'kitchen-' + Date.now();
+      data.kitchens.push({ id, name: 'Kitchen 1', backgrounds: [] });
+      data.activeKitchenId = id;
+    }
+    if (!data.activeKitchenId || !data.kitchens.find(k => k.id === data.activeKitchenId)) {
+      data.activeKitchenId = data.kitchens[0].id;
+    }
+    return data;
+  },
+  async getKitchens() {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    await this._saveBgFile(data);
+    return { kitchens: data.kitchens, activeKitchenId: data.activeKitchenId };
+  },
+  async getActiveKitchen() {
+    const { kitchens, activeKitchenId } = await this.getKitchens();
+    return kitchens.find(k => k.id === activeKitchenId) || kitchens[0];
+  },
+  async createKitchen(name) {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    const id = 'kitchen-' + Date.now();
+    data.kitchens.push({ id, name: name || `Kitchen ${data.kitchens.length + 1}`, backgrounds: [] });
+    await this._saveBgFile(data);
+    return data.kitchens[data.kitchens.length - 1];
+  },
+  async renameKitchen(id, name) {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    const k = data.kitchens.find(x => x.id === id);
+    if (!k) throw new Error('Kitchen not found');
+    k.name = name;
+    await this._saveBgFile(data);
+    return k;
+  },
+  async deleteKitchen(id) {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    if (data.kitchens.length <= 1) throw new Error('Cannot delete the last kitchen');
+    data.kitchens = data.kitchens.filter(k => k.id !== id);
+    if (data.activeKitchenId === id) data.activeKitchenId = data.kitchens[0].id;
+    await this._saveBgFile(data);
+  },
+  async setActiveKitchen(id) {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    if (!data.kitchens.find(k => k.id === id)) throw new Error('Kitchen not found');
+    data.activeKitchenId = id;
+    await this._saveBgFile(data);
+  },
+  async addKitchenBackgrounds(id, files) {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    const k = data.kitchens.find(x => x.id === id);
+    if (!k) throw new Error('Kitchen not found');
+    k.backgrounds = [...(k.backgrounds || []), ...files];
+    await this._saveBgFile(data);
+    return k.backgrounds.length;
+  },
+  async deleteKitchenBackground(id, index) {
+    const data = this._ensureDefaultKitchen(await this._loadBgFile());
+    const k = data.kitchens.find(x => x.id === id);
+    if (!k) throw new Error('Kitchen not found');
+    if (!k.backgrounds || index < 0 || index >= k.backgrounds.length) throw new Error('Invalid index');
+    k.backgrounds.splice(index, 1);
+    await this._saveBgFile(data);
+  },
+
   // --- Backgrounds folder system ---
   listSubfolders(rootPath) {
     if (!rootPath || !existsSync(rootPath)) return [];

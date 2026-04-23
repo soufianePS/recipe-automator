@@ -80,29 +80,33 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
   const jsonPrompt = {
     task: "Photorealistic food photography — ingredients flat lay",
     image_type: "ingredients",
-    layout: ingredientsState.layout || "flat lay arrangement on background",
+    layout: ingredientsState.layout || "Natural asymmetric scatter across the ENTIRE surface edge-to-edge. Mixed forms — whole items, standing packaged products, and only a few small ramekins for chopped/grated bits. Items at different heights and different distances apart. NO grid, NO circle, NO matching bowls.",
     camera: ingredientsState.camera_angle || defaults.defaultCameraAngle,
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "MUST match the uploaded reference image — keep the same surface, texture, color",
+    background: "MUST be the uploaded reference image filling the ENTIRE frame edge-to-edge. No blank space, no white borders, no cropping. Preserve exact grain, color, stripes, and texture.",
     ingredients: (ingredientsState.items || []).map(item => {
       const entry = {
         name: item.name,
         state: item.state,
-        presentation: item.presentation || "separate"
+        presentation: item.presentation || "whole or natural form"
       };
+      if (item.brand) entry.brand = item.brand;
       if (item.placement) entry.placement = item.placement;
       return entry;
     }),
-    forbidden: ingredientsState.forbidden || ["cooked food", "mixed items", "garnish", "utensils"],
+    forbidden: ingredientsState.forbidden || ["cooked food", "mixed items", "garnish", "utensils", "grid layout", "identical bowls for every item", "blank unlabeled packaging"],
     rules: [
-      "CRITICAL: Every single ingredient MUST be inside its own small bowl, plate, or dish — NOTHING placed directly on the background surface",
-      "Proteins on small white plates, liquids in small glass bowls, spices in small ceramic ramekins, herbs in tiny dishes",
-      "Arrange containers in a clean grid or circular pattern with clear spacing",
-      "Nothing touching or overlapping — each container fully visible",
-      "No ingredient is cooked or mixed",
+      "NATURAL SCATTER — items placed organically with asymmetric spacing. NO grid, NO circle, NO straight lines, NO symmetric arrangement",
+      "USE REAL FORMS — whole vegetables as-is (whole potatoes, whole garlic, whole onion), bottles upright, boxes and bags upright, jars with labels forward",
+      "REAL PRODUCT PACKAGING — every packaged ingredient (oils, spices, flours, sugars, sauces, canned goods) MUST show believable brand-labeled packaging. Invent fake brand names like 'Heath Riles BBQ', 'Great Value Flour', 'Sun Harvest Sugar', 'GRAZA Oil' — labels face forward and are readable. NEVER blank/sterile unlabeled containers",
+      "LIMITED SMALL RAMEKINS — ONLY finely chopped herbs, spices, grated cheese, or pre-diced items go in small ramekins (2-4 max). Everything else stays in its whole / packaged / plated form",
+      "VARY CONTAINER SIZES — some large plates, some tiny ramekins, NEVER all identical bowls",
+      "MIX HEIGHTS — tall standing bottles and boxes create depth alongside flat items",
+      "FILL THE FRAME — items reach near all 4 edges, no empty void around the composition",
+      "No ingredient is cooked or mixed (raw state only)",
       "No garnish, no utensils, no extra props",
-      "No text, no watermark",
-      "Professional food magazine quality — clean, organized, appetizing"
+      "No watermark, no floating text overlays — text on packaging is REQUIRED",
+      "Authentic home-kitchen food-blog aesthetic, not a sterile commercial shoot"
     ]
   };
 

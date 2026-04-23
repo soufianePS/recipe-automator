@@ -758,6 +758,29 @@
             </div>
           </div>
 
+          <!-- Content Quality & Nutrition -->
+          <div class="card">
+            <div class="card-header">Content Quality &amp; Nutrition</div>
+            <div class="card-body">
+              <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" id="sContentQualityEnabled" style="width:auto;" />
+                  Enable Content Quality Gate
+                </label>
+                <div class="prompt-hint">Checks readability and AI patterns per section after ChatGPT generates content. Only re-prompts bad sections.</div>
+              </div>
+              <div class="form-group">
+                <label>Readability Target (Flesch score, 60-70 recommended)</label>
+                <input type="number" id="sReadabilityTarget" placeholder="60" min="30" max="100" />
+              </div>
+              <div class="form-group" style="margin-top:16px;">
+                <label>Nutrition API Key (API Ninjas — free)</label>
+                <input type="text" id="sNutritionApiKey" placeholder="Get free key at api-ninjas.com" />
+                <div class="prompt-hint">Fetches real USDA-backed nutrition data for recipe cards. Replaces ChatGPT-estimated values.</div>
+              </div>
+            </div>
+          </div>
+
           <!-- Output -->
           <div class="card">
             <div class="card-header">Output</div>
@@ -1023,25 +1046,26 @@
             </div>
           </div>
 
-          <!-- Backgrounds Folder -->
+          <!-- Kitchens (step + ingredient background pools) -->
           <div class="card">
-            <div class="card-header">Step/Ingredient Backgrounds Folder</div>
+            <div class="card-header">Kitchens (Step / Ingredient Backgrounds)</div>
             <div class="card-body">
-              <div class="form-group">
-                <label>Backgrounds Root Folder</label>
-                <div style="display:flex;gap:8px;">
-                  <input type="text" id="sBackgroundsFolder" placeholder="C:\Users\...\backgrounds" style="flex:1;" />
-                  <button class="btn" onclick="scanSubfolders()" style="background:#4285f4;color:#fff;padding:8px 16px;white-space:nowrap;">Scan</button>
-                </div>
-                <div class="prompt-hint">Paste the full path to your backgrounds root folder, then click Scan</div>
+              <div class="prompt-hint" style="margin-bottom:10px">Upload background surfaces per kitchen. The Active kitchen's pool is used for step AND ingredient images in the next batch.</div>
+              <div id="kitchenTabs" class="kitchen-tabs"></div>
+              <div id="kitchenActions" class="kitchen-actions" style="display:none">
+                <button class="btn btn-sm" onclick="renameActiveKitchen()">Rename</button>
+                <button class="btn btn-sm" onclick="setActiveKitchenFromUI()">Set Active</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteActiveKitchen()">Delete</button>
               </div>
-              <div class="form-group">
-                <label>Active Background Set</label>
-                <select id="sSubfolder" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
-                  <option value="">-- Select subfolder --</option>
-                </select>
-                <div id="subfolderInfo" class="prompt-hint"></div>
+              <div id="kitchenDropzone" class="dropzone" style="display:none">
+                <div class="dropzone-text"><strong>Drop images here</strong> or click to browse</div>
+                <div class="dropzone-hint">JPG, PNG, WebP. Uploaded to the selected kitchen.</div>
+                <input type="file" id="kitchenFileInput" accept="image/*" multiple style="display:none" />
               </div>
+              <div id="kitchenFileList" class="file-list"></div>
+              <!-- Legacy folder settings (kept hidden for backward compat) -->
+              <input type="hidden" id="sBackgroundsFolder" />
+              <input type="hidden" id="sSubfolder" />
             </div>
           </div>
 

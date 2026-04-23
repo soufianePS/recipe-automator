@@ -957,15 +957,19 @@
     // BACKGROUNDS FOLDER
     // ================================================================
     async function scanSubfolders(preselect) {
-      const path = document.getElementById('sBackgroundsFolder').value.trim();
-      const select = document.getElementById('sSubfolder');
+      // Legacy folder-picker UI has been replaced by the Kitchens feature.
+      // Keep the function as a no-op for backward compatibility with older settings
+      // that may still reference backgroundsFolderPath + selectedSubfolder.
       const info = document.getElementById('subfolderInfo');
+      const select = document.getElementById('sSubfolder');
+      if (!info || !select || select.tagName === 'INPUT') return;
+      // If the legacy UI elements still exist, preserve the old behaviour
+      const pathEl = document.getElementById('sBackgroundsFolder');
+      const path = pathEl ? pathEl.value.trim() : '';
       if (!path) { info.textContent = 'Enter a folder path first'; return; }
-
       try {
         const resp = await fetch('/api/backgrounds/subfolders?path=' + encodeURIComponent(path));
         const data = await resp.json();
-
         select.innerHTML = '<option value="">-- Select subfolder --</option>';
         if (data.subfolders && data.subfolders.length) {
           data.subfolders.forEach(name => {
@@ -976,14 +980,6 @@
           });
           info.textContent = data.subfolders.length + ' subfolder(s) found';
           if (preselect) select.value = preselect;
-
-          select.onchange = async () => {
-            if (select.value) {
-              const preview = await fetch('/api/backgrounds/folder/preview').then(r => r.json());
-              info.textContent = select.value + ': ' + (preview.count || 0) + ' image(s)';
-            }
-          };
-          if (select.value) select.onchange();
         } else {
           info.textContent = 'No subfolders found at this path';
         }
@@ -1068,6 +1064,10 @@
         // Old shared column settings removed — now per-module above
         document.getElementById('sAppsScriptUrl').value = settings.appsScriptUrl || '';
         document.getElementById('sDownloadFolder').value = settings.downloadFolder || '';
+        // Content Quality & Nutrition
+        document.getElementById('sContentQualityEnabled').checked = settings.contentQualityEnabled !== false;
+        document.getElementById('sReadabilityTarget').value = settings.readabilityTarget || 60;
+        document.getElementById('sNutritionApiKey').value = settings.nutritionApiKey || '';
         document.getElementById('sWpUrl').value = settings.wpUrl || '';
         document.getElementById('sWpUsername').value = settings.wpUsername || '';
         document.getElementById('sWpAppPassword').value = settings.wpAppPassword || '';
@@ -1166,6 +1166,7 @@
       }
 
       loadBackgrounds();
+      loadKitchens();
     }
 
     // ── Verified Generator prompt defaults & loader ──
@@ -1359,6 +1360,10 @@
         scraperStartRow: parseInt(document.getElementById('sScraperStartRow').value) || 2,
         appsScriptUrl: document.getElementById('sAppsScriptUrl').value.trim(),
         downloadFolder: document.getElementById('sDownloadFolder').value.trim(),
+        // Content Quality & Nutrition
+        contentQualityEnabled: document.getElementById('sContentQualityEnabled').checked,
+        readabilityTarget: parseInt(document.getElementById('sReadabilityTarget').value) || 60,
+        nutritionApiKey: document.getElementById('sNutritionApiKey').value.trim(),
         wpUrl: document.getElementById('sWpUrl').value.trim().replace(/\/+$/, ''),
         wpUsername: document.getElementById('sWpUsername').value.trim(),
         wpAppPassword: document.getElementById('sWpAppPassword').value.trim(),
@@ -1553,12 +1558,88 @@
         container.innerHTML = '<span style="color:#555;font-size:12px">No backgrounds loaded</span>';
         return;
       }
-      container.innerHTML = items.map((item, idx) =>
-        '<div class="file-chip">' +
-          '<span>' + escapeHtml(item.name || ('Image ' + (idx + 1))) + '</span>' +
-          '<button class="delete-btn" onclick="deleteBackground(\'' + type + '\',' + idx + ')" title="Remove">x</button>' +
-        '</div>'
-      ).join('');
+      // Switch container to gallery layout
+      container.className = 'image-gallery';
+      const mimeFor = (name) => {
+        const ext = (name || '').toLowerCase().split('.').pop();
+        return ({png:'image/png', webp:'image/webp', gif:'image/gif', jpg:'image/jpeg', jpeg:'image/jpeg'})[ext] || 'image/jpeg';
+      };
+      container.innerHTML = items.map((item, idx) => {
+        const name = item.name || ('Image ' + (idx + 1));
+        const src = 'data:' + mimeFor(name) + ';base64,' + (item.base64 || '');
+        const safeName = escapeHtml(name);
+        return (
+          '<div class="image-card" onclick="openImageModal(\'' + type + '\',' + idx + ')">' +
+            '<img src="' + src + '" alt="' + safeName + '" loading="lazy" />' +
+            '<div class="image-card-overlay">' +
+              '<div class="image-card-name" title="' + safeName + '">' + safeName + '</div>' +
+              '<div class="image-card-actions">' +
+                '<button class="image-card-btn edit" onclick="event.stopPropagation(); replaceBackground(\'' + type + '\',' + idx + ')">Replace</button>' +
+                '<button class="image-card-btn delete" onclick="event.stopPropagation(); deleteBackground(\'' + type + '\',' + idx + ')">Delete</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    // Cache loaded backgrounds for modal/replace actions (keyed by type)
+    const bgCache = {};
+
+    async function openImageModal(type, idx) {
+      try {
+        const resp = await fetch('/api/backgrounds');
+        const data = await resp.json();
+        bgCache[type] = data[type] || [];
+        const item = bgCache[type][idx];
+        if (!item) return;
+        const ext = (item.name || '').toLowerCase().split('.').pop();
+        const mime = ({png:'image/png', webp:'image/webp', gif:'image/gif', jpg:'image/jpeg', jpeg:'image/jpeg'})[ext] || 'image/jpeg';
+        const src = 'data:' + mime + ';base64,' + item.base64;
+        const modal = document.createElement('div');
+        modal.className = 'image-modal';
+        modal.onclick = () => modal.remove();
+        modal.innerHTML =
+          '<button class="image-modal-close" onclick="this.parentElement.remove()" title="Close">&times;</button>' +
+          '<img src="' + src + '" alt="' + escapeHtml(item.name) + '" onclick="event.stopPropagation()" />' +
+          '<div class="image-modal-caption">' + escapeHtml(item.name) + '</div>';
+        document.body.appendChild(modal);
+        const esc = (e) => { if (e.key === 'Escape') { modal.remove(); document.removeEventListener('keydown', esc); } };
+        document.addEventListener('keydown', esc);
+      } catch (e) {
+        toast('Failed to open image: ' + e.message, 'error');
+      }
+    }
+
+    async function replaceBackground(type, idx) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+          const base64 = await fileToBase64(file);
+          // Delete old, then upload new
+          const delResp = await fetch('/api/backgrounds/' + type + '/' + idx, { method: 'DELETE' });
+          if (!delResp.ok) { toast('Failed to remove old image', 'error'); return; }
+          const upResp = await fetch('/api/backgrounds/' + type, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ name: file.name, base64 }] })
+          });
+          const data = await upResp.json();
+          if (data.ok) {
+            toast('Image replaced', 'success');
+            loadBackgrounds();
+          } else {
+            toast(data.error || 'Replace failed', 'error');
+          }
+        } catch (err) {
+          toast('Replace error: ' + err.message, 'error');
+        }
+      };
+      input.click();
     }
 
     async function deleteBackground(type, index) {
@@ -1637,6 +1718,215 @@
         reader.readAsDataURL(file);
       });
     }
+
+    // ================================================================
+    // KITCHENS (multi-pool step/ingredient backgrounds)
+    // ================================================================
+    let kitchensState = { kitchens: [], activeKitchenId: null, selectedId: null };
+
+    async function loadKitchens() {
+      try {
+        const resp = await fetch('/api/kitchens');
+        const data = await resp.json();
+        kitchensState.kitchens = data.kitchens || [];
+        kitchensState.activeKitchenId = data.activeKitchenId;
+        if (!kitchensState.selectedId || !kitchensState.kitchens.find(k => k.id === kitchensState.selectedId)) {
+          kitchensState.selectedId = kitchensState.activeKitchenId;
+        }
+        renderKitchens();
+      } catch (e) { toast('Failed to load kitchens: ' + e.message, 'error'); }
+    }
+
+    function renderKitchens() {
+      const tabs = document.getElementById('kitchenTabs');
+      const actions = document.getElementById('kitchenActions');
+      const dropzone = document.getElementById('kitchenDropzone');
+      const list = document.getElementById('kitchenFileList');
+      if (!tabs) return;
+      tabs.innerHTML = kitchensState.kitchens.map(k => {
+        const cls = [
+          'kitchen-tab',
+          k.id === kitchensState.selectedId ? 'selected' : '',
+          k.id === kitchensState.activeKitchenId ? 'active' : ''
+        ].filter(Boolean).join(' ');
+        return `<span class="${cls}" onclick="selectKitchen('${k.id}')">${escapeHtml(k.name)}</span>`;
+      }).join('') + '<span class="kitchen-tab kitchen-tab-new" onclick="createKitchen()">+ New Kitchen</span>';
+      const selected = kitchensState.kitchens.find(k => k.id === kitchensState.selectedId);
+      if (!selected) {
+        actions.style.display = 'none';
+        dropzone.style.display = 'none';
+        list.innerHTML = '';
+        list.className = 'file-list';
+        return;
+      }
+      actions.style.display = 'flex';
+      dropzone.style.display = 'block';
+      // Render gallery using the same pattern as renderBackgroundList but for kitchen
+      if (!selected.backgrounds || selected.backgrounds.length === 0) {
+        list.className = 'file-list';
+        list.innerHTML = '<span style="color:#555;font-size:12px">No backgrounds in this kitchen yet</span>';
+        return;
+      }
+      list.className = 'image-gallery';
+      const mimeFor = (name) => {
+        const ext = (name || '').toLowerCase().split('.').pop();
+        return ({png:'image/png', webp:'image/webp', gif:'image/gif', jpg:'image/jpeg', jpeg:'image/jpeg'})[ext] || 'image/jpeg';
+      };
+      list.innerHTML = selected.backgrounds.map((item, idx) => {
+        const name = item.name || ('Image ' + (idx + 1));
+        const src = 'data:' + mimeFor(name) + ';base64,' + (item.base64 || '');
+        const safeName = escapeHtml(name);
+        return (
+          `<div class="image-card" onclick="openKitchenModal(${idx})">` +
+            `<img src="${src}" alt="${safeName}" loading="lazy" />` +
+            `<div class="image-card-overlay">` +
+              `<div class="image-card-name" title="${safeName}">${safeName}</div>` +
+              `<div class="image-card-actions">` +
+                `<button class="image-card-btn edit" onclick="event.stopPropagation(); replaceKitchenBg(${idx})">Replace</button>` +
+                `<button class="image-card-btn delete" onclick="event.stopPropagation(); deleteKitchenBg(${idx})">Delete</button>` +
+              `</div>` +
+            `</div>` +
+          `</div>`
+        );
+      }).join('');
+    }
+
+    function selectKitchen(id) {
+      kitchensState.selectedId = id;
+      renderKitchens();
+    }
+
+    async function createKitchen() {
+      const name = prompt('Kitchen name:', `Kitchen ${kitchensState.kitchens.length + 1}`);
+      if (!name) return;
+      try {
+        const resp = await fetch('/api/kitchens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+        const data = await resp.json();
+        if (data.ok) {
+          kitchensState.selectedId = data.kitchen.id;
+          await loadKitchens();
+          toast(`Kitchen "${data.kitchen.name}" created`, 'success');
+        } else toast(data.error || 'Create failed', 'error');
+      } catch (e) { toast('Create error: ' + e.message, 'error'); }
+    }
+
+    async function renameActiveKitchen() {
+      const k = kitchensState.kitchens.find(x => x.id === kitchensState.selectedId);
+      if (!k) return;
+      const name = prompt('New name:', k.name);
+      if (!name || name === k.name) return;
+      try {
+        const resp = await fetch('/api/kitchens/' + k.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+        const data = await resp.json();
+        if (data.ok) { await loadKitchens(); toast('Kitchen renamed', 'success'); }
+        else toast(data.error || 'Rename failed', 'error');
+      } catch (e) { toast('Rename error: ' + e.message, 'error'); }
+    }
+
+    async function setActiveKitchenFromUI() {
+      if (!kitchensState.selectedId) return;
+      try {
+        const resp = await fetch('/api/kitchens/active', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: kitchensState.selectedId }) });
+        const data = await resp.json();
+        if (data.ok) { await loadKitchens(); toast('Active kitchen updated', 'success'); }
+        else toast(data.error || 'Activate failed', 'error');
+      } catch (e) { toast('Activate error: ' + e.message, 'error'); }
+    }
+
+    async function deleteActiveKitchen() {
+      const k = kitchensState.kitchens.find(x => x.id === kitchensState.selectedId);
+      if (!k) return;
+      if (!confirm(`Delete kitchen "${k.name}" and all its backgrounds?`)) return;
+      try {
+        const resp = await fetch('/api/kitchens/' + k.id, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) { kitchensState.selectedId = null; await loadKitchens(); toast('Kitchen deleted', 'info'); }
+        else toast(data.error || 'Delete failed', 'error');
+      } catch (e) { toast('Delete error: ' + e.message, 'error'); }
+    }
+
+    async function uploadKitchenFiles(fileList) {
+      if (!kitchensState.selectedId) { toast('No kitchen selected', 'error'); return; }
+      const files = [];
+      for (const file of fileList) {
+        if (!file.type.startsWith('image/')) continue;
+        const base64 = await fileToBase64(file);
+        files.push({ name: file.name, base64 });
+      }
+      if (!files.length) return;
+      try {
+        const resp = await fetch(`/api/kitchens/${kitchensState.selectedId}/backgrounds`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files })
+        });
+        const data = await resp.json();
+        if (data.ok) { await loadKitchens(); toast(`${files.length} background(s) added`, 'success'); }
+        else toast(data.error || 'Upload failed', 'error');
+      } catch (e) { toast('Upload error: ' + e.message, 'error'); }
+    }
+
+    async function deleteKitchenBg(idx) {
+      try {
+        const resp = await fetch(`/api/kitchens/${kitchensState.selectedId}/backgrounds/${idx}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) { await loadKitchens(); toast('Background removed', 'info'); }
+        else toast(data.error || 'Delete failed', 'error');
+      } catch (e) { toast('Delete error: ' + e.message, 'error'); }
+    }
+
+    async function replaceKitchenBg(idx) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+          const base64 = await fileToBase64(file);
+          const delResp = await fetch(`/api/kitchens/${kitchensState.selectedId}/backgrounds/${idx}`, { method: 'DELETE' });
+          if (!delResp.ok) { toast('Failed to remove old image', 'error'); return; }
+          const upResp = await fetch(`/api/kitchens/${kitchensState.selectedId}/backgrounds`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ name: file.name, base64 }] })
+          });
+          const data = await upResp.json();
+          if (data.ok) { await loadKitchens(); toast('Replaced', 'success'); }
+          else toast(data.error || 'Replace failed', 'error');
+        } catch (err) { toast('Replace error: ' + err.message, 'error'); }
+      };
+      input.click();
+    }
+
+    function openKitchenModal(idx) {
+      const k = kitchensState.kitchens.find(x => x.id === kitchensState.selectedId);
+      const item = k?.backgrounds?.[idx];
+      if (!item) return;
+      const ext = (item.name || '').toLowerCase().split('.').pop();
+      const mime = ({png:'image/png', webp:'image/webp', gif:'image/gif', jpg:'image/jpeg', jpeg:'image/jpeg'})[ext] || 'image/jpeg';
+      const src = 'data:' + mime + ';base64,' + item.base64;
+      const modal = document.createElement('div');
+      modal.className = 'image-modal';
+      modal.onclick = () => modal.remove();
+      modal.innerHTML =
+        '<button class="image-modal-close" onclick="this.parentElement.remove()" title="Close">&times;</button>' +
+        '<img src="' + src + '" alt="' + escapeHtml(item.name) + '" onclick="event.stopPropagation()" />' +
+        '<div class="image-modal-caption">' + escapeHtml(item.name) + '</div>';
+      document.body.appendChild(modal);
+      const esc = (e) => { if (e.key === 'Escape') { modal.remove(); document.removeEventListener('keydown', esc); } };
+      document.addEventListener('keydown', esc);
+    }
+
+    // Set up kitchen dropzone when dashboard loads
+    setTimeout(() => {
+      const dz = document.getElementById('kitchenDropzone');
+      const fi = document.getElementById('kitchenFileInput');
+      if (!dz || !fi) return;
+      dz.addEventListener('click', () => fi.click());
+      dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+      dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+      dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); uploadKitchenFiles(e.dataTransfer.files); });
+      fi.addEventListener('change', (e) => { uploadKitchenFiles(e.target.files); fi.value = ''; });
+    }, 100);
 
     // ================================================================
     // LOGS
@@ -1933,6 +2223,10 @@
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
                 <span style="font-size:12px;color:#666;">Gemini Key:</span>
                 <input type="password" value="${acct.geminiApiKey || ''}" id="faGemini_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#888;padding:3px 8px;border-radius:5px;font-size:12px;flex:1;" placeholder="Gemini API key (for verified generator)" onchange="updateFlowAccount('${acct.id}', {geminiApiKey: this.value})" />
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+                <span style="font-size:12px;color:#666;">Nutrition Key:</span>
+                <input type="password" value="${acct.nutritionApiKey || ''}" id="faNutrition_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#888;padding:3px 8px;border-radius:5px;font-size:12px;flex:1;" placeholder="API Ninjas key (rotates when quota hit)" onchange="updateFlowAccount('${acct.id}', {nutritionApiKey: this.value})" />
               </div>
               <div style="font-size:12px;color:#aaa;margin-bottom:10px;">
                 Images today: ${acct.generationCount || 0} &nbsp;|&nbsp; Last gen: ${lastGenTime}
