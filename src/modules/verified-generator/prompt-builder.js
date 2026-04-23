@@ -21,7 +21,9 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     "Show ONLY this step, not future steps",
     "All food must be inside the container",
     "No text, no watermark",
-    "KEEP the uploaded background exactly — same surface, same texture, same color",
+    isServingStep
+      ? "REPLACE the uploaded background — render the food on a BRIGHT WHITE surface (white marble / white linen / white wood / clean white countertop). Bright natural daylight. Pinterest-style. Do NOT use the dark/wood/moody reference surface for this final serving shot."
+      : "KEEP the uploaded background exactly — same surface, same texture, same color",
     "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
     "Do NOT make food look perfectly arranged or symmetrical",
     "Follow the position_change description for food placement and movement",
