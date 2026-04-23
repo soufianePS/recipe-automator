@@ -266,7 +266,12 @@ VALIDATION CHECKS:
 2. Check if all required ingredients are present
 3. Check if any ingredient appears cooked or mixed
 4. Check for extra food items not in the required list
-5. Check if EVERY ingredient is in its own small bowl, plate, or dish — NOT placed directly on the background surface. Ingredients directly on the surface = HARD_FAIL
+5. Presentation is FLEXIBLE — items may be whole on the surface, in bowls, or in standing packaging. Do NOT fail based on presentation style. Only fail if an ingredient is MISSING, COOKED, or clearly the wrong thing.
+
+PASS CRITERIA — pass the image if:
+- All required ingredients are visible (in any form: whole, bowl, packaged)
+- Nothing is cooked or mixed
+- No disallowed extra food items
 
 OUTPUT JSON ONLY:
 {

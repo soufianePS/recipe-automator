@@ -50,8 +50,12 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     image_type: isServingStep ? "serving_step" : "recipe_step",
     container: stepState.container || defaults.defaultContainer,
     camera: stepState.camera_angle || defaults.defaultCameraAngle,
-    lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "MUST match the uploaded reference image — keep the same surface, texture, and color. Do NOT change or replace the background.",
+    lighting: isServingStep
+      ? "bright natural daylight from a large window, soft diffused highlights, very airy and luminous, Pinterest-style"
+      : (vgSettings?.defaultLighting || defaults.defaultLighting),
+    background: isServingStep
+      ? "IGNORE the uploaded reference image for the background. Use a BRIGHT WHITE or pale light-grey photographic surface — white marble, white linen tablecloth, white wood plank, or clean white countertop. Blurred, slightly out-of-focus background. Pinterest / food-blog aesthetic — airy, luminous, clean."
+      : "MUST match the uploaded reference image — keep the same surface, texture, and color. Do NOT change or replace the background.",
     visible_ingredients: (stepState.visible_ingredients || []).map(ing => {
       if (typeof ing === 'string') return ing;
       let desc = `${ing.name}: ${ing.state}`;
@@ -125,24 +129,23 @@ export function buildHeroPrompt(heroState, vgSettings) {
     description: heroState.base_description || "finished dish",
     container: heroState.container || defaults.defaultContainer,
     camera: heroState.camera_angle || "45-degree angle",
-    lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "MUST match the uploaded reference image — keep the same surface, texture, color",
+    lighting: "bright natural daylight from a large window, soft diffused highlights, very airy and luminous, Pinterest-style",
+    background: "IGNORE the uploaded reference image for the background. Use a BRIGHT WHITE or pale light-grey photographic surface — white marble, white linen tablecloth, white wood plank, white parchment paper, or clean white countertop. Blurred, slightly out-of-focus background to let the food pop. This is the Pinterest / food-blog hero aesthetic — airy, luminous, clean, magazine-quality.",
     arrangement: heroState.arrangement || "appetizing final presentation, magazine-quality plating",
     allowed_additions: heroState.allowed_additions || [],
-    forbidden: heroState.forbidden || ["raw ingredients", "extra bowls", "utensils"],
+    forbidden: heroState.forbidden || ["raw ingredients", "extra bowls", "utensils", "dark background", "wooden board (save for step images)", "moody/dark lighting"],
     rules: [
       "Show the FINISHED dish only — fully cooked and appetizing",
-      "This is the HERO IMAGE — it must be the most beautiful and mouth-watering photo of the entire recipe",
-      "WARM RICH COLORS — golden-brown seared surfaces and deep rich sauces and bright fresh herbs. Absolutely NO grey or washed-out or pale food",
-      "VISIBLE TEXTURE in sharp focus — crispy edges and glossy sauce and melted cheese and caramelized surfaces and visible grain and fiber",
-      "DEPTH AND VOLUME — food must look 3D and abundant. Sauce pooling naturally. Toppings piled generously. Nothing flat or sparse",
-      "MOISTURE — sauce must glisten. Meat must look juicy. Vegetables must look fresh and crisp. Nothing dry or stale",
-      "Magazine-cover quality: this image alone must make someone want to cook this recipe",
-      "Natural but beautiful — slight imperfections but overall stunning and appetizing",
+      "This is the HERO IMAGE — the Pinterest/food-blog cover shot. Bright, airy, luminous",
+      "BACKGROUND MUST BE WHITE / LIGHT — white marble, white linen, white wood, or clean pale surface. NOT wood boards, NOT dark stone, NOT moody",
+      "WARM RICH FOOD COLORS on the WHITE background — golden-brown searing, deep rich sauces, bright fresh herbs pop against the light surface",
+      "VISIBLE TEXTURE in sharp focus — crispy edges and glossy sauce and melted cheese and caramelized surfaces",
+      "DEPTH AND VOLUME — food 3D and abundant, sauce pooling, toppings piled generously",
+      "MOISTURE — sauce glistens, meat juicy, vegetables fresh and crisp",
+      "SOFT DIFFUSED DAYLIGHT — bright natural window light, very few hard shadows. Pinterest-bright, not studio-dark",
+      "Magazine-cover quality — this single image must make someone want to cook this recipe",
       "Follow the arrangement description for garnish placement and sauce drizzle",
-      "No raw ingredients visible",
-      "No extra containers or utensils",
-      "No text, no watermark"
+      "No raw ingredients visible, no extra containers or utensils, no text, no watermark"
     ]
   };
 
