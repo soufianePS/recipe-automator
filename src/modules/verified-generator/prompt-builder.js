@@ -98,7 +98,8 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
     rules: [
       "NATURAL SCATTER — items placed organically with asymmetric spacing. NO grid, NO circle, NO straight lines, NO symmetric arrangement",
       "USE REAL FORMS — whole vegetables as-is (whole potatoes, whole garlic, whole onion), bottles upright, boxes and bags upright, jars with labels forward",
-      "REAL PRODUCT PACKAGING — every packaged ingredient (oils, spices, flours, sugars, sauces, canned goods) MUST show believable brand-labeled packaging. Invent fake brand names like 'Heath Riles BBQ', 'Great Value Flour', 'Sun Harvest Sugar', 'GRAZA Oil' — labels face forward and are readable. NEVER blank/sterile unlabeled containers",
+      "REAL PRODUCT PACKAGING — ONLY ingredients that come in a package from the store (oil bottles, spice shakers, flour bags, sugar boxes, sauce jars, canned goods, butter blocks, cream cheese bricks) may show a brand label. The brand label goes ON THE ACTUAL PHYSICAL PACKAGE itself — the bottle, the jar, the box, the wrapper — NEVER on a bowl or ramekin or on the ingredient directly. Invent fake brand names like 'Heath Riles BBQ', 'GRAZA Oil', 'Great Value Flour'.",
+      "SCOOPED INGREDIENTS GO IN PLAIN BOWLS — anything scooped out of its package (sour cream in a bowl, shredded cheese in a bowl, chopped herbs in a ramekin, salt in a small dish) goes in a PLAIN white or ceramic bowl with NO label, NO sticker, NO brand stamp. Do NOT paint brand logos onto bowls or onto the surface of the ingredient itself.",
       "LIMITED SMALL RAMEKINS — ONLY finely chopped herbs, spices, grated cheese, or pre-diced items go in small ramekins (2-4 max). Everything else stays in its whole / packaged / plated form",
       "VARY CONTAINER SIZES — some large plates, some tiny ramekins, NEVER all identical bowls",
       "MIX HEIGHTS — tall standing bottles and boxes create depth alongside flat items",
