@@ -451,12 +451,13 @@ INTRO RULES:
 
 INTERNAL LINKING RULE (CRITICAL for SEO):
 - You will receive a list of EXISTING recipes from this blog in the {{related_recipes}} variable.
-- Pick 2 or 3 recipes that are topically related to "{{topic}}" and link to them naturally.
-- Place ONE link in the intro (2nd or 3rd paragraph) and ONE or TWO in the conclusion.
+- Pick 3 to 5 recipes that are topically related to "{{topic}}" and link to them naturally throughout the post.
+- Required placements: 1 link in intro (2nd or 3rd paragraph), 1 link in "why_this_works" or the cooking tips section, 1 link in "substitutions" or "storage_notes" section, 1-2 links in conclusion.
 - Use the EXACT markdown syntax: [Recipe Title](https://full-url) with the exact title and url from the list.
 - Write natural sentences around the links like "If you love this recipe, try our [Easy Overnight Oats](url) for another quick breakfast."
 - Do NOT invent recipes — only use what is provided in {{related_recipes}}.
 - If the {{related_recipes}} list is empty, skip linking and write normally.
+- Spread links across different sections — do NOT cluster them all in the intro or conclusion.
 
 INGREDIENT RULES:
 - List all ingredients with name and quantity and description (short functional role).
@@ -519,6 +520,23 @@ FINAL DISH RULE:
 IMAGE PROMPT RULES:
 - Image prompts must ONLY describe: food and container.
 - Never describe: background or lighting or surface or camera.
+
+WHY THIS RECIPE WORKS RULE:
+- Write the why_this_works field as 2-3 genuine sentences showing expertise.
+- Mention a specific technique, ingredient interaction, temperature, or timing trick that non-cooks would not know.
+- Be concrete: "Cooking at 375°F instead of 400°F prevents the outer crust from setting before the center cooks through" NOT "the temperature is important for even cooking".
+- This section signals E-E-A-T (experience and expertise) to Google.
+
+SUBSTITUTIONS RULE:
+- Provide 4-6 substitution entries covering dietary needs (dairy-free, gluten-free, egg-free) AND availability swaps (no buttermilk? use milk + vinegar).
+- Each entry must have ingredient + swap + honest note about how it changes the result (texture, flavor, cook time).
+- Be realistic: if a swap does NOT work well, say so. "Cream cheese for sour cream — works but the sauce becomes denser and slightly tangier. Good if that is what you want."
+- Include at least 1 internal link to another recipe in one of the substitution notes (e.g., "If you prefer a lighter version try our [recipe name](url)").
+
+STRUCTURE RANDOMIZATION RULE (CRITICAL anti-scaled-content signal):
+- The blog post will be rendered from the JSON fields. Use the randomized section order and H2 titles provided below in {{section_structure}}.
+- If {{section_structure}} is empty, use a default sensible order.
+- NEVER use the same H2 titles in the same order as previous posts. Variation breaks the AI-templated-content signal Google flags.
 
 SEO RULES:
 - Generate SEO for hero image and ingredients image and each step image.
@@ -671,6 +689,8 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "ingredients_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
     "steps": [{"number": 1, "title": "specific action", "description": "1-2 paragraphs explaining visual change", "tip": "", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
     "equipment": [{"name": "", "notes": "function."}],
+    "why_this_works": "2-3 sentences explaining the science or technique that makes this recipe work — specific ingredient interactions, cooking temperatures, timing tricks. Mention 1-2 concrete details (e.g., 'Resting the dough for 30 minutes lets the gluten relax, so it rolls thinner without snapping back'). Include 1 internal link to a related recipe naturally.",
+    "substitutions": [{"ingredient": "ingredient name", "swap": "what to use instead", "note": "how the result differs (texture, flavor, outcome) — be specific"}],
     "pro_tips": ["", "", "", ""],
     "faq": [{"question": "?", "answer": ""}],
     "storage_notes": "1-2 paragraphs.",

@@ -84,6 +84,88 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
   }
 
   /**
+   * Build a randomized H2 section structure for this specific post.
+   * Picks random synonyms for each H2 + randomly includes 1-3 optional sections
+   * + shuffles order (within constraints). Prevents "scaled content abuse"
+   * detection from Google when all posts have identical H2 structures.
+   */
+  _buildStructureRandomization() {
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const pickN = (arr, n) => {
+      const copy = [...arr];
+      const out = [];
+      for (let i = 0; i < n && copy.length; i++) {
+        const idx = Math.floor(Math.random() * copy.length);
+        out.push(copy[idx]);
+        copy.splice(idx, 1);
+      }
+      return out;
+    };
+
+    // H2 name variants per required section
+    const pools = {
+      why_this_works: ["Why This Recipe Works", "Why You'll Love It", "The Secret to This Recipe", "What Makes It Work", "The Science Behind It"],
+      ingredients: ["Ingredients", "What You'll Need", "The Ingredients", "Shopping List", "Ingredient List"],
+      equipment: ["Kitchen Equipment", "Tools You'll Need", "Equipment", "What You'll Use", "The Gear"],
+      instructions: ["How to Make It", "Step-by-Step Instructions", "Method", "Let's Make It", "Directions", "How to"],
+      tips: ["Pro Tips", "Tips for Success", "My Favorite Tips", "Chef's Notes", "Recipe Notes", "Tips and Tricks"],
+      substitutions: ["Substitutions & Variations", "Substitutions", "Ingredient Swaps", "Make It Your Own", "Variations to Try"],
+      storage: ["Storage Instructions", "How to Store & Reheat", "How to Store", "Storage Tips", "Keeping Leftovers"],
+      faq: ["Frequently Asked Questions", "FAQ", "Questions I Get Asked", "Common Questions", "Reader Questions"],
+      conclusion: ["Final Thoughts", "Before You Go", "In Conclusion", "A Final Note", "Let Me Know"]
+    };
+
+    const optionalPools = {
+      make_ahead: ["Make Ahead", "Meal Prep Notes", "Prep Ahead Tips"],
+      serving: ["Serving Suggestions", "What to Serve With This", "Pairings"],
+      nutrition: ["A Note on Nutrition", "Nutritional Notes"],
+    };
+
+    // Required H2s (content is always generated; only the title varies)
+    const selected = {
+      why_this_works: pick(pools.why_this_works),
+      ingredients: pick(pools.ingredients),
+      equipment: pick(pools.equipment),
+      instructions: pick(pools.instructions),
+      tips: pick(pools.tips),
+      substitutions: pick(pools.substitutions),
+      storage: pick(pools.storage),
+      faq: pick(pools.faq),
+      conclusion: pick(pools.conclusion)
+    };
+
+    // Randomly pick 0-2 optional sections
+    const optionalCount = Math.floor(Math.random() * 3);
+    const optionalChosen = pickN(Object.keys(optionalPools), optionalCount)
+      .map(key => ({ key, title: pick(optionalPools[key]) }));
+
+    // Core order (with some flex — swap tips/substitutions position randomly)
+    const order = [
+      { key: 'intro', title: '(post intro — no H2)' },
+      { key: 'why_this_works', title: selected.why_this_works },
+      { key: 'ingredients', title: selected.ingredients },
+      { key: 'equipment', title: selected.equipment },
+      { key: 'instructions', title: selected.instructions },
+      ...(Math.random() < 0.5
+        ? [{ key: 'tips', title: selected.tips }, { key: 'substitutions', title: selected.substitutions }]
+        : [{ key: 'substitutions', title: selected.substitutions }, { key: 'tips', title: selected.tips }]),
+      ...optionalChosen,
+      { key: 'storage', title: selected.storage },
+      { key: 'recipe_card', title: '(Tasty/WPRM recipe card block)' },
+      { key: 'faq', title: selected.faq },
+      { key: 'conclusion', title: selected.conclusion }
+    ];
+
+    const orderList = order.map((s, i) => `${i + 1}. H2: "${s.title}"`).join('\n');
+
+    // Return both the prompt text AND the selected titles (post-builder uses them)
+    return {
+      instructions: `\n\nSTRUCTURE RANDOMIZATION (this specific post):\nUse EXACTLY these H2 titles in this order when the content is rendered. Any section names used in the blog_content field MUST match these exact titles.\n\n${orderList}\n\nSection title keys (for reference): ${JSON.stringify(selected)}`,
+      titles: { ...selected, optional: optionalChosen }
+    };
+  }
+
+  /**
    * Copy a file to data/tmp/ with a unique prefix to avoid filename collisions in Flow project.
    * E.g. "photo.jpg" → "data/tmp/bg-1-photo.jpg" or "data/tmp/pin-2-photo.jpg"
    * Returns the new path. If already prepared with same prefix, returns cached path.
@@ -410,6 +492,13 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       settings.templateRotationIndex = idx + 1;
       await StateManager.saveSettings(settings);
     }
+
+    // ── Structure randomization: shuffle H2 titles + pick optional sections ──
+    // Anti-scaled-content signal — each post looks editorially unique to Google
+    const { instructions: structureInstructions, titles: sectionTitles } = this._buildStructureRandomization();
+    templateInstructions += structureInstructions;
+    // Persist randomized titles so post-builder can render with the same H2s
+    await StateManager.updateState({ sectionTitles });
 
     // Fetch related recipes from ALL categories for internal linking (best-effort; failures are non-fatal)
     let relatedRecipesBlock = 'No related recipes available — skip internal linking.';

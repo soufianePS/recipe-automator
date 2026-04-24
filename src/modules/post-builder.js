@@ -7,6 +7,51 @@ import { sanitizeAIText } from './base-orchestrator.js';
 import { Logger } from '../shared/utils/logger.js';
 
 /**
+ * Internal Link Post-Processing Safety Net
+ * Scans HTML for related recipe titles mentioned as plain text (not already linked).
+ * Auto-wraps unlinked mentions with the correct <a href>.
+ *
+ * @param {string} html - Post HTML content
+ * @param {Array<{title: string, url: string}>} relatedPosts - Available internal links
+ * @returns {string} HTML with auto-linked recipe mentions
+ */
+function autoLinkRelatedRecipes(html, relatedPosts) {
+  if (!relatedPosts || relatedPosts.length === 0) return html;
+
+  let linked = 0;
+  let result = html;
+
+  for (const post of relatedPosts) {
+    if (!post.title || !post.url || post.title.length < 5) continue;
+
+    // Escape title for regex
+    const escapedTitle = post.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Match the title as plain text — NOT already inside an <a> tag
+    // Negative lookbehind for href=" or > (inside a tag), negative lookahead for </a>
+    const regex = new RegExp(
+      `(?<!<a[^>]*>)(?<!href=["'][^"']*)(${escapedTitle})(?![^<]*<\\/a>)`,
+      'gi'
+    );
+
+    // Only replace the FIRST unlinked occurrence
+    let replaced = false;
+    result = result.replace(regex, (match) => {
+      if (replaced) return match;
+      replaced = true;
+      linked++;
+      return `<a href="${post.url}">${match}</a>`;
+    });
+  }
+
+  if (linked > 0) {
+    Logger.info(`[AutoLinker] Added ${linked} internal links to unlinked recipe mentions`);
+  }
+
+  return result;
+}
+
+/**
  * Build Gutenberg HTML blocks from recipe data and publish as WordPress draft.
  *
  * @param {object} state       - Current automation state
@@ -130,6 +175,8 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   // Default template if none configured
   // Clean, readable layout with spacing for ads and easy scrolling
   const defaultTemplate = [
+    // Jump to Recipe button
+    { type: 'jump-to-recipe' },
     // Intro
     { type: 'paragraphs', from: 0, count: 2, fontSize: '18px', lineHeight: '1.85', spacing: '20px' },
     { type: 'spacer', height: '20px' },
@@ -137,33 +184,41 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
     { type: 'spacer', height: '20px' },
     { type: 'paragraphs', from: 2, count: 2, fontSize: '18px', lineHeight: '1.85' },
     { type: 'spacer', height: '30px' },
+    // Why This Works (new — E-E-A-T signal)
+    { type: 'heading', textKey: 'why_this_works', fallback: 'Why This Recipe Works', level: 2 },
+    { type: 'why-this-works', fontSize: '18px', lineHeight: '1.85' },
+    { type: 'spacer', height: '30px' },
     // Ingredients
-    { type: 'heading', text: 'Ingredients', level: 2 },
+    { type: 'heading', textKey: 'ingredients', fallback: 'Ingredients', level: 2 },
     { type: 'ingredients-image' },
     { type: 'spacer', height: '15px' },
     { type: 'ingredients-list', fontSize: '18px' },
     { type: 'spacer', height: '30px' },
     // Instructions
-    { type: 'heading', text: 'Instructions', level: 2 },
+    { type: 'heading', textKey: 'instructions', fallback: 'Instructions', level: 2 },
     { type: 'steps', showTip: true, fontSize: '18px', lineHeight: '1.85', imageSpacing: '20px' },
     { type: 'spacer', height: '30px' },
     // Tips
-    { type: 'heading', text: 'Pro Tips', level: 2 },
+    { type: 'heading', textKey: 'tips', fallback: 'Pro Tips', level: 2 },
     { type: 'tips', fontSize: '18px' },
     { type: 'spacer', height: '25px' },
+    // Substitutions (new)
+    { type: 'heading', textKey: 'substitutions', fallback: 'Substitutions & Variations', level: 2 },
+    { type: 'substitutions', fontSize: '18px', lineHeight: '1.85' },
+    { type: 'spacer', height: '30px' },
     // Storage
-    { type: 'heading', text: 'Storage Instructions', level: 2 },
+    { type: 'heading', textKey: 'storage', fallback: 'Storage Instructions', level: 2 },
     { type: 'storage', fontSize: '18px', lineHeight: '1.85' },
     { type: 'spacer', height: '30px' },
     // Recipe card
     { type: 'recipe-card' },
     { type: 'spacer', height: '30px' },
     // FAQ
-    { type: 'heading', text: 'Frequently Asked Questions', level: 2 },
+    { type: 'heading', textKey: 'faq', fallback: 'Frequently Asked Questions', level: 2 },
     { type: 'faq', fontSize: '18px', lineHeight: '1.85' },
     { type: 'spacer', height: '25px' },
     // Conclusion
-    { type: 'heading', text: 'Final Thoughts', level: 2 },
+    { type: 'heading', textKey: 'conclusion', fallback: 'Final Thoughts', level: 2 },
     { type: 'note', fontSize: '18px', lineHeight: '1.85' },
     { type: 'spacer', height: '20px' },
     // Fun fact
@@ -175,6 +230,13 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   // Build blocks from template
   for (const block of template) {
     switch (block.type) {
+      case 'jump-to-recipe':
+        blocks.push(`<!-- wp:buttons {"layout":{"type":"flex","justifyContent":"center"},"style":{"spacing":{"margin":{"top":"10px","bottom":"20px"}}}} -->
+<div class="wp-block-buttons" style="margin-top:10px;margin-bottom:20px"><!-- wp:button {"className":"jump-to-recipe-btn"} -->
+<div class="wp-block-button jump-to-recipe-btn"><a class="wp-block-button__link wp-element-button" href="#recipe">Jump to Recipe</a></div>
+<!-- /wp:button --></div>
+<!-- /wp:buttons -->`);
+        break;
       case 'intro':
         blocks.push(...introParagraphs.map(p => pBlock(p)));
         break;
@@ -208,7 +270,11 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
       }
       case 'heading': {
         const level = block.level || 2;
-        const text = block.text || '';
+        // textKey → pull from state.sectionTitles (randomized per post); fallback to hard text or fallback string
+        const text = block.textKey
+          ? (state.sectionTitles?.[block.textKey] || block.fallback || '')
+          : (block.text || '');
+        if (!text) break;
         if (level === 2) blocks.push(h2Block(text));
         else if (level === 3) blocks.push(h3Block(text));
         else blocks.push(`<!-- wp:heading {"level":${level}} -->\n<h${level} class="wp-block-heading">${esc(text)}</h${level}>\n<!-- /wp:heading -->`);
@@ -271,6 +337,33 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
         if (storage) blocks.push(pBlock(sanitizeAIText(storage), storeOpts));
         if (recipe?.serving_suggestions) blocks.push(pBlock(sanitizeAIText(recipe.serving_suggestions), storeOpts));
         if (recipe?.make_ahead) blocks.push(pBlock(sanitizeAIText(recipe.make_ahead), storeOpts));
+        break;
+      }
+      case 'why-this-works': {
+        const txt = recipe?.why_this_works || '';
+        if (txt) {
+          const opts = { fontSize: block.fontSize, textColor: block.textColor, lineHeight: block.lineHeight };
+          blocks.push(pBlock(sanitizeAIText(txt), opts));
+        }
+        break;
+      }
+      case 'substitutions': {
+        const subs = recipe?.substitutions || [];
+        if (Array.isArray(subs) && subs.length > 0) {
+          const opts = { fontSize: block.fontSize, lineHeight: block.lineHeight };
+          const items = subs
+            .filter(s => s && (s.ingredient || s.swap))
+            .map(s => {
+              const ing = esc(s.ingredient || '');
+              const swap = esc(s.swap || '');
+              const note = s.note ? ' — ' + esc(s.note) : '';
+              return `<li><strong>${ing}:</strong> ${swap}${note}</li>`;
+            })
+            .join('');
+          if (items) {
+            blocks.push(`<!-- wp:list -->\n<ul class="wp-block-list">${items}</ul>\n<!-- /wp:list -->`);
+          }
+        }
         break;
       }
       case 'faq': {
@@ -406,6 +499,12 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
     if (recipe?.cuisine) schema.recipeCuisine = recipe.cuisine;
     if (recipe?.focus_keyword) schema.keywords = recipe.focus_keyword;
     html += `\n\n<!-- wp:html -->\n<script type="application/ld+json">\n${JSON.stringify(schema, null, 2)}\n</script>\n<!-- /wp:html -->`;
+  }
+
+  // Auto-link related recipe mentions that ChatGPT left as plain text
+  const relatedPosts = state._relatedPosts || [];
+  if (relatedPosts.length > 0) {
+    html = autoLinkRelatedRecipes(html, relatedPosts);
   }
 
   const post = await WordPressAPI.createDraftPost(
