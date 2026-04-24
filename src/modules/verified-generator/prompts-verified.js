@@ -426,9 +426,18 @@ Topic: "{{topic}}"
 
 GLOBAL RULES:
 - Use "{{topic}}" exactly as the Article Title.
-- Replace 100% all commas and periods with linking words and transition words inside all paragraphs.
-- Each paragraph must end with a period.
 - The "category" field MUST be one of these: {{categories}}.
+
+PUNCTUATION & HUMAN VOICE RULES (critical for anti-AI detection):
+- NEVER use semicolons ( ; ) anywhere. Humans rarely use them. Replace with a period + new sentence OR with "and" / "but".
+- Replace most commas inside paragraphs with linking words ("and", "but", "so", "then", "because", "while"). A few natural commas are fine (e.g. "For lunch, dinner, or snacks").
+- AVOID Oxford commas in 3-item lists when natural — write "salt pepper and thyme" not "salt, pepper, and thyme".
+- USE contractions everywhere: "don't" not "do not", "can't" not "cannot", "it's" not "it is", "you'll" not "you will", "I've" not "I have", "won't" not "will not".
+- Mix sentence lengths: some short (5-7 words), most medium (10-15 words), occasionally long. Never uniform length.
+- Occasional sentence fragments are welcome. Like this one. They feel natural and human.
+- Start some sentences with "And", "But", "So" — this is how people actually write conversationally.
+- Use em-dashes ( — ) for asides instead of parenthetical commas when possible.
+- Each paragraph must end with a period (not an em-dash or comma).
 
 OUTPUT ONE JSON with three sections: "recipe", "visual_plan", "pinterest_pins".
 
