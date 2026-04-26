@@ -12,6 +12,8 @@ import { FlowAccountManager } from './shared/utils/flow-account-manager.js';
 import { GeneratorOrchestrator } from './modules/generator/orchestrator.js';
 import { ScraperOrchestrator } from './modules/scraper/orchestrator.js';
 import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orchestrator.js';
+import { RegenOrchestrator } from './modules/regen/regen-orchestrator.js';
+import { RegenScheduler } from './modules/regen/regen-scheduler.js';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { VERIFIED_GENERATOR_DEFAULTS } from './modules/verified-generator/prompts-verified.js';
@@ -446,6 +448,116 @@ export function setupRoutes(app, ctx) {
       });
     } catch (e) {
       ctx.automationRunning = false;
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Regen: rewrite text of existing posts via the patched VG prompt ──
+  // Body: { postIds: number[], dryRun?: boolean }
+  // dryRun=true (default) writes proposed HTML to output/regen/post-<id>.html.
+  // dryRun=false PUTs the new content to WP and replaces the post body.
+  app.post('/api/start-regen', async (req, res) => {
+    try {
+      if (ctx.automationRunning) {
+        return res.status(400).json({ error: 'Automation is already running — pause first' });
+      }
+      const postIds = Array.isArray(req.body?.postIds)
+        ? req.body.postIds.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)
+        : [];
+      if (postIds.length === 0) {
+        return res.status(400).json({ error: 'postIds (array of WP post IDs) is required' });
+      }
+      const dryRun = req.body?.dryRun !== false; // default TRUE — safety
+
+      const settings = await StateManager.getSettings();
+      if (!settings.wpUrl || !settings.wpUsername || !settings.wpAppPassword) {
+        return res.status(400).json({ error: 'WordPress credentials are not configured' });
+      }
+
+      Logger.info(`=== Regen: ${postIds.length} post(s) ${dryRun ? '(DRY-RUN)' : '(LIVE)'} ===`);
+      for (const id of postIds) Logger.info(`  → post ${id}`);
+
+      await StateManager.resetState();
+      await StateManager.updateState({
+        status: STATES.LOADING_JOB,
+        regenMode: true,
+        regenQueue: postIds,
+        regenDryRun: dryRun,
+        regenStartedAt: Date.now()
+      });
+
+      Logger.info('Launching browser...');
+      try {
+        let profileOverride = null;
+        if (await FlowAccountManager.isEnabled()) {
+          const account = await FlowAccountManager.getActiveAccount();
+          if (account) profileOverride = FlowAccountManager.getProfileDir(account);
+        }
+        await ctx.launchBrowserWithProfile(profileOverride);
+      } catch (launchErr) {
+        return res.status(500).json({ error: `Browser launch failed: ${launchErr.message}` });
+      }
+
+      ctx.orchestrator = new RegenOrchestrator(null, ctx.browserContext, ctx);
+      ctx.automationRunning = true;
+      ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
+
+      res.json({
+        ok: true,
+        message: `Regen started: ${postIds.length} post(s) ${dryRun ? '(DRY-RUN)' : '(LIVE)'}`,
+        postIds,
+        dryRun
+      });
+    } catch (e) {
+      ctx.automationRunning = false;
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Regen Scheduler: drip post regen at natural-looking intervals ──
+  // Body: { postIds: number[], spreadDays?: number (default 21), dailyMax?: number (default 3) }
+  app.post('/api/start-regen-scheduled', async (req, res) => {
+    try {
+      const postIds = Array.isArray(req.body?.postIds)
+        ? req.body.postIds.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)
+        : [];
+      if (postIds.length === 0) {
+        return res.status(400).json({ error: 'postIds (array of WP post IDs) is required' });
+      }
+      const spreadDays = Number(req.body?.spreadDays) || Math.max(7, Math.ceil(postIds.length / 1.5));
+      const dailyMax = Number(req.body?.dailyMax) || 3;
+
+      const result = await RegenScheduler.schedulePosts(postIds, { spreadDays, dailyMax });
+      Logger.info(`=== Regen Scheduler: ${postIds.length} post(s) over ~${spreadDays} days, max ${dailyMax}/day ===`);
+      res.json({ ok: true, ...result, spreadDays, dailyMax });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/regen-schedule', async (req, res) => {
+    try {
+      const schedule = await RegenScheduler.getSchedule();
+      const summary = {
+        total: schedule.items.length,
+        pending: schedule.items.filter(i => i.status === 'pending').length,
+        done: schedule.items.filter(i => i.status === 'done').length,
+        errors: schedule.items.filter(i => i.status === 'error').length,
+        inProgress: schedule.items.filter(i => i.status === 'in_progress').length,
+        firstDue: schedule.items.find(i => i.status === 'pending')?.scheduledAt,
+        lastDue: schedule.items.filter(i => i.status === 'pending').slice(-1)[0]?.scheduledAt,
+      };
+      res.json({ ok: true, summary, schedule });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/regen-schedule', async (req, res) => {
+    try {
+      const result = await RegenScheduler.clearPending();
+      res.json({ ok: true, ...result });
+    } catch (e) {
       res.status(500).json({ error: e.message });
     }
   });

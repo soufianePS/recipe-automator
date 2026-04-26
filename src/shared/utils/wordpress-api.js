@@ -470,6 +470,101 @@ export const WordPressAPI = {
     };
   },
 
+  /**
+   * Update an existing post (regen mode). Only the fields you pass are sent;
+   * everything else on the post stays as-is. Used by the regen pipeline so
+   * URLs, IDs, slugs, comments, and recipe-card links survive the rewrite.
+   */
+  async updateDraftPost(settings, postId, fields = {}) {
+    const { wpUrl, wpUsername, wpAppPassword } = settings;
+    const body = {};
+    if (typeof fields.title === 'string') body.title = fields.title;
+    if (typeof fields.content === 'string') body.content = fields.content;
+    if (typeof fields.slug === 'string' && fields.slug) body.slug = fields.slug;
+    if (Number.isFinite(fields.featuredMediaId)) body.featured_media = fields.featuredMediaId;
+    if (Array.isArray(fields.categoryIds) && fields.categoryIds.length) body.categories = fields.categoryIds;
+    if (Array.isArray(fields.tagIds) && fields.tagIds.length) body.tags = fields.tagIds;
+    if (fields.meta && typeof fields.meta === 'object') body.meta = fields.meta;
+
+    const response = await fetchWithRetry(`${wpUrl}/wp-json/wp/v2/posts/${postId}`, {
+      method: 'POST',  // WP REST accepts POST for partial update on /posts/:id
+      headers: {
+        'Authorization': this._authHeader(wpUsername, wpAppPassword),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`WP post update failed (${postId}): ${response.status} - ${error}`);
+    }
+
+    const post = await response.json();
+    return {
+      id: post.id,
+      link: post.link,
+      editLink: `${wpUrl}/wp-admin/post.php?post=${post.id}&action=edit`
+    };
+  },
+
+  /**
+   * Fetch an existing post and extract the data the regen pipeline needs:
+   * title, slug, category, ordered image refs (id+url+alt), and the WPRM
+   * recipe-card shortcode ID (so we keep the card untouched and just leave
+   * its placeholder in the new HTML).
+   */
+  async fetchPostForRegen(settings, postId) {
+    const { wpUrl, wpUsername, wpAppPassword } = settings;
+    const url = `${wpUrl}/wp-json/wp/v2/posts/${postId}?context=edit&_embed=wp:term`;
+    const resp = await fetchWithRetry(url, {
+      headers: { 'Authorization': this._authHeader(wpUsername, wpAppPassword) }
+    });
+    if (!resp.ok) {
+      throw new Error(`Fetch post ${postId} failed: ${resp.status} ${await resp.text().catch(() => '')}`);
+    }
+    const post = await resp.json();
+
+    // Raw content (edit context returns it under .content.raw)
+    const raw = post.content?.raw || post.content?.rendered || '';
+
+    // Pull every <img> in document order: id from wp-image-XXX, src, alt
+    const images = [];
+    const imgRe = /<img[^>]*?src="([^"]+)"[^>]*?>/g;
+    let m;
+    while ((m = imgRe.exec(raw))) {
+      const tag = m[0];
+      const src = m[1];
+      const idMatch = tag.match(/wp-image-(\d+)/);
+      const altMatch = tag.match(/alt="([^"]*)"/);
+      images.push({
+        wpImageId: idMatch ? Number(idMatch[1]) : 0,
+        wpImageUrl: src,
+        alt: altMatch ? altMatch[1] : ''
+      });
+    }
+
+    // WPRM shortcode id, if present
+    const wprmMatch = raw.match(/\[wprm-recipe id="(\d+)"\]/);
+    const recipeCardId = wprmMatch ? Number(wprmMatch[1]) : 0;
+
+    // Categories (first one wins for our pipeline)
+    const categoryNames = (post._embedded?.['wp:term']?.[0] || [])
+      .map(t => t?.name).filter(Boolean);
+
+    return {
+      id: post.id,
+      title: post.title?.rendered || post.title?.raw || '',
+      slug: post.slug,
+      status: post.status,
+      categoryNames,
+      featuredMediaId: post.featured_media || 0,
+      images,
+      recipeCardId,
+      rawContent: raw
+    };
+  },
+
   async createWPRMRecipe(settings, recipeJSON, state) {
     const { wpUrl, wpUsername, wpAppPassword } = settings;
     const postTitle = recipeJSON?.post_title || state.recipeTitle;
