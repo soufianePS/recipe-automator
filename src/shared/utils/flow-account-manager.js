@@ -203,6 +203,7 @@ export const FlowAccountManager = {
       profileDir,
       enabled: true,
       geminiApiKey: '',
+      nutritionApiKey: '',
       generationCount: 0,
       firstGenAt: null,
       lastGenAt: null,
@@ -319,6 +320,19 @@ export const FlowAccountManager = {
       .filter(a => a.geminiApiKey)
       .map(a => a.geminiApiKey);
     // Deduplicate
+    return [...new Set(keys)];
+  },
+
+  /**
+   * Get ALL available Nutrition (API Ninjas) API keys from every account.
+   * Used to rotate through keys when one hits the monthly free-tier limit.
+   * Returns array of unique non-empty keys.
+   */
+  async getAllNutritionKeys() {
+    const data = await this.getAccounts();
+    const keys = data.accounts
+      .filter(a => a.nutritionApiKey)
+      .map(a => a.nutritionApiKey);
     return [...new Set(keys)];
   },
 

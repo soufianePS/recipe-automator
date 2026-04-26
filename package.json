@@ -8,8 +8,11 @@
     "debug": "DEBUG=1 node src/server.js"
   },
   "dependencies": {
-    "playwright": "^1.49.0",
+    "ai-text-detector": "^1.0.8",
     "express": "^4.21.0",
-    "sharp": "^0.33.0"
+    "lighthouse": "^13.1.0",
+    "playwright": "^1.49.0",
+    "sharp": "^0.33.0",
+    "text-readability": "^1.1.1"
   }
 }
