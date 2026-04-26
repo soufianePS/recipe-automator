@@ -21,7 +21,8 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     "Show ONLY this step, not future steps",
     "All food must be inside the container",
     "No text, no watermark",
-    "KEEP the uploaded background exactly — same surface, same texture, same color. Do NOT replace or regenerate it.",
+    "BACKGROUND IS SACRED — PRESERVE the uploaded reference surface EXACTLY: same color, same marble veining (every white vein and dark area in the reference), same grain, same texture, same edges and minor flaws. Do NOT replace, regenerate, lighten, darken, blur, or stylize the background. The background of this image must be visually IDENTICAL to the uploaded reference.",
+    "NATURAL LIGHTING MATCH — the lighting MUST match the uploaded reference image: same direction, same softness, same warmth, same shadow length and angle. Soft diffused daylight from one side, gentle ambient fill. NO studio lighting, NO ring lights, NO HDR, NO harsh shadows, NO dramatic spotlights, NO commercial color grading, NO bokeh blur. Looks like a real home-kitchen photo on the same counter.",
     "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
     "Do NOT make food look perfectly arranged or symmetrical",
     "Follow the position_change description for food placement and movement",
@@ -51,7 +52,7 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     container: stepState.container || defaults.defaultContainer,
     camera: stepState.camera_angle || defaults.defaultCameraAngle,
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "MUST match the uploaded reference image — keep the same surface, texture, and color. Do NOT change or replace the background.",
+    background: "PRESERVE the uploaded reference image surface EXACTLY (color, marble veining, grain, texture, edges). Do NOT replace, regenerate, lighten, darken, or stylize. Background must look identical to the reference, like the same counter on the same day.",
     visible_ingredients: (stepState.visible_ingredients || []).map(ing => {
       if (typeof ing === 'string') return ing;
       let desc = `${ing.name}: ${ing.state}`;
@@ -83,7 +84,7 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
     layout: ingredientsState.layout || "Natural asymmetric scatter across the ENTIRE surface edge-to-edge. Mixed forms — whole items, standing packaged products, and only a few small ramekins for chopped/grated bits. Items at different heights and different distances apart. NO grid, NO circle, NO matching bowls.",
     camera: ingredientsState.camera_angle || defaults.defaultCameraAngle,
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "MUST be the uploaded reference image filling the ENTIRE frame edge-to-edge. No blank space, no white borders, no cropping. Preserve exact grain, color, stripes, and texture.",
+    background: "PRESERVE the uploaded reference image filling the ENTIRE frame edge-to-edge. No blank space, no white borders, no cropping. Preserve EXACT marble veining, grain, color, stripes, texture, edges and any minor flaws of the reference. The lighting must match the reference (soft natural daylight, NO studio look, NO HDR).",
     ingredients: (ingredientsState.items || []).map(item => {
       const entry = {
         name: item.name,
@@ -96,6 +97,8 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
     }),
     forbidden: ingredientsState.forbidden || ["cooked food", "mixed items", "garnish", "utensils", "grid layout", "identical bowls for every item", "blank unlabeled packaging"],
     rules: [
+      "BACKGROUND IS SACRED — PRESERVE the uploaded reference surface EXACTLY (color, marble veining, grain, texture, edges, every visible detail). Do NOT replace, regenerate, lighten, darken, blur, or stylize. Background must be visually IDENTICAL to the reference.",
+      "NATURAL LIGHTING MATCH — lighting must match the uploaded reference image (same direction, softness, warmth, shadow length and angle). Soft diffused daylight from one side, gentle ambient fill. NO studio lighting, NO HDR, NO harsh shadows, NO dramatic spotlights, NO color grading, NO bokeh.",
       "NATURAL SCATTER — items placed organically with asymmetric spacing. NO grid, NO circle, NO straight lines, NO symmetric arrangement",
       "USE REAL FORMS — whole vegetables as-is (whole potatoes, whole garlic, whole onion), bottles upright, boxes and bags upright, jars with labels forward",
       "REAL PRODUCT PACKAGING — ONLY ingredients that come in a package from the store (oil bottles, spice shakers, flour bags, sugar boxes, sauce jars, canned goods, butter blocks, cream cheese bricks) may show a brand label. The brand label goes ON THE ACTUAL PHYSICAL PACKAGE itself — the bottle, the jar, the box, the wrapper — NEVER on a bowl or ramekin or on the ingredient directly. Invent fake brand names like 'Heath Riles BBQ', 'GRAZA Oil', 'Great Value Flour'.",
@@ -127,14 +130,15 @@ export function buildHeroPrompt(heroState, vgSettings) {
     container: heroState.container || defaults.defaultContainer,
     camera: heroState.camera_angle || "45-degree angle",
     lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "MUST match the uploaded reference image — keep the same surface, texture, and color. Do NOT change or replace the background.",
-    arrangement: heroState.arrangement || "appetizing final presentation, magazine-quality plating",
+    background: "PRESERVE the uploaded reference image surface EXACTLY (color, marble veining, grain, texture, edges). Do NOT replace, regenerate, lighten, darken, or stylize. Looks like the same counter on the same day with the same window light.",
+    arrangement: heroState.arrangement || "appetizing final presentation, casually plated like a careful home cook would",
     allowed_additions: heroState.allowed_additions || [],
     forbidden: heroState.forbidden || ["raw ingredients", "extra bowls", "utensils"],
     rules: [
       "Show the FINISHED dish only — fully cooked and appetizing",
-      "This is the HERO IMAGE — it must be the most beautiful and mouth-watering photo of the entire recipe",
-      "KEEP the uploaded background exactly — same surface, same texture, same color. Do NOT replace or regenerate it.",
+      "This is the HERO IMAGE — it must be the most beautiful and mouth-watering photo of the entire recipe BUT still look natural and homemade, not commercial",
+      "BACKGROUND IS SACRED — PRESERVE the uploaded reference surface EXACTLY (color, marble veining, grain, texture, edges). Do NOT replace, regenerate, lighten, darken, blur, or stylize. The background must be visually IDENTICAL to the uploaded reference.",
+      "NATURAL LIGHTING MATCH — the lighting MUST match the uploaded reference image (same direction, softness, warmth, shadow shape). Soft diffused daylight, gentle ambient fill. NO studio lighting, NO HDR, NO harsh shadows, NO dramatic spotlights, NO commercial color grading, NO bokeh.",
       "WARM RICH COLORS — golden-brown seared surfaces and deep rich sauces and bright fresh herbs. Absolutely NO grey or washed-out or pale food",
       "VISIBLE TEXTURE in sharp focus — crispy edges and glossy sauce and melted cheese and caramelized surfaces and visible grain and fiber",
       "DEPTH AND VOLUME — food must look 3D and abundant. Sauce pooling naturally. Toppings piled generously. Nothing flat or sparse",

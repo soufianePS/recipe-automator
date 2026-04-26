@@ -83,10 +83,11 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
 // 2. FLOW IMAGE PROMPT TEMPLATE — converts JSON state to Flow text
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_FLOW_IMAGE_PROMPT = `Photorealistic food photography. {{lighting}}.
+export const DEFAULT_FLOW_IMAGE_PROMPT = `Photorealistic food photography — natural homemade kitchen-photo style. {{lighting}}.
 
 SCENE:
-- Background: exact same as the uploaded reference image
+- Background: PRESERVE the uploaded reference image surface EXACTLY — its exact color, marble veining, grain, texture, edges, and minor flaws. Do NOT replace, regenerate, lighten, darken, or stylize it.
+- The lighting in this image MUST visually match the natural lighting already present in the uploaded reference (same direction, same softness, same warmth, same shadow length and angle). Treat it as a real continuation of that scene.
 - One {{container}}, {{camera_angle}} angle
 - Entire container visible in frame
 
@@ -155,13 +156,14 @@ STRICT RULES:
 // 4. FLOW HERO PROMPT TEMPLATE
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_FLOW_HERO_PROMPT = `Photorealistic food photography. {{lighting}}.
+export const DEFAULT_FLOW_HERO_PROMPT = `Photorealistic food photography — natural homemade kitchen-photo style, NOT a commercial studio shot. {{lighting}}.
 
 SCENE:
-- Background: exact same as the uploaded reference image
+- Background: PRESERVE the uploaded reference image surface EXACTLY — its exact color, marble veining, grain, texture, edges. Do NOT replace, regenerate, lighten, darken, or stylize it.
+- The lighting MUST match the natural lighting in the uploaded reference (same direction, same softness, same warmth, same shadow shape). Treat it as the same scene, same hour of day.
 - {{base_description}}
 - {{container}}, {{camera_angle}} angle
-- Appetizing, magazine-quality presentation
+- Appetizing but realistic — looks like a careful home cook's photo, not a magazine ad
 
 ALLOWED ADDITIONS:
 {{allowed_additions_list}}
@@ -494,6 +496,19 @@ STEP TITLE RULE:
 - Do NOT use generic titles like "Prepare Ingredients" or "Raw Ingredients" or "Start Cooking".
 - Use clear action-based titles like "Slice the strawberries" or "Mix the batter" or "Layer the filling".
 
+STEP DESCRIPTION RULE — TESTED-RECIPE SIGNALS (CRITICAL — humans-tested-this-in-a-real-kitchen feel):
+- Each step.description MUST be 2-3 short paragraphs (not one wall of text). Use periods, not run-ons. Mix short and medium sentences.
+- EVERY step description MUST include ALL FIVE of these tested-recipe signals where they apply to that step:
+  1. SPECIFIC TEMPERATURE — exact number, never vague. Examples: "375°F", "medium-low heat (about 4 on a 10-dial)", "350°F preheated oven", "medium-high heat until the pan is hot but not smoking".
+  2. SPECIFIC TIME — exact range, never vague. Examples: "8 to 10 minutes", "exactly 90 seconds per side", "until minute 12", "rest for 15 minutes off the heat".
+  3. SPECIFIC TECHNIQUE — the actual hand-motion or tool action. Examples: "fold gently with a rubber spatula in a J-shaped motion", "press the dough with the heel of your hand and turn 90 degrees between folds", "swirl the pan once at minute 3 to redistribute the butter", "scrape the bowl down with a spatula halfway through".
+  4. ONE CONCRETE SENSORY CUE — what the cook sees, hears, or smells when this step is done. Examples: "the edges turn deep golden and a thin crust forms on the surface", "you'll hear the sugar stop sizzling and start crackling — that's the cue to remove from heat", "the sauce coats the back of a spoon and a finger drawn across leaves a clean line", "you'll smell the garlic toast right when the cloves are ready".
+  5. WHAT GOES WRONG IF YOU MISS THE WINDOW — one short clause. Examples: "miss this and the proteins seize up and the sauce breaks", "go past 12 minutes and the bottom scorches", "skip the rest and the juices run out the moment you cut".
+- For every 4-5 steps, include ONE personal-testing first-person note inside the description (in parentheses or as its own sentence). Examples: "(I tried doubling the cheese the first time — it overflowed every ramekin. This is the goldilocks amount.)", "(My first batch went into a 400°F oven and the top set before the center cooked through. 375°F is the fix.)", "(I used to skip the rest. The first cut leaks half the sauce — don't skip it.)".
+- Use contractions: "don't", "can't", "you'll", "it's". NO semicolons. NO em-dashes inside descriptions (em-dashes belong only to first-person notes wrapped in parentheses).
+- BANNED phrases that scream AI: "easy to prepare and make", "trust me on this", "I honestly haven't really shared", "elevate your", "delve into", "culinary journey", "comes together quickly".
+- The "tip" field is for an ADDITIONAL practical tip — never duplicate content from the description.
+
 COOKING VISUAL PROGRESSION RULE:
 - Food MUST visually evolve across steps: raw > combined > coated > softened > thickened > structured > melted > slightly browned > finished.
 - Allowed transformations: sauce thickening and cheese melting unevenly and texture softening and slight browning and folding or layering.
@@ -687,7 +702,7 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "hero_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
     "ingredients_prompt": "Natural asymmetric scatter of raw ingredients across the ENTIRE background edge-to-edge. Use each item in its real form when possible (whole vegetables, bottles and boxes standing upright). Only finely chopped/grated items go in small ramekins. Mix heights and distances. NO grid, NO matching bowls for every ingredient.",
     "ingredients_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
-    "steps": [{"number": 1, "title": "specific action", "description": "1-2 paragraphs explaining visual change", "tip": "", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
+    "steps": [{"number": 1, "title": "specific action", "description": "2-3 short paragraphs that include: specific temp + specific time + specific technique + one concrete sensory cue + what-goes-wrong-if-you-miss-the-window. ~1 step in every 4 also carries a parenthetical first-person testing note (e.g., '(I tried 400°F first — top set before the center cooked. 375°F is the fix.)')", "tip": "ADDITIONAL practical tip — must NOT repeat anything from description", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
     "equipment": [{"name": "", "notes": "function."}],
     "why_this_works": "2-3 sentences explaining the science or technique that makes this recipe work — specific ingredient interactions, cooking temperatures, timing tricks. Mention 1-2 concrete details (e.g., 'Resting the dough for 30 minutes lets the gluten relax, so it rolls thinner without snapping back'). Include 1 internal link to a related recipe naturally.",
     "substitutions": [{"ingredient": "ingredient name", "swap": "what to use instead", "note": "how the result differs (texture, flavor, outcome) — be specific"}],
@@ -771,7 +786,7 @@ export const VERIFIED_GENERATOR_DEFAULTS = {
   softFailAction: 'retry',        // 'accept' or 'retry' — retry soft fails for better quality
   defaultContainer: 'white ceramic bowl',
   defaultCameraAngle: 'slight overhead (30-degree)',
-  defaultLighting: 'bright natural window light from the left with warm tones and soft shadows',
+  defaultLighting: 'natural soft daylight matching the uploaded reference image — gentle ambient indoor light from a kitchen window with subtle directional softness, soft natural shadows under bowls and items, warm neutral tones (not orange), realistic iPhone-photo look. NO studio lighting, NO HDR, NO harsh shadows, NO dramatic spotlights, NO color grading, NO bokeh, NO commercial photo polish',
   prompts: {
     visualPlan: DEFAULT_VISUAL_PLAN_PROMPT,
     flowImage: DEFAULT_FLOW_IMAGE_PROMPT,
