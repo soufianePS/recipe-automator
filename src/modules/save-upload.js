@@ -11,6 +11,7 @@ import { sanitizeFilename, FILENAMES } from './base-orchestrator.js';
 import { writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, basename } from 'path';
+import { randomBytes } from 'crypto';
 
 /**
  * Save all generated images and recipe JSON to disk.
@@ -110,6 +111,14 @@ export async function uploadMedia(state, settings) {
   const stepsOk = state.steps.every((s, i) => !s.base64 || !!s.base64);
   if (!heroOk && !state.heroImage?.base64) {
     Logger.warn('Hero image missing — skipping WordPress upload');
+  }
+
+  // Per-recipe-generation random suffix → forces unique WP filenames every run,
+  // so deleting+regenerating a recipe never collides with leftover/cached old images.
+  if (!state.uploadSuffix) {
+    state.uploadSuffix = randomBytes(2).toString('hex');
+    await StateManager.updateState({ uploadSuffix: state.uploadSuffix });
+    Logger.info(`Upload suffix for this run: -${state.uploadSuffix}`);
   }
 
   const uploads = await WordPressAPI.uploadAllRecipeImages(

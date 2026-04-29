@@ -28,6 +28,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
+import { randomBytes } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1205,6 +1206,14 @@ export class BaseOrchestrator {
 
     Logger.step('WordPress', `Uploading ${pins.length} Pinterest pin images...`);
 
+    // Reuse the same per-recipe random suffix used by hero/ingredients/steps so
+    // every regen lands at a fresh URL. Lazily generate one if pins run alone.
+    let suffix = state.uploadSuffix;
+    if (!suffix) {
+      suffix = randomBytes(2).toString('hex');
+      await StateManager.updateState({ uploadSuffix: suffix });
+    }
+
     const updatedPins = [...pins];
     for (let i = 0; i < updatedPins.length; i++) {
       if (updatedPins[i].wpImageId) continue; // already uploaded
@@ -1217,7 +1226,7 @@ export class BaseOrchestrator {
 
       Logger.info(`Uploading Pinterest pin ${i + 1}/${updatedPins.length}...`);
       const pin = updatedPins[i];
-      const filename = `${state.recipeJSON?.slug || 'recipe'}-pin-${i + 1}.jpg`;
+      const filename = `${state.recipeJSON?.slug || 'recipe'}-pin-${i + 1}-${suffix}.jpg`;
       const seoData = {
         alt_text: pin.title,
         title: pin.title,

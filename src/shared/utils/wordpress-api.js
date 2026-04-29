@@ -46,7 +46,20 @@ async function fetchWithRetry(url, options, maxRetries = 4) {
   }
 }
 
-async function _uploadSingleImage(api, settings, imageKey, stateImage, defaultAlt, recipe, onProgress, progressMsg) {
+/**
+ * Append a per-recipe random suffix before the extension so every regen of the
+ * same recipe lands at a different URL on WordPress. Prevents collisions with
+ * leftover files when a delete didn't fully clean up (LiteSpeed cache, missed
+ * media, etc.). Empty/falsy suffix → filename returned unchanged.
+ */
+function _appendUploadSuffix(filename, suffix) {
+  if (!suffix) return filename;
+  const dot = filename.lastIndexOf('.');
+  if (dot < 0) return `${filename}-${suffix}`;
+  return `${filename.slice(0, dot)}-${suffix}${filename.slice(dot)}`;
+}
+
+async function _uploadSingleImage(api, settings, imageKey, stateImage, defaultAlt, recipe, onProgress, progressMsg, suffix) {
   if (stateImage?.wpImageId) {
     return stateImage;
   }
@@ -56,7 +69,8 @@ async function _uploadSingleImage(api, settings, imageKey, stateImage, defaultAl
   }
   onProgress?.(progressMsg);
   const seo = recipe?.[`${imageKey}_seo`] || { alt_text: defaultAlt };
-  const filename = seo.filename || `${imageKey}.jpg`;
+  const baseName = seo.filename || `${imageKey}.jpg`;
+  const filename = _appendUploadSuffix(baseName, suffix);
   const media = await api.uploadImage(settings, base64, filename, seo, recipe);
   return { ...stateImage, wpImageId: media.id, wpImageUrl: media.url };
 }
@@ -660,15 +674,16 @@ export const WordPressAPI = {
   async uploadAllRecipeImages(settings, state, onProgress) {
     const uploads = {};
     const recipe = state.recipeJSON;
+    const suffix = state.uploadSuffix;
 
     uploads.heroImage = await _uploadSingleImage(
       this, settings, 'hero', state.heroImage,
-      state.recipeTitle, recipe, onProgress, 'Uploading hero image...'
+      state.recipeTitle, recipe, onProgress, 'Uploading hero image...', suffix
     );
 
     uploads.ingredientsImage = await _uploadSingleImage(
       this, settings, 'ingredients', state.ingredientsImage,
-      'Ingredients', recipe, onProgress, 'Uploading ingredients image...'
+      'Ingredients', recipe, onProgress, 'Uploading ingredients image...', suffix
     );
 
     const updatedSteps = [...state.steps];
@@ -679,7 +694,8 @@ export const WordPressAPI = {
         if (base64) {
           onProgress?.(`Uploading step ${i + 1}/${updatedSteps.length}...`);
           const seo = step.seo || { alt_text: step.title };
-          const filename = seo.filename || `step-${i + 1}.jpg`;
+          const baseName = seo.filename || `step-${i + 1}.jpg`;
+          const filename = _appendUploadSuffix(baseName, suffix);
           const media = await this.uploadImage(settings, base64, filename, seo, recipe);
           updatedSteps[i] = { ...step, wpImageId: media.id, wpImageUrl: media.url };
         }
