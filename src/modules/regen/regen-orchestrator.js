@@ -180,12 +180,35 @@ export class RegenOrchestrator {
     const mapped = mapExistingImages(existing.images, parsed.steps.length);
     Logger.info(`[Regen] image map: hero=${!!mapped.hero}, ingredients=${!!mapped.ingredients}, steps=${mapped.steps.filter(Boolean).length}/${parsed.steps.length}`);
 
+    // 7b. If the post never had a WPRM card (silent failure during original
+    // generation), create one now from the polished data so the regen output
+    // still gets a recipe card. Otherwise reuse the existing one untouched.
+    let recipeCardId = existing.recipeCardId;
+    if (!recipeCardId && !dryRun) {
+      try {
+        const stateForCard = {
+          recipeTitle: existing.title,
+          heroImage: { wpImageId: mapped.hero?.wpImageId || 0 },
+          steps: polished.steps.map((s, i) => ({
+            ...s,
+            wpImageId: mapped.steps[i]?.wpImageId || 0
+          }))
+        };
+        const wprm = await WordPressAPI.createWPRMRecipe(settings, polished, stateForCard);
+        recipeCardId = wprm.id;
+        Logger.success(`[Regen] post ${postId} had no WPRM card — created new one (ID: ${recipeCardId})`);
+        try { await WordPressAPI.linkWPRMToPost(settings, recipeCardId, postId); } catch {}
+      } catch (e) {
+        Logger.warn(`[Regen] post ${postId}: WPRM card creation failed — continuing without card: ${e.message}`);
+      }
+    }
+
     // 8. Render new HTML
     const html = renderRegenHTML({
       recipe: polished,
       existingImages: mapped,
       sectionTitles,
-      recipeCardId: existing.recipeCardId,
+      recipeCardId,
       settings,
       relatedPosts
     });

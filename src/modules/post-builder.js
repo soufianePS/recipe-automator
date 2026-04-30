@@ -457,13 +457,30 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   let recipeCardBlock = '';
 
   if (cardPlugin === 'wprm' || (cardPlugin !== 'tasty-recipes' && cardPlugin !== 'none' && settings.wprmEnabled)) {
-    try {
-      const wprmResult = await WordPressAPI.createWPRMRecipe(settings, recipe, state);
-      recipeCardId = wprmResult.id;
-      Logger.success(`WPRM recipe created (ID: ${recipeCardId})`);
-      recipeCardBlock = `<!-- wp:wp-recipe-maker/recipe {"id":${recipeCardId}} -->\n<div class="wp-block-wp-recipe-maker-recipe">[wprm-recipe id="${recipeCardId}"]</div>\n<!-- /wp:wp-recipe-maker/recipe -->`;
-    } catch (e) {
-      Logger.warn('WPRM creation failed:', e.message);
+    // Retry once on transient failures (timeout, 5xx, plugin reload). A silent
+    // skip here used to publish posts without a recipe card — a 36h window in
+    // April 2026 lost 7 posts that way before this was hardened.
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const wprmResult = await WordPressAPI.createWPRMRecipe(settings, recipe, state);
+        recipeCardId = wprmResult.id;
+        Logger.success(`WPRM recipe created (ID: ${recipeCardId})`);
+        recipeCardBlock = `<!-- wp:wp-recipe-maker/recipe {"id":${recipeCardId}} -->\n<div class="wp-block-wp-recipe-maker-recipe">[wprm-recipe id="${recipeCardId}"]</div>\n<!-- /wp:wp-recipe-maker/recipe -->`;
+        lastError = null;
+        break;
+      } catch (e) {
+        lastError = e;
+        if (attempt < 2) {
+          Logger.warn(`WPRM creation attempt ${attempt} failed: ${e.message} — retrying in 5s`);
+          await new Promise(r => setTimeout(r, 5000));
+        }
+      }
+    }
+    if (lastError) {
+      // Loud failure — Logger.error goes to Discord webhook if configured, so
+      // the user sees missing-card incidents immediately instead of weeks later.
+      Logger.error(`WPRM creation FAILED after retry for "${state.recipeTitle}" — post will be published without a recipe card. Reason: ${lastError.message}`);
     }
   } else if (cardPlugin === 'tasty-recipes') {
     try {

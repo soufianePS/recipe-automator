@@ -56,10 +56,23 @@ export async function fetchNutrition(apiKey, ingredients, servings = 1) {
   let successCount = 0;
 
   for (const ing of ingredients) {
-    // Build query string: "2 cups cottage cheese" or "1 tablespoon honey"
-    const query = typeof ing === 'string'
-      ? ing
-      : `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ing.ingredient || ''}`.trim();
+    // Build query string: "2 cups cottage cheese" or "1 tablespoon honey".
+    // Recipe JSON uses `quantity` (a free-form string like "1 tsp"); the older
+    // amount+unit shape is kept as a fallback. Without a quantity, API Ninjas
+    // defaults to 100g — which inflates sodium/cholesterol massively for things
+    // like salt or soy sauce, so we skip qty-less object ingredients instead.
+    let query;
+    if (typeof ing === 'string') {
+      query = ing.trim();
+    } else {
+      const name = ing.name || ing.ingredient || '';
+      const qty = ing.quantity || `${ing.amount || ''} ${ing.unit || ''}`.trim();
+      if (!qty) {
+        Logger.debug(`[Nutrition] Skipped "${name}" — no quantity (would default to 100g)`);
+        continue;
+      }
+      query = `${qty} ${name}`.replace(/\s+/g, ' ').trim();
+    }
 
     if (!query) continue;
 
