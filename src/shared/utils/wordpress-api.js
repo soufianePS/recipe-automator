@@ -583,7 +583,16 @@ export const WordPressAPI = {
     const { wpUrl, wpUsername, wpAppPassword } = settings;
     const postTitle = recipeJSON?.post_title || state.recipeTitle;
     const intro = recipeJSON?.intro || '';
-    const conclusion = recipeJSON?.conclusion || '';
+    // Card "Notes" should hold recipe-specific reference info (storage, reheating,
+    // make-ahead) — what users want when they print or save the card. The narrative
+    // conclusion belongs in the post body only. Using it here duplicated the
+    // body's "In Conclusion" section verbatim, which ad networks flag as thin
+    // content and clutters the printed card with non-recipe text.
+    const cardNotes = recipeJSON?.recipe_card_notes
+      || recipeJSON?.storage_notes
+      || recipeJSON?.storage
+      || recipeJSON?.make_ahead
+      || '';
     const prepTime = parseDurationToMinutes(recipeJSON?.prep_time);
     const cookTime = parseDurationToMinutes(recipeJSON?.cook_time);
     const totalTime = parseDurationToMinutes(recipeJSON?.total_time);
@@ -597,7 +606,11 @@ export const WordPressAPI = {
       .map(ing => {
         if (typeof ing === 'string') return { raw: ing };
         const parsed = parseQuantity(ing.quantity || '');
-        return { amount: parsed.amount, unit: parsed.unit, name: ing.name || '', notes: ing.notes || '' };
+        // The recipe schema produces `description`, but earlier code only read
+        // `notes` here — meaning every WPRM card's notes column was silently
+        // empty. Read both, prefer description (the canonical schema field).
+        const cardNotes = ing.description || ing.notes || '';
+        return { amount: parsed.amount, unit: parsed.unit, name: ing.name || '', notes: cardNotes };
       });
 
     const instructionsFlat = (state.steps || []).map((step, i) => ({
@@ -630,7 +643,7 @@ export const WordPressAPI = {
     const recipeData = {
       title: postTitle, status: 'draft',
       recipe: {
-        type: 'food', name: postTitle, summary: recipeJSON?.recipe_card_description || intro, notes: conclusion,
+        type: 'food', name: postTitle, summary: recipeJSON?.recipe_card_description || intro, notes: cardNotes,
         prep_time: prepTime, cook_time: cookTime, total_time: totalTime,
         servings: String(servings), servings_unit: '',
         image_id: state.heroImage?.wpImageId || 0,

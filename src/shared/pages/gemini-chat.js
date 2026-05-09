@@ -93,6 +93,100 @@ export class GeminiChatPage {
   }
 
   /**
+   * Attach reference images BEFORE the next sendPromptAndGetResponse call.
+   * Same interface as ChatGPTPage.attachFiles — caller passes absolute paths.
+   * Safe to call with an empty array (no-op).
+   *
+   * @param {string[]} filePaths
+   */
+  async attachFiles(filePaths) {
+    const refs = (filePaths || []).filter(p => !!p);
+    if (refs.length === 0) return { ok: true, attached: 0 };
+    Logger.info(`[Gemini] attaching ${refs.length} reference image(s)`);
+
+    // Step 1: open the "+" attach menu
+    const opened = await this.page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+      for (const b of btns) {
+        if (b.offsetWidth === 0) continue;
+        const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (lbl.includes('importer un fichier') || lbl.includes('importer une image') ||
+            lbl.includes('upload') || lbl.includes('add file') || lbl.includes('add image') ||
+            lbl.includes('attach')) {
+          b.click();
+          return lbl;
+        }
+      }
+      return null;
+    });
+    if (!opened) throw new Error('Gemini "+" attach button not found');
+    await this.page.waitForTimeout(700);
+
+    // Step 2: catch the filechooser event triggered by clicking
+    //         "Importer des fichiers" — Gemini opens an OS file dialog
+    //         instead of using a static <input type="file">.
+    const clickMenuItem = async () => {
+      await this.page.evaluate(() => {
+        const items = Array.from(document.querySelectorAll('[role="menuitem"], button'));
+        for (const it of items) {
+          const txt = (it.innerText || it.textContent || '').trim().toLowerCase();
+          const tid = (it.getAttribute('data-testid') || '').toLowerCase();
+          if (txt.includes('importer des fichiers') || txt.includes('upload files') ||
+              tid === 'local-images-files-uploader-button') {
+            it.click();
+            return true;
+          }
+        }
+        return false;
+      });
+    };
+
+    let chooser;
+    try {
+      [chooser] = await Promise.all([
+        this.page.waitForEvent('filechooser', { timeout: 8000 }),
+        clickMenuItem(),
+      ]);
+      await chooser.setFiles(refs);
+    } catch (e) {
+      // Fallback: maybe a hidden input exists once the menu is open
+      const input = await this.page.$('input[type="file"]');
+      if (input) {
+        await input.setInputFiles(refs);
+      } else {
+        throw new Error(`Gemini file input/chooser not available: ${e.message.split('\n')[0]}`);
+      }
+    }
+    await this.page.waitForTimeout(500);
+    // Close any popover, refocus the composer
+    await this.page.keyboard.press('Escape').catch(() => {});
+    await this.page.waitForTimeout(200);
+    try {
+      const promptInput = await this.page.$(SEL.promptInput);
+      if (promptInput) await promptInput.click({ force: true });
+    } catch {}
+    await this.page.waitForTimeout(300);
+
+    // Poll for thumbnails to settle (similar to ChatGPT pattern)
+    const start = Date.now();
+    while (Date.now() - start < 90000) {
+      await this.page.waitForTimeout(700);
+      const thumbs = await this.page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('img'));
+        const small = all.filter(i => i.offsetWidth >= 30 && i.offsetWidth <= 200 && i.offsetHeight >= 30 && i.offsetHeight <= 200).length;
+        const blob = all.filter(i => /^(blob:|data:)/.test(i.src || '')).length;
+        return Math.max(small, blob);
+      });
+      if (thumbs >= refs.length) {
+        Logger.info(`[Gemini] ${thumbs} thumbnail(s) ready`);
+        return { ok: true, attached: thumbs };
+      }
+    }
+    Logger.warn('[Gemini] thumbnail wait timed out — sending anyway');
+    return { ok: false, attached: 0 };
+  }
+
+  /**
    * Send a prompt and get the full response.
    * Same interface as ChatGPTPage.sendPromptAndGetResponse()
    */
@@ -280,29 +374,49 @@ export class GeminiChatPage {
   }
 
   /**
-   * Check if Gemini is still generating (stop button visible or typing animation).
+   * Check if Gemini is still generating.
+   *
+   * PRIMARY SIGNAL — the Bard avatar Lottie animation status:
+   *   <bard-avatar> ... [data-test-lottie-animation-status="playing"] = generating
+   *   <bard-avatar> ... [data-test-lottie-animation-status="completed"] = done
+   * The avatar also has a spinner sub-element that toggles visibility/opacity.
+   *
+   * SECONDARY: stop button (when visible).
+   * SECONDARY: spinner visibility (the .avatar_spinner_animation div).
+   *
+   * Reasoning: Lottie animation status is set by the chat app itself when it
+   * starts/stops the response stream — most reliable signal we have.
    */
   async _isGeminiActive() {
     return await this.page.evaluate(() => {
-      // Check stop button
+      // PRIMARY — Lottie status on the bard-avatar in the LATEST response
+      const avatars = Array.from(document.querySelectorAll('bard-avatar [data-test-lottie-animation-status]'));
+      if (avatars.length > 0) {
+        const last = avatars[avatars.length - 1];
+        const status = (last.getAttribute('data-test-lottie-animation-status') || '').toLowerCase();
+        if (status === 'playing') return true;
+      }
+      // SECONDARY — spinner sub-element visible (opacity > 0 and visibility !== hidden)
+      const spinners = Array.from(document.querySelectorAll('bard-avatar .avatar_spinner_animation'));
+      for (const sp of spinners) {
+        const style = sp.getAttribute('style') || '';
+        if (!/opacity:\s*0/.test(style) && !/visibility:\s*hidden/.test(style)) {
+          // Has explicit non-zero opacity or no hide style
+          if (sp.offsetWidth > 0 && sp.offsetHeight > 0) return true;
+        }
+      }
+      // SECONDARY — stop button (rarely visible but absolute confirmation)
       const stopSelectors = [
         'button[aria-label*="Stop" i]',
         'button[aria-label*="Arrêter" i]',
         'button[data-mat-icon-name="stop_circle"]',
-        'button[aria-label*="Cancel" i]',
-        'button[aria-label*="Annuler" i]',
+        'button[aria-label*="Cancel response" i]',
+        'button[aria-label*="Annuler la réponse" i]',
       ];
       for (const sel of stopSelectors) {
         const btn = document.querySelector(sel);
         if (btn && btn.getBoundingClientRect().width > 0) return true;
       }
-
-      // Check for typing/streaming indicators
-      if (document.querySelector('.loading-indicator, .typing-indicator, [class*="streaming"], [class*="loading"]')) return true;
-
-      // Check for cursor blinking animation in response
-      if (document.querySelector('.cursor-blink, .blinking-cursor')) return true;
-
       return false;
     });
   }

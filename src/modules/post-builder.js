@@ -311,9 +311,15 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
             blocks.push(`<!-- wp:spacer {"height":"${stepImgSpacing}"} -->\n<div style="height:${stepImgSpacing}" aria-hidden="true" class="wp-block-spacer"></div>\n<!-- /wp:spacer -->`);
             blocks.push('');
           }
-          // Step description (separate block)
+          // Step description — split into multiple <p> blocks if the AI used
+          // paragraph breaks (or fall back to sentence-chunking via splitParagraphs).
+          // One <p> per paragraph keeps Yoast happy (paragraph length <= 150 words)
+          // and makes the rendered post easier to scan than a single blob.
           if (step.description) {
-            blocks.push(pBlock(richText(sanitizeAIText(step.description)), { ...stepOpts, raw: true }));
+            const stepParas = splitParagraphs(sanitizeAIText(step.description));
+            for (const para of stepParas) {
+              blocks.push(pBlock(richText(para), { ...stepOpts, raw: true }));
+            }
             blocks.push('');
           }
           // Step tip (separate block)
@@ -334,7 +340,12 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
       case 'storage': {
         const storage = recipe?.storage_notes || recipe?.storage || '';
         const storeOpts = { fontSize: block.fontSize, textColor: block.textColor, bgColor: block.bgColor, lineHeight: block.lineHeight, italic: block.italic };
-        if (storage) blocks.push(pBlock(sanitizeAIText(storage), storeOpts));
+        // Split into multiple <p> blocks — keeps Yoast paragraph-length under cap.
+        if (storage) {
+          for (const para of splitParagraphs(sanitizeAIText(storage))) {
+            blocks.push(pBlock(para, storeOpts));
+          }
+        }
         if (recipe?.serving_suggestions) blocks.push(pBlock(sanitizeAIText(recipe.serving_suggestions), storeOpts));
         if (recipe?.make_ahead) blocks.push(pBlock(sanitizeAIText(recipe.make_ahead), storeOpts));
         break;
@@ -343,7 +354,10 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
         const txt = recipe?.why_this_works || '';
         if (txt) {
           const opts = { fontSize: block.fontSize, textColor: block.textColor, lineHeight: block.lineHeight };
-          blocks.push(pBlock(sanitizeAIText(txt), opts));
+          // Split into multiple <p> blocks for readability scoring.
+          for (const para of splitParagraphs(sanitizeAIText(txt))) {
+            blocks.push(pBlock(para, opts));
+          }
         }
         break;
       }

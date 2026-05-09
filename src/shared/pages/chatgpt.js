@@ -83,6 +83,74 @@ export class ChatGPTPage {
   }
 
   /**
+   * Attach reference images BEFORE the next sendPromptAndGetResponse call.
+   * The composer "+" menu is opened first so ChatGPT's React state binds
+   * the upload-photos input properly (free-plan + fresh-chat quirk).
+   * Safe to call with an empty array (no-op).
+   *
+   * @param {string[]} filePaths — absolute paths to images
+   */
+  async attachFiles(filePaths) {
+    const refs = (filePaths || []).filter(p => !!p);
+    if (refs.length === 0) return { ok: true, attached: 0 };
+    Logger.info(`[ChatGPT] attaching ${refs.length} reference image(s)`);
+
+    // Open the "+" composer menu so the upload-photos input is wired to React
+    await this.page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+      for (const b of btns) {
+        if (b.offsetWidth === 0) continue;
+        const id = (b.getAttribute('data-testid') || '').toLowerCase();
+        const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (id === 'composer-plus-btn' || id.includes('composer-add') || lbl.includes('ajouter des fichiers') || lbl.includes('add files') || lbl.includes('attach')) {
+          b.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    await this.page.waitForTimeout(700);
+
+    const inputSelectors = [
+      'input#upload-photos',
+      'input#upload-files',
+      'input[type="file"][accept*="image"]',
+      'input[type="file"]',
+    ];
+    let fileInput = null;
+    for (const sel of inputSelectors) {
+      fileInput = await this.page.$(sel);
+      if (fileInput) break;
+    }
+    if (!fileInput) throw new Error('ChatGPT file input not found in DOM');
+    await fileInput.setInputFiles(refs);
+    await this.page.waitForTimeout(300);
+    await this.page.keyboard.press('Escape').catch(() => {});
+
+    // Poll for thumbnails to settle
+    const start = Date.now();
+    while (Date.now() - start < 90000) {
+      await this.page.waitForTimeout(700);
+      const status = await this.page.evaluate(() => {
+        const allImgs = Array.from(document.querySelectorAll('img'));
+        const thumbs = allImgs.filter(i => i.offsetWidth >= 40 && i.offsetWidth <= 200 && i.offsetHeight >= 40 && i.offsetHeight <= 200).length;
+        const blob = allImgs.filter(i => /^(blob:|data:)/.test(i.src || '')).length;
+        const sendDisabled = !!Array.from(document.querySelectorAll('button')).find(b => {
+          const id = b.getAttribute('data-testid') || '';
+          return (id.includes('send') || id === 'send-button') && (b.disabled || b.getAttribute('aria-disabled') === 'true');
+        });
+        return { thumbs: Math.max(thumbs, blob), sendDisabled };
+      });
+      if (status.thumbs >= refs.length && !status.sendDisabled) {
+        Logger.info(`[ChatGPT] ${status.thumbs} thumbnail(s) ready`);
+        return { ok: true, attached: status.thumbs };
+      }
+    }
+    Logger.warn('[ChatGPT] thumbnail wait timed out — sending anyway');
+    return { ok: false, attached: 0 };
+  }
+
+  /**
    * Send a prompt and get the full response
    */
   async sendPromptAndGetResponse(prompt, expectJSON = false) {

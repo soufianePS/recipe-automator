@@ -94,11 +94,68 @@ export const Parser = {
     return result;
   },
 
+  /**
+   * Aggressive recovery for JSON with localized syntax errors. Walks parse
+   * errors and tries common fixes:
+   *   - "Expected ',' or ']' after array element" → insert comma at error pos
+   *   - "Expected ',' or '}' after property value" → insert comma
+   *   - "Unexpected non-whitespace character after JSON" → trim trailing junk
+   * Caps at 20 fix attempts to avoid infinite loops.
+   */
+  _recoverJSON(raw) {
+    let s = raw;
+    for (let i = 0; i < 20; i++) {
+      try {
+        return JSON.parse(s);
+      } catch (e) {
+        const msg = e.message;
+        const posMatch = msg.match(/position\s+(\d+)/);
+        if (!posMatch) return null;
+        const pos = parseInt(posMatch[1], 10);
+
+        if (/Expected ',' or '\]'|Expected ',' or '\}'/.test(msg)) {
+          // Insert a comma at error position
+          s = s.slice(0, pos) + ',' + s.slice(pos);
+          continue;
+        }
+        if (/Unexpected non-whitespace character after JSON/.test(msg)) {
+          // Trim trailing junk after the parsed JSON
+          s = s.slice(0, pos);
+          continue;
+        }
+        if (/Unexpected token .* in JSON|Unexpected end of JSON input/.test(msg)) {
+          // Try to find the last balanced }/] before pos and truncate there
+          const cut = this._findLastBalancedBrace(s, pos);
+          if (cut > 0 && cut < s.length) { s = s.slice(0, cut + 1); continue; }
+          return null;
+        }
+        return null;
+      }
+    }
+    return null;
+  },
+
+  /** Walks back from `from` and returns the index of the last balanced } or ]. */
+  _findLastBalancedBrace(s, from) {
+    let depth = 0, lastBalanced = -1;
+    for (let i = 0; i < Math.min(from, s.length); i++) {
+      const c = s[i];
+      if (c === '{' || c === '[') depth++;
+      else if (c === '}' || c === ']') { depth--; if (depth === 0) lastBalanced = i; }
+    }
+    return lastBalanced;
+  },
+
   extractJSON(text) {
     if (!text || typeof text !== 'string') return null;
 
-    // Pre-clean: remove common ChatGPT prefixes like "JSON{", "json{", "Here is the JSON:"
-    text = text.replace(/^[\s]*(?:JSON|json|Json)\s*(?=\{)/i, '');
+    // Pre-clean: strip Gemini/ChatGPT UI prefixes that get scraped into innerText.
+    // Gemini wraps responses with "Gemini a dit" / "Gemini said" labels on
+    // model-response containers — those get pulled in by querySelector text
+    // extraction and confuse downstream regexes.
+    text = text
+      .replace(/^[\s]*Gemini\s+(?:a\s+dit|said)[\s:]*/i, '')
+      .replace(/^[\s]*(?:JSON|json|Json)\s*(?=\{)/i, '');
 
     // Define parsing strategies as an ordered list
     const strategies = [
@@ -125,24 +182,30 @@ export const Parser = {
       }
     ];
 
-    // Try each strategy: first raw, then with deep cleaning
+    // Try each strategy: raw → cleaned → recovered
     for (const { label, extract } of strategies) {
       const candidate = extract(text);
       if (!candidate) continue;
 
-      // Try raw first
       try {
         return JSON.parse(candidate);
       } catch (e) {
         Logger.debug(`${label} raw parse failed: ${e.message}`);
       }
 
-      // Try with deep cleaning
       try {
         const cleaned = this._cleanJSON(candidate);
         return JSON.parse(cleaned);
       } catch (e) {
-        Logger.warn(`${label} cleaned parse failed: ${e.message}`);
+        Logger.debug(`${label} cleaned parse failed: ${e.message}`);
+        // Try aggressive recovery on the cleaned candidate — fixes most
+        // missing-comma / trailing-junk errors that previously failed the run.
+        const recovered = this._recoverJSON(this._cleanJSON(candidate));
+        if (recovered) {
+          Logger.warn(`${label} recovered after JSON fix-up`);
+          return recovered;
+        }
+        Logger.warn(`${label} recovery failed: ${e.message}`);
       }
     }
 

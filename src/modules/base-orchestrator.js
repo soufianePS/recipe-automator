@@ -783,6 +783,18 @@ export class BaseOrchestrator {
   // STEP: CREATE FOLDERS
   // ═══════════════════════════════════════════════════════
 
+  /**
+   * Subclass hook: clean up old Flow (ImageFX) projects between recipes.
+   * Default = run cleanupAllProjects on the Flow page. Modes that don't use
+   * Flow (e.g. gemini-visual) override this to no-op so the Flow tab never
+   * opens during the run.
+   */
+  async _cleanupFlowProjects() {
+    if (this.flow && typeof this.flow.cleanupAllProjects === 'function') {
+      await this.flow.cleanupAllProjects();
+    }
+  }
+
   async _stepCreateFolders() {
     const state = await StateManager.getState();
     const settings = await StateManager.getSettings();
@@ -827,9 +839,10 @@ export class BaseOrchestrator {
       }
     } catch {}
 
-    // Clean old Flow projects
+    // Clean old Flow projects (subclasses that don't use Flow override
+    // _cleanupFlowProjects to a no-op so we don't open the Flow tab unnecessarily).
     try {
-      await this.flow.cleanupAllProjects();
+      await this._cleanupFlowProjects();
     } catch (e) {
       Logger.warn('Flow cleanup failed (non-fatal):', e.message);
     }

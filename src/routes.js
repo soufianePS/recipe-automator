@@ -12,6 +12,7 @@ import { FlowAccountManager } from './shared/utils/flow-account-manager.js';
 import { GeneratorOrchestrator } from './modules/generator/orchestrator.js';
 import { ScraperOrchestrator } from './modules/scraper/orchestrator.js';
 import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orchestrator.js';
+import { GeminiVisualOrchestrator } from './modules/gemini-visual/orchestrator.js';
 import { RegenOrchestrator } from './modules/regen/regen-orchestrator.js';
 import { RegenScheduler } from './modules/regen/regen-scheduler.js';
 import { readFile } from 'fs/promises';
@@ -93,6 +94,79 @@ export function setupRoutes(app, ctx) {
 
   app.get('/api/vg-default-prompts', (req, res) => {
     res.json(VERIFIED_GENERATOR_DEFAULTS.prompts);
+  });
+
+  // ── Gemini Visual: independent prompt + settings + voice list ──
+
+  app.get('/api/gv-prompt', async (req, res) => {
+    try {
+      const { describeBaseTemplate } = await import('./modules/gemini-visual/prompts-gv.js');
+      const settings = await StateManager.getSettings();
+      const result = describeBaseTemplate(settings);
+      // result.source: 'gv' = GV custom override, 'vg' = inherited from VG custom, 'default' = built-in
+      res.json({
+        prompt: result.template,
+        source: result.source,
+        isCustomized: result.source !== 'default',
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/gv-prompt', async (req, res) => {
+    try {
+      const { prompt } = req.body || {};
+      if (typeof prompt !== 'string' || prompt.length < 100) {
+        return res.status(400).json({ error: 'prompt must be a non-empty string' });
+      }
+      const settings = await StateManager.getSettings();
+      settings.geminiVisual = settings.geminiVisual || {};
+      settings.geminiVisual.prompts = settings.geminiVisual.prompts || {};
+      settings.geminiVisual.prompts.recipeVisualPlan = prompt;
+      await StateManager.saveSettings(settings);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/gv-prompt', async (req, res) => {
+    try {
+      const settings = await StateManager.getSettings();
+      if (settings.geminiVisual?.prompts?.recipeVisualPlan) {
+        delete settings.geminiVisual.prompts.recipeVisualPlan;
+        await StateManager.saveSettings(settings);
+      }
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/gv-voices', async (req, res) => {
+    try {
+      const { GV_VOICES } = await import('./modules/gemini-visual/voice-pool.js');
+      res.json({ voices: GV_VOICES });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/gv-settings', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const settings = await StateManager.getSettings();
+      settings.geminiVisual = settings.geminiVisual || {};
+      const allowed = ['transformationsOnly', 'whyPerStep', 'maxSteps', 'voiceRotationIndex', 'aiProvider'];
+      for (const key of allowed) {
+        if (key in body) settings.geminiVisual[key] = body[key];
+      }
+      await StateManager.saveSettings(settings);
+      res.json({ ok: true, geminiVisual: settings.geminiVisual });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // List of all available list-marker styles (for dashboard dropdown)
@@ -435,7 +509,11 @@ export function setupRoutes(app, ctx) {
       }
       Logger.success('Browser launched with your profile');
 
-      const OrchestratorClass = mode === 'scrape' ? ScraperOrchestrator : mode === 'verified' ? VerifiedGeneratorOrchestrator : GeneratorOrchestrator;
+      const OrchestratorClass =
+        mode === 'scrape'         ? ScraperOrchestrator :
+        mode === 'verified'       ? VerifiedGeneratorOrchestrator :
+        mode === 'gemini-visual'  ? GeminiVisualOrchestrator :
+                                    GeneratorOrchestrator;
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
@@ -601,7 +679,11 @@ export function setupRoutes(app, ctx) {
       }
 
       const settings = await StateManager.getSettings();
-      const OrchestratorClass = settings.mode === 'scrape' ? ScraperOrchestrator : settings.mode === 'verified' ? VerifiedGeneratorOrchestrator : GeneratorOrchestrator;
+      const OrchestratorClass =
+        settings.mode === 'scrape'         ? ScraperOrchestrator :
+        settings.mode === 'verified'       ? VerifiedGeneratorOrchestrator :
+        settings.mode === 'gemini-visual'  ? GeminiVisualOrchestrator :
+                                             GeneratorOrchestrator;
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);

@@ -452,6 +452,24 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     VGStats.chatgptStart();
 
+    // ── Pinterest scrape: top 3 visual refs for the dish.
+    //    Saved OUTSIDE data/tmp (which gets wiped on CREATING_FOLDERS) so the
+    //    files survive into the Flow image-gen phase. Used as additional Flow
+    //    refs on the hero step + step 1 so the visual style matches what real
+    //    food blogs actually publish for this dish. ──
+    let pinterestRefPaths = [];
+    try {
+      const { scrapePinterestImages } = await import('../gemini-visual/pinterest-scraper.js');
+      const safeSlug = (state.recipeTitle || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+      const refDir = join(__dirname, '..', '..', '..', 'output', '_vg-pinterest-cache', `${safeSlug}-${Date.now()}`);
+      const pinterestImages = await scrapePinterestImages(this.context, state.recipeTitle, refDir);
+      pinterestRefPaths = pinterestImages.map(p => p.path);
+      Logger.info(`[VerifiedGen] ${pinterestRefPaths.length} Pinterest visual refs saved for image-gen phase`);
+    } catch (e) {
+      Logger.warn(`[VerifiedGen] Pinterest scrape failed (non-fatal): ${e.message.split('\n')[0]}`);
+    }
+    await StateManager.updateState({ vgPinterestRefs: pinterestRefPaths });
+
     // ── Choose AI provider: ChatGPT or Gemini browser ──
     const aiProvider = vgSettings.aiProvider || settings.aiProvider || 'chatgpt';
     const useGemini = aiProvider === 'gemini';
@@ -472,6 +490,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     // Build intro/conclusion template instructions
     let templateInstructions = '';
+
+    // If we successfully scraped Pinterest refs and they were attached to the AI,
+    // tell it to actually use them when writing visual prompt fields.
+    if (pinterestRefPaths.length > 0) {
+      templateInstructions += `\n\nVISUAL REFERENCE IMAGES (CRITICAL): ${pinterestRefPaths.length} Pinterest food photographs of "${state.recipeTitle}" are attached to this message. Use them as the canonical visual reference when writing every visual field — hero_prompt, hero_image, ingredients_image, every step's image_prompt, every step's food_state. Match the actual plating style, garnishes, glaze color, container type, and lighting feel you SEE in those photos. Do not invent a different visual style. If a photo shows a glossy mahogany glaze, write that — do not write "creamy white sauce" or some other invented look.`;
+    }
     const introTemplates = settings.introTemplates || [];
     const conclusionTemplates = settings.conclusionTemplates || [];
     const idx = (settings.templateRotationIndex || 0) % Math.max(introTemplates.length, conclusionTemplates.length, 1);
@@ -529,6 +553,20 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       .replace(/\{\{template_instructions\}\}/g, templateInstructions);
 
     const aiChat = useGemini ? this._geminiChat : this.chatgpt;
+
+    // Attach Pinterest reference images BEFORE sending the recipe prompt.
+    // The chat (ChatGPT or Gemini) then describes hero_prompt / step image_prompt
+    // / food_state grounded on the actual visual style of real food blogs for
+    // this dish (instead of inventing). Both ChatGPTPage and GeminiChatPage
+    // expose .attachFiles() with the same signature.
+    if (pinterestRefPaths.length > 0 && typeof aiChat.attachFiles === 'function') {
+      try {
+        await aiChat.attachFiles(pinterestRefPaths);
+      } catch (e) {
+        Logger.warn(`[VerifiedGen] Pinterest attach to ${useGemini ? 'Gemini' : 'ChatGPT'} failed (non-fatal): ${e.message.split('\n')[0]}`);
+      }
+    }
+
     const response = await aiChat.sendPromptAndGetResponse(prompt, true);
     if (!response.success) throw new Error(`${useGemini ? 'Gemini' : 'ChatGPT'} failed: ${response.error}`);
 
@@ -751,12 +789,28 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, step.seo?.filename || FILENAMES.stepDefault(idx));
 
-    // Context: always use last step image for visual consistency
+    // Context: always use last step image for visual consistency.
+    // For step 1 (idx === 0), the "previous image" is the ingredients flatlay
+    // — passing it as a ref forces Flow to keep the same lighting, color grading,
+    // surface, and ingredient-quantity baseline as the recipe's opening shot.
     const contextPaths = [];
     if (idx > 0) {
       const prevPath = join(outputDir, state.steps[idx - 1]?.seo?.filename || FILENAMES.stepDefault(idx - 1));
       if (existsSync(prevPath)) {
         contextPaths.push(prevPath);
+      }
+    } else {
+      const ingredientsPath = join(outputDir, FILENAMES.ingredients);
+      if (existsSync(ingredientsPath)) {
+        contextPaths.push(ingredientsPath);
+        Logger.info('[Step 1] using ingredients flatlay as continuity reference');
+      }
+      // Step 1 also benefits from Pinterest refs — they anchor the dish color/style
+      // to what real food blogs publish for this recipe.
+      const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+      if (pinterestRefs.length > 0) {
+        contextPaths.push(...pinterestRefs);
+        Logger.info(`[Step 1] also using ${pinterestRefs.length} Pinterest refs for visual style anchor`);
       }
     }
 
@@ -842,11 +896,18 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, state.recipeJSON?.hero_seo?.filename || FILENAMES.hero);
 
-    // Context: only use last step image for hero
+    // Context: last step image (continuity) + Pinterest refs (style anchor).
+    // Pinterest refs guarantee the hero matches the canonical "what real food
+    // blogs publish for this dish" look — eliminates random-styling drift.
     const contextPaths = [];
     if (state.steps?.length > 0) {
       const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
       if (lastStepPath) contextPaths.push(lastStepPath);
+    }
+    const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+    if (pinterestRefs.length > 0) {
+      contextPaths.push(...pinterestRefs);
+      Logger.info(`[Hero] using ${pinterestRefs.length} Pinterest refs as visual style anchor`);
     }
 
     await this._generateAndVerify({

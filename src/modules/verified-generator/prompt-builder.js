@@ -45,6 +45,17 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     );
   }
 
+  // First step gets explicit anti-flatlay differentiation rules.
+  // Without these, Gemini's chat memory often produces a near-duplicate of the
+  // ingredients flatlay (raw food on a counter) when asked for step 1 — because
+  // the previous turn was a flatlay and the model anchors on it.
+  if (opts.firstStep) {
+    rules.push(
+      "CRITICAL DIFFERENTIATION — this is the FIRST cooking step, NOT a flatlay or ingredients shot. The previous image in this conversation was a still-life of raw ingredients on a counter. THIS image must be unmistakably a PROCESS shot: show ACTIVE cooking — a pot or pan in use, food on heat, steam or motion, food in mid-transformation, cookware actively involved.",
+      "DO NOT replicate, echo, or re-style the ingredients flatlay. The composition, framing, dominant cookware, and food state MUST clearly differ from any raw-ingredients photo. A viewer must instantly see this is the start of cooking, not a still-life of ingredients."
+    );
+  }
+
   const jsonPrompt = {
     task: isServingStep ? "Photorealistic food photography — SERVING SHOT (must look delicious and appetizing)" : "Photorealistic food photography",
     step_id: stepState.step_id,

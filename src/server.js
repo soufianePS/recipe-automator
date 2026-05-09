@@ -162,8 +162,9 @@ setupRoutes(app, ctx);
 app.listen(PORT, () => {
   Logger.info(`Recipe Automator server running at http://localhost:${PORT}`);
   Logger.info('Open the dashboard in your browser to configure and start automation.');
-  // Background tick for scheduled regen drips
-  RegenScheduler.init(ctx);
+  // Background tick for scheduled regen drips — DISABLED on user request.
+  // To re-enable: uncomment the line below.
+  // RegenScheduler.init(ctx);
 });
 
 // Graceful shutdown

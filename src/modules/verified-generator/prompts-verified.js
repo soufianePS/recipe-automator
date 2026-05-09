@@ -498,16 +498,37 @@ STEP TITLE RULE:
 
 STEP DESCRIPTION RULE — TESTED-RECIPE SIGNALS (CRITICAL — humans-tested-this-in-a-real-kitchen feel):
 - Each step.description MUST be 2-3 short paragraphs (not one wall of text). Use periods, not run-ons. Mix short and medium sentences.
-- EVERY step description MUST include ALL FIVE of these tested-recipe signals where they apply to that step:
+- EVERY step description MUST include ALL SIX of these tested-recipe signals where they apply to that step:
   1. SPECIFIC TEMPERATURE — exact number, never vague. Examples: "375°F", "medium-low heat (about 4 on a 10-dial)", "350°F preheated oven", "medium-high heat until the pan is hot but not smoking".
   2. SPECIFIC TIME — exact range, never vague. Examples: "8 to 10 minutes", "exactly 90 seconds per side", "until minute 12", "rest for 15 minutes off the heat".
   3. SPECIFIC TECHNIQUE — the actual hand-motion or tool action. Examples: "fold gently with a rubber spatula in a J-shaped motion", "press the dough with the heel of your hand and turn 90 degrees between folds", "swirl the pan once at minute 3 to redistribute the butter", "scrape the bowl down with a spatula halfway through".
   4. ONE CONCRETE SENSORY CUE — what the cook sees, hears, or smells when this step is done. Examples: "the edges turn deep golden and a thin crust forms on the surface", "you'll hear the sugar stop sizzling and start crackling — that's the cue to remove from heat", "the sauce coats the back of a spoon and a finger drawn across leaves a clean line", "you'll smell the garlic toast right when the cloves are ready".
   5. WHAT GOES WRONG IF YOU MISS THE WINDOW — one short clause. Examples: "miss this and the proteins seize up and the sauce breaks", "go past 12 minutes and the bottom scorches", "skip the rest and the juices run out the moment you cut".
+  6. WHY-CLAUSE AT END — the LAST sentence of the description must be ONE short clause (≤15 words) explaining WHY this temperature / time / technique matters. Naming the chemistry, the structural change, or the failure mode you're avoiding. Examples: "Sear 90 seconds without moving — the fond builds the sauce later.", "Rest 15 minutes before slicing — gives the juices time to redistribute so each slice stays moist.", "Bake at 325°F not 350°F — slow heat keeps the sugars from burning before the inside warms through.", "Boil hard at full heat — the convection finishes the gluten in 8 min, low heat leaves the center pasty."
 - For every 4-5 steps, include ONE personal-testing first-person note inside the description (in parentheses or as its own sentence). Examples: "(I tried doubling the cheese the first time — it overflowed every ramekin. This is the goldilocks amount.)", "(My first batch went into a 400°F oven and the top set before the center cooked through. 375°F is the fix.)", "(I used to skip the rest. The first cut leaks half the sauce — don't skip it.)".
 - Use contractions: "don't", "can't", "you'll", "it's". NO semicolons. NO em-dashes inside descriptions (em-dashes belong only to first-person notes wrapped in parentheses).
 - BANNED phrases that scream AI: "easy to prepare and make", "trust me on this", "I honestly haven't really shared", "elevate your", "delve into", "culinary journey", "comes together quickly".
 - The "tip" field is for an ADDITIONAL practical tip — never duplicate content from the description.
+
+ACCURATE COOKING TEMPERATURES (CRITICAL — readers will follow this and ruin food otherwise):
+- The temperature you write MUST actually cook the food properly. Not a "decorative low number" that sounds gentle but leaves the inside raw or the outside burnt.
+- Match what working cooks and chef-tested recipes actually use. If web search is available, cross-reference real recipes for this dish.
+- Standard targets to honor (don't deviate without reason):
+  * Sears (steak, chicken cutlet): medium-high to high (≥400°F equivalent), 90 sec to 3 min per side
+  * Roasts (whole chicken, pork loin, ham): 325–425°F + cite an INTERNAL TEMP target ("until 145°F internal" pork, "165°F" chicken thigh, "135°F" medium-rare beef)
+  * Cookies: 350–375°F most styles, 10–14 min — avoid 400°F+ (burns)
+  * Cakes: 325–350°F most styles, 25–35 min — avoid 400°F+
+  * Bread/loaves: 350–425°F depending on type
+  * Stews/braises: low to medium-low (~250–325°F oven, or stovetop simmer), 1.5–4 hours
+  * Reductions/glazes: medium-low, 5–15 min until visibly thickened
+- For roasts and large cuts: ALWAYS include an internal temperature target. "Bake 1 hour" without an internal-temp anchor is unsafe — readers' ovens vary.
+- If you're unsure: pick the temperature most chef sources recommend for this exact dish. Do NOT round down to "feel safe" — undercooked food is a worse failure than slightly over.
+
+TRANSFORMATION-ONLY STEP RULE:
+- Each step in "recipe.steps" must be a real cooking transformation a food photographer would actually shoot. Something visibly changes: color, texture, container, volume, state.
+- Trivial single-line additions ("add salt", "splash water", "season to taste", "stir briefly") are NOT steps. Fold them INTO the description of the adjacent transformation. Example: instead of "season the meat" + "sear the meat", write a single SEAR step whose description begins "Season the meat right before it hits the pan, then sear..."
+- Cap: keep step count tight. Most recipes need 4 to 5 steps. If your draft has more, MERGE adjacent low-impact steps into their nearest transformation.
+- If you can't picture the photo for a step, it's not a step.
 
 COOKING VISUAL PROGRESSION RULE:
 - Food MUST visually evolve across steps: raw > combined > coated > softened > thickened > structured > melted > slightly browned > finished.
@@ -559,13 +580,25 @@ SEO RULES:
 - Add a period at the end of each equipment description.
 - Add "?" at the end of each FAQ question.
 
+READABILITY RULES (Yoast — non-negotiable, applies to ALL prose: intro, why_this_works, step descriptions, step tips, storage_notes, conclusion, fun_fact, faq answers, pro_tips, substitutions notes):
+- SENTENCE LENGTH: average 15 words. NO MORE than 1 in 4 sentences (25%) may exceed 20 words. Break long sentences with a period — never with a comma splice. Re-read each sentence after writing: if it has more than 20 words OR more than 1 comma, split it.
+- PARAGRAPH LENGTH: each paragraph 60 to 90 words. NEVER exceed 130 words. For multi-paragraph fields (intro, step description, storage_notes, conclusion) ALWAYS separate paragraphs with a literal "\\n\\n" (a blank line in the JSON string value). Single-blob multi-topic paragraphs are rejected by Yoast.
+- STEP DESCRIPTION shape: write 2 to 3 SHORT paragraphs separated by "\\n\\n". Each paragraph 50 to 80 words. Don't merge "what to do" + "what you'll see" + "why it matters" into one giant paragraph — split them.
+- TRANSITION WORDS: weave in 1 transition word per paragraph (then, next, meanwhile, finally, because, however, so, therefore). Yoast flags posts with under 30%.
+- ACTIVE VOICE: ≥90% active voice ("Whisk the dressing" not "The dressing should be whisked"). Imperative for step descriptions and pro_tips.
+- COMMA-SPLICE BAN: never join two independent clauses with a comma alone. Use a period or a coordinating conjunction (and / but / so / because / while).
+
 RECIPE CARD DESCRIPTION RULE:
 - Length must be 450 to 480 characters.
 - Must include keywords: easy and ideas and quick and simple and best and healthy.
 - Must mention events: weeknight dinner or meal prep or holiday or potluck or brunch or party.
+- Must include 1 specific sensory hook (smell / texture / look) and 1 reason this version is different ("the trick is", "what makes this version", "the secret is"). Generic descriptions get penalized — aim to make a reader want to print the card.
 
-FAQ RULE: Include 3 to 4 questions.
-CONCLUSION RULE: Write 2 to 3 sentences.
+FAQ RULE: Include 5 to 7 questions. Each ANSWER must be 2 to 3 sentences (40 to 80 words) with SPECIFIC details — temperatures, times, exact day-counts, concrete techniques. Cover a MIX of these categories so the FAQ isn't repetitive: (1) make-ahead / prep-ahead, (2) storage and shelf-life, (3) ingredient substitution / dietary swap, (4) common mistake or troubleshooting ("why is mine watery / why won't it set"), (5) scaling up or doubling, (6) serving suggestion or pairing, (7) reheating or freezing. NEVER answer with a single short sentence. NEVER repeat content already in pro_tips or storage_notes verbatim — paraphrase with new specifics.
+
+PRO TIPS RULE: Include 6 to 8 tips. Each tip must be a COMPLETE 1 to 2 sentence instruction (15 to 35 words), not a fragment. Each tip must include AT LEAST ONE concrete data point: a temperature, a time window, a measurement, a brand, or a sensory cue. Mix categories across the tips: (1) technique / method, (2) ingredient quality or selection, (3) equipment trick, (4) timing or scheduling, (5) common mistake to avoid, (6) flavor-boost or finishing touch. NEVER write a tip that is just "salt your water" — write "Salt the boiling water heavily, about 1 tablespoon per quart, because this is the only chance to season the inside of the potato."
+
+CONCLUSION RULE: Write 3 to 4 sentences. Wrap up with one personal moment, one reason this version is special, and one invitation (try it, share it, tag).
 
 SECTION 2 — "visual_plan" (for AI image generation):
 This tells the image generator EXACTLY what each photo should show.
@@ -648,6 +681,18 @@ QUANTITY CONSISTENCY RULE (CRITICAL):
 - The SIZE of items must stay consistent across steps. Do not make items bigger or smaller between steps.
 - Include the exact quantity in each step's visible_ingredients field.
 
+DETAILED VISUAL DESCRIPTORS PER STEP (CRITICAL — image generators only respect what you spell out):
+- Every step's "food_state" AND every step's recipe.steps[].image_prompt MUST repeat — explicitly, every time — these visual anchors so the next image doesn't drift:
+  1. EXACT COUNT: "3 chicken thighs" not "the chicken". Restate the number in every step that contains the item, even if obvious.
+  2. EXACT SHAPE / CUT: "carrots halved lengthwise" not "carrots". If a previous step cut something into halves, every later step must say "halved" — never "whole" or "chopped".
+  3. EXACT COLOR / COOKING DEGREE: name the color stage. "raw pale-pink chicken" → "edges golden, center still pink" → "deep amber crust, fully opaque inside" → "glossy lacquered mahogany finish". Do not use vague words like "cooked" or "browned".
+  4. EXACT TEXTURE / SURFACE: "glossy", "matte", "wet", "crusted", "tacky", "slick with rendered fat", "sugar crystals visible". Spell it out — don't trust the model to guess.
+  5. EXACT STATE OF EVERY VISIBLE INGREDIENT: list each ingredient with its current state in this step (raw / sweated / partially cooked / charred / set / melted / molten / drizzled / pooled).
+- CONTINUITY ANCHOR: at the end of each step's food_state, include a short "matches step N-1 except for X" sentence. Example: "Same 3 thighs, halved carrots, and red onion wedges as step 1, but the chicken is now seared deep amber on top while the vegetables remain raw."
+- Forbidden vague phrases in food_state and image_prompt: "cooked", "ready", "nicely browned", "looks delicious", "done". Replace with one of the specific descriptors above.
+- The visual_plan visible_ingredients[].state field MUST mirror the same exact descriptor used in the recipe.steps description for that step. If recipe says "halved carrots", visible_ingredients must say "halved" — not "chopped" or "diced".
+- DISH/CONTAINER SHAPE: name the EXACT container shape and size where helpful: "10-inch round cast-iron skillet", "9×13 ceramic baking dish", "small white pasta bowl with sloped rim". Reuse the exact same descriptor across steps that share the same container.
+
 CONTAINER REALISM RULE:
 - Each step uses the container that makes cooking sense for THAT phase.
 - The container should look used and realistic not brand new.
@@ -697,18 +742,19 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "meta_description": "max 155 chars",
     "recipe_card_description": "450-480 chars, include: easy, quick, simple, best, healthy",
     "intro": "3+ paragraphs separated by newlines",
-    "ingredients": [{"name": "", "quantity": "", "description": ""}],
+    "ingredients": [{"name": "CLEAN ingredient name ONLY — no preparation, no state, no skin/peel notes. Examples GOOD: 'Yukon Gold potato', 'Duke's Mayonnaise', 'red onion', 'celery stalk', 'apple cider vinegar'. Examples BAD (do NOT do): 'Potato with skin', 'Onion, finely diced', 'Mayo (full-fat)', 'Eggs (room temp)'. The name is the LABEL a shopper would write. Capitalize sensibly (proper brand names yes, generic items lowercase or sentence-case).", "quantity": "amount + unit, e.g. '3 pounds', '1.5 cups', '2 tablespoons', '4 large'", "description": "PREPARATION + STATE detail goes here, never in the name. Sentence-style, ends with a period. Examples: 'Scrubbed, skin on, cut into 1-inch cubes for a waxier texture.', 'Hard-boiled and chopped to add richness to the base.', 'Finely diced for a necessary crunch.', 'Bring to room temperature before whisking.' If there's no special prep, write a short reason-to-use sentence instead of leaving empty."}],
     "hero_prompt": "Describe the FULLY COOKED finished dish with natural imperfections.",
     "hero_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
     "ingredients_prompt": "Natural asymmetric scatter of raw ingredients across the ENTIRE background edge-to-edge. Use each item in its real form when possible (whole vegetables, bottles and boxes standing upright). Only finely chopped/grated items go in small ramekins. Mix heights and distances. NO grid, NO matching bowls for every ingredient.",
     "ingredients_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
-    "steps": [{"number": 1, "title": "specific action", "description": "2-3 short paragraphs that include: specific temp + specific time + specific technique + one concrete sensory cue + what-goes-wrong-if-you-miss-the-window. ~1 step in every 4 also carries a parenthetical first-person testing note (e.g., '(I tried 400°F first — top set before the center cooked. 375°F is the fix.)')", "tip": "ADDITIONAL practical tip — must NOT repeat anything from description", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
-    "equipment": [{"name": "", "notes": "function."}],
-    "why_this_works": "2-3 sentences explaining the science or technique that makes this recipe work — specific ingredient interactions, cooking temperatures, timing tricks. Mention 1-2 concrete details (e.g., 'Resting the dough for 30 minutes lets the gluten relax, so it rolls thinner without snapping back'). Include 1 internal link to a related recipe naturally.",
-    "substitutions": [{"ingredient": "ingredient name", "swap": "what to use instead", "note": "how the result differs (texture, flavor, outcome) — be specific"}],
-    "pro_tips": ["", "", "", ""],
-    "faq": [{"question": "?", "answer": ""}],
-    "storage_notes": "1-2 paragraphs.",
+    "steps": [{"number": 1, "title": "specific action", "description": "2 to 3 SHORT paragraphs SEPARATED BY \\n\\n (literal newline-newline in the JSON string). Each paragraph 50 to 80 words. Paragraph 1 = the actions to take (specific temps + times + technique). Paragraph 2 = the sensory cues to watch for (what you'll see, smell, hear). Optional paragraph 3 = the why-it-matters and the failure mode if you miss the window (max 60 words). Do NOT merge these into one block. Sentences max 20 words each. ~1 step in every 4 also carries a parenthetical first-person testing note (e.g., '(I tried 400°F first — top set before the center cooked. 375°F is the fix.)') in paragraph 1 or 2.", "tip": "ADDITIONAL practical tip — must NOT repeat anything from description. 15 to 30 words.", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
+    "equipment": [{"name": "tool name", "notes": "1 sentence covering BOTH what it does for this recipe AND what to look for when buying or substituting (size in quarts/inches, material, the failure mode of using the wrong one). Example: 'A heavy-bottomed 6-quart Dutch oven distributes heat evenly so the bottom doesn't scorch — a thin-walled stockpot will hot-spot and burn the sugars.'"}],
+    "why_this_works": "2 SHORT paragraphs SEPARATED BY \\n\\n. Each paragraph 50 to 80 words. Total 3 to 4 sentences explaining the science or technique that makes this recipe work — specific ingredient interactions, cooking temperatures, timing tricks. Mention 2 to 3 concrete details (e.g., 'Resting the dough for 30 minutes lets the gluten relax, so it rolls thinner without snapping back. Baking at 425°F triggers the Maillard reaction faster than 375°F'). Include 1 internal link to a related recipe naturally. Sentences max 20 words.",
+    "substitutions": [{"ingredient": "ingredient name", "swap": "what to use instead", "note": "1-2 sentences on HOW the result differs (texture / flavor / outcome) AND a ratio or adjustment if needed (e.g., 'use 3/4 the amount because it's denser'). Be specific — never write 'works fine'."}],
+    "pro_tips": ["6 to 8 entries — each a complete 1 to 2 sentence instruction (15 to 35 words) with at least ONE concrete data point (temperature, time, measurement, brand, sensory cue). Mix categories across the array: technique, ingredient selection, equipment, timing, common mistake, finishing touch. No fragments, no one-word tips."],
+    "variations": ["3 to 4 entries — each a complete sentence describing a flavor twist, dietary adaptation, or seasonal swap with the actual change to make (e.g., 'Add 1 tablespoon of smoked paprika and 1/2 cup of bacon bites for a barbecue twist that pairs well with grilled meats')."],
+    "faq": [{"question": "ends with ?", "answer": "2-3 sentences (40-80 words) with SPECIFIC details: temperatures, times, day-counts, techniques. Cover a MIX across the 5-7 questions: make-ahead, storage shelf-life, ingredient swap, troubleshooting, scaling, serving suggestion, reheating/freezing. NEVER repeat verbatim from pro_tips or storage_notes."}],
+    "storage_notes": "2 SHORT paragraphs SEPARATED BY \\n\\n. Each paragraph 60 to 90 words. Paragraph 1 = fridge storage (exact day-count, container type) + freezing (yes/no, how to wrap, how long). Paragraph 2 = reheating (temp, time, add-back step like 'add 2 tablespoons of fresh cream') + spoilage signs to watch for. Be specific with numbers. Sentences max 20 words.",
     "fun_fact": "",
     "category": "",
     "cuisine": "",
