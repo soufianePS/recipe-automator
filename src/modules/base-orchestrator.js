@@ -1192,11 +1192,32 @@ export class BaseOrchestrator {
     // Extract website domain from settings for template branding
     const websiteUrl = settings.wpUrl || '';
     const websiteDomain = websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+    // Build a bullet-formatted ingredient list for templates that show
+    // ingredients text. The default pinterestPromptPrefix tells the AI to
+    // include the list only IF the template visually has an ingredients slot,
+    // so templates without ingredients still render fine. Cap at 8 lines so
+    // the template doesn't get crammed visually.
+    const formatIng = (ing) => {
+      const qty = (ing?.quantity || '').toString().trim();
+      const name = (ing?.name || '').toString().trim();
+      if (qty && name) return `${qty} ${name}`;
+      return name || qty;
+    };
+    const ingredientsList = (state.recipeJSON?.ingredients || [])
+      .slice(0, 8)
+      .map(formatIng)
+      .filter(Boolean)
+      .map(s => `• ${s}`)
+      .join('\n');
+
     const pinVars = {
       '@prompt': pinPrompt,
       '@pin_title': pin.title || '',
+      '@title': recipeTitle,
       '@pin_description': pin.description || '',
-      '@website': websiteDomain
+      '@website': websiteDomain,
+      '@ingredients': ingredientsList || ''
     };
     const prompt = this._resolvePromptPlaceholders(rawPrefix, state.recipeJSON, pinVars)
       + pinPrompt
