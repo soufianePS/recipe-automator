@@ -391,26 +391,29 @@ export class FlowPage {
 
     // 4. Attach context images from picker
     // All ref images must go through the picker — never clipboard paste into prompt.
-    // If a context image wasn't generated in this session, upload it to canvas first,
-    // then attach via picker like everything else.
+    // For files we KNOW were never uploaded this session (not in _generatedNames),
+    // skip the picker attempt entirely (3 scroll attempts × ~4s = wasted time) and
+    // upload to canvas first. Picker auto-filters already-attached files anyway, so
+    // an optimistic picker probe just times out.
     for (const ctxPath of contextFilePaths) {
       if (!existsSync(ctxPath)) continue;
       const ctxName = basename(ctxPath);
-      // Try picker by previously-stored name first, then by basename (for previously-uploaded context)
-      const pickerName = this._generatedNames.get(ctxPath) || ctxName;
+      const cachedName = this._generatedNames.get(ctxPath);
       let ctxAttached = false;
-      Logger.info(`[Flow] Attaching context from picker: ${pickerName}`);
-      ctxAttached = await this._attachFromPicker(pickerName);
-      if (!ctxAttached) {
-        // Upload to canvas, then attach via picker
-        Logger.info(`[Flow] Context not in picker, uploading to canvas: ${ctxName}`);
+
+      if (cachedName) {
+        // Known to be on canvas in this session — try picker first
+        Logger.info(`[Flow] Attaching context from picker: ${cachedName}`);
+        ctxAttached = await this._attachFromPicker(cachedName);
+      } else {
+        // Never uploaded this session — go straight to upload+attach (avoid the
+        // ~12s picker-then-scroll-then-fail dance for files that aren't there)
+        Logger.info(`[Flow] Context not in session cache, uploading to canvas: ${ctxName}`);
         await this._uploadBgToCanvas(ctxPath);
         ctxAttached = await this._attachFromPicker(ctxName);
-        if (ctxAttached) {
-          // Remember that this path is now on canvas under this basename
-          this._generatedNames.set(ctxPath, ctxName);
-        }
+        if (ctxAttached) this._generatedNames.set(ctxPath, ctxName);
       }
+
       if (!ctxAttached) {
         // Last resort: paste via clipboard
         Logger.warn(`[Flow] Picker failed for context, pasting via clipboard: ${ctxName}`);
@@ -623,15 +626,19 @@ export class FlowPage {
         Logger.info(`[Flow] Attaching background: ${bgName}`);
         await this._attachFromPicker(bgName);
 
-        // 3f. Attach context images
+        // 3f. Attach context images — skip picker for files we know aren't uploaded
+        // yet (avoids the wasted ~12s picker-then-scroll-then-fail per unknown file).
         for (const ctxPath of contextFilePaths) {
           if (!existsSync(ctxPath)) continue;
           const ctxName = basename(ctxPath);
-          const pickerName = this._generatedNames.get(ctxPath) || ctxName;
-          Logger.info(`[Flow] Attaching context: ${pickerName}`);
-          let ok = await this._attachFromPicker(pickerName);
-          if (!ok) {
-            Logger.info(`[Flow] Context not in session, uploading: ${ctxName}`);
+          const cachedName = this._generatedNames.get(ctxPath);
+          let ok = false;
+
+          if (cachedName) {
+            Logger.info(`[Flow] Attaching context: ${cachedName}`);
+            ok = await this._attachFromPicker(cachedName);
+          } else {
+            Logger.info(`[Flow] Context not in session cache, uploading: ${ctxName}`);
             await this._uploadBgToCanvas(ctxPath);
             ok = await this._attachFromPicker(ctxName);
             if (ok) this._generatedNames.set(ctxPath, ctxName);

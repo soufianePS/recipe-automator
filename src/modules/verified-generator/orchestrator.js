@@ -221,12 +221,30 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const maxRetries = vgSettings?.maxVerificationRetries || 3;
     let bestImage = null;
     let bestIssueCount = Infinity;
+    let switchedToNB2 = false; // tracks NB2 fallback within this image
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       // Build prompt: original on first attempt, with correction on retries
       let currentPrompt = prompt;
       if (attempt > 0 && correctionFn && this._lastVerifyResult) {
         currentPrompt = prompt + '\n\n' + correctionFn(this._lastVerifyResult);
+      }
+
+      // NANO BANANA 2 FALLBACK — on the LAST attempt, if we've already failed verification
+      // on Pro and haven't switched yet, fall back to Nano Banana 2. Pro may be silently
+      // degraded near its rate limit (returning bad images without a hard rate-limit error).
+      // The model persists for the rest of the recipe via this.flow.preferredModel —
+      // _ensureProModelForNewRecipe() resets back to Pro at the start of the next recipe.
+      const isLastAttempt = attempt === maxRetries - 1;
+      if (isLastAttempt && attempt > 0 && !switchedToNB2 && this.flow.preferredModel === 'Nano Banana Pro') {
+        Logger.warn(`[VerifiedGen] ${label}: ${attempt}× failed on Nano Banana Pro — falling back to Nano Banana 2 (Pro may be rate-degraded)`);
+        try {
+          await this.flow.switchFlowModel('Nano Banana 2');
+        } catch (e) {
+          Logger.warn(`[VerifiedGen] In-flight model switch failed (${e.message.split('\n')[0]}) — setting preferredModel anyway`);
+          this.flow.preferredModel = 'Nano Banana 2';
+        }
+        switchedToNB2 = true;
       }
 
       // Try to generate — if retry fails (Flow download error), fall back to best image
@@ -242,6 +260,15 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         await this._trackFlowGeneration();
       } catch (genErr) {
         if (attempt === 0) throw genErr; // First attempt must succeed
+
+        // GenErr on retry — try Nano Banana 2 once before falling back to best image
+        if (!switchedToNB2 && this.flow.preferredModel === 'Nano Banana Pro') {
+          Logger.warn(`[VerifiedGen] ${label}: Pro generation error (${genErr.message.split('\n')[0]}) — trying Nano Banana 2`);
+          try { await this.flow.switchFlowModel('Nano Banana 2'); }
+          catch (e) { this.flow.preferredModel = 'Nano Banana 2'; }
+          switchedToNB2 = true;
+          continue; // retry with NB2
+        }
 
         // Retry failed — use best previous image
         Logger.warn(`[VerifiedGen] ${label} retry ${attempt} generation failed: ${genErr.message}`);
@@ -331,6 +358,11 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
           }
         }
       }
+    }
+
+    // If we successfully fell back to Nano Banana 2, persist the model for the rest of the recipe
+    if (switchedToNB2 && this._lastVerifyResult?.status === 'PASS') {
+      Logger.info(`[VerifiedGen] Nano Banana 2 fallback PASSED for ${label} — continuing with NB2 for the rest of this recipe (Pro will resume on next recipe)`);
     }
 
     // Track stats
@@ -428,7 +460,11 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       sheetSettings: {
         sheetTabName: sheetSettings.sheetTabName,
         statusColumn: sheetSettings.statusColumn
-      }
+      },
+      // Reset Pinterest project flag — without this, the Pin 1 closeSession is skipped
+      // on subsequent recipes (because the flag stayed true from the previous recipe),
+      // and the recipe project keeps accumulating images until Pin 3 → context crash.
+      pinterestProjectReady: false
     });
     // Clear prepared files cache for new recipe
     this._preparedFiles = new Map();
@@ -468,7 +504,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     } catch (e) {
       Logger.warn(`[VerifiedGen] Pinterest scrape failed (non-fatal): ${e.message.split('\n')[0]}`);
     }
-    await StateManager.updateState({ vgPinterestRefs: pinterestRefPaths });
+    await StateManager.updateState({ vgPinterestRefs: pinterestRefPaths, vgIdentityAnchorRefs: [] });
 
     // ── Choose AI provider: ChatGPT or Gemini browser ──
     const aiProvider = vgSettings.aiProvider || settings.aiProvider || 'chatgpt';
@@ -542,7 +578,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       Logger.warn(`[VerifiedGen] Failed to fetch related recipes: ${e.message}`);
     }
 
-    // Fill placeholders in the VG prompt template
+    // Fill placeholders in the VG prompt template. The template references
+    // {{section_structure}} twice (prompts-verified.js:632-633) for the
+    // randomized H2 plan — same payload as the structureInstructions block
+    // appended to templateInstructions. We substitute it explicitly so Gemini
+    // doesn't see the raw placeholder text (which it would otherwise echo back
+    // and corrupt the JSON output).
     const prompt = template
       .replace(/\{\{topic\}\}/g, state.recipeTitle)
       .replace(/\{\{categories\}\}/g, settings.wpCategories || 'Breakfast, Lunch, Dinner, Dessert')
@@ -550,6 +591,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       .replace(/\{\{max_steps\}\}/g, String(vgSettings.maxVisualSteps || defaults.maxVisualSteps))
       .replace(/\{\{default_camera_angle\}\}/g, 'choose best angle for this step')
       .replace(/\{\{related_recipes\}\}/g, relatedRecipesBlock)
+      .replace(/\{\{section_structure\}\}/g, structureInstructions || '')
       .replace(/\{\{template_instructions\}\}/g, templateInstructions);
 
     const aiChat = useGemini ? this._geminiChat : this.chatgpt;
@@ -642,7 +684,78 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
     }
 
+    // ── Auto-recovery: synthesize ingredients_image.items from recipe.ingredients
+    //    if the visual plan returned them empty/missing. This happens when the AI
+    //    chat session lost context (often after a Flow account rotation reset the
+    //    browser, or when Gemini truncated the response). We have the recipe's real
+    //    ingredients list — derive presentation hints from each ingredient name. ──
+    if (rawVisualPlan && !rawVisualPlan.ingredients_image) {
+      Logger.warn('[VerifiedGen] Visual plan missing ingredients_image object entirely — synthesizing default');
+      rawVisualPlan.ingredients_image = {
+        image_type: 'ingredients',
+        layout: 'Natural asymmetric scatter across the entire surface edge-to-edge. Mixed forms with whole items, standing packaged products, and a few small ramekins for chopped or grated bits. Items at different heights and different distances apart.',
+        camera_angle: 'slight overhead (30-degree)',
+        items: [],
+        forbidden: ['cooked food', 'mixed items', 'garnish', 'utensils']
+      };
+    }
+    if (rawVisualPlan?.ingredients_image &&
+        (!Array.isArray(rawVisualPlan.ingredients_image.items) || rawVisualPlan.ingredients_image.items.length === 0)) {
+      const recipeIngs = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
+      if (recipeIngs.length > 0) {
+        Logger.warn(`[VerifiedGen] Visual plan returned empty ingredients_image.items — auto-deriving from ${recipeIngs.length} recipe ingredient(s)`);
+        rawVisualPlan.ingredients_image.items = recipeIngs.map(ing => {
+          const name = (typeof ing === 'string') ? ing : (ing.name || ing.ingredient || '');
+          const lower = (name || '').toLowerCase();
+          let presentation = 'whole';
+          let brand = '';
+          if (/oil|vinegar|sauce|syrup|extract|wine|stock|broth|milk|cream|honey|maple|soy|hot sauce|mustard|mayo/.test(lower)) {
+            presentation = 'standing bottle'; brand = 'GRAZA';
+          } else if (/flour|sugar|baking soda|baking powder|cocoa|cornstarch|breadcrumb|oat|cereal/.test(lower)) {
+            presentation = 'standing box/bag'; brand = 'Great Value';
+          } else if (/spice|pepper|cinnamon|paprika|cumin|garlic powder|onion powder|herb|salt|nutmeg|cardamom|thyme|oregano|basil/.test(lower)) {
+            presentation = 'small ramekin';
+          } else if (/cheese|butter|egg|yogurt/.test(lower)) {
+            presentation = 'large plate';
+          }
+          return {
+            name,
+            state: 'whole/raw uncut as-purchased',
+            presentation,
+            brand,
+            placement: ''
+          };
+        });
+      } else {
+        Logger.warn('[VerifiedGen] ingredients_image.items empty AND recipe.ingredients empty — using minimal placeholder');
+        rawVisualPlan.ingredients_image.items = [{ name: 'main ingredient', state: 'whole/raw', presentation: 'whole', brand: '', placement: '' }];
+      }
+    }
+
     const visualPlan = validateVisualPlan(rawVisualPlan, vgSettings);
+
+    // ── Identity-anchor Pinterest scrape ──
+    // If the visual plan has a food_identity_canon, scrape ONE additional Pinterest
+    // ref for the RAW/PRE-COOK state of the food using canon.prep_search_query.
+    // This anchor is attached to every step that contains the primary food — gives
+    // Flow a real photo of the correct silhouette so step 1 doesn't invent a wrong
+    // shape that then cascades through the chain.
+    let identityAnchorRefs = [];
+    const canon = visualPlan.food_identity_canon;
+    if (canon && canon.prep_search_query && canon.primary_food) {
+      try {
+        const { scrapePinterestImages } = await import('../gemini-visual/pinterest-scraper.js');
+        const safeSlug = (state.recipeTitle || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+        const anchorDir = join(__dirname, '..', '..', '..', 'output', '_vg-identity-anchor-cache', `${safeSlug}-${Date.now()}`);
+        const anchorImages = await scrapePinterestImages(this.context, canon.prep_search_query, anchorDir);
+        identityAnchorRefs = anchorImages.map(p => p.path).slice(0, 1);
+        Logger.info(`[VerifiedGen] Identity anchor (raw "${canon.primary_food}") scraped: ${identityAnchorRefs.length} ref`);
+      } catch (e) {
+        Logger.warn(`[VerifiedGen] Identity anchor scrape failed (non-fatal): ${e.message.split('\n')[0]}`);
+      }
+    } else {
+      Logger.info('[VerifiedGen] No food_identity_canon — skipping identity anchor scrape (amorphous food or null canon)');
+    }
 
     // Normalize ingredients format (support both array of strings and array of objects)
     if (Array.isArray(recipe.ingredients) && recipe.ingredients.length > 0 && typeof recipe.ingredients[0] === 'object') {
@@ -680,6 +793,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       status: STATES.CREATING_FOLDERS,
       recipeJSON: recipe,
       visualPlan,
+      vgIdentityAnchorRefs: identityAnchorRefs,
       steps,
       currentStepIndex: 0,
       pinterestPins,
@@ -766,9 +880,11 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     Logger.step('Flow', `Step ${idx + 1}/${state.steps.length}: ${visualStep.title}`);
 
-    // Build prompt from structured state
+    // Build prompt later — we need to know which refs got attached so the prompt
+    // can label each ref's role explicitly (per Google's "explicit role per image"
+    // best practice when attaching 3+ refs).
     const isLastStep = idx === state.steps.length - 1;
-    const prompt = buildStepPrompt(visualStep, vgSettings, { isLastStep });
+    const foodIdentityCanon = state.visualPlan?.food_identity_canon || null;
 
     // Background — serving step uses the HERO background (same surface as hero image),
     // earlier steps use the kitchen pool so each step has a distinct surface.
@@ -789,30 +905,85 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, step.seo?.filename || FILENAMES.stepDefault(idx));
 
-    // Context: always use last step image for visual consistency.
-    // For step 1 (idx === 0), the "previous image" is the ingredients flatlay
-    // — passing it as a ref forces Flow to keep the same lighting, color grading,
-    // surface, and ingredient-quantity baseline as the recipe's opening shot.
+    // Context refs — order matters: Flow's picker weights the LAST-attached ref most.
+    // Total kept up to 5 refs (3-5 sweet spot per Google's guidance, picking top end).
+    // Ordering rules per step type:
+    //   STEP 1:    pinterest hero refs (low) → identity anchor (mid) → ingredients flatlay (high)
+    //   STEP 2:    pinterest (low) → identity anchor (mid) → step 1 (high)
+    //   STEP 3:    pinterest (low) → identity anchor (low-mid) → step 1 (mid) → step 2 (high)
+    //   STEP N≥4:  pinterest (low) → identity anchor (low-mid) → step N-3 (mid-low) → step N-2 (mid) → step N-1 (high)
     const contextPaths = [];
+    const refRoles = []; // parallel array used to build role labels in the prose prompt
+
     if (idx > 0) {
-      const prevPath = join(outputDir, state.steps[idx - 1]?.seo?.filename || FILENAMES.stepDefault(idx - 1));
-      if (existsSync(prevPath)) {
+      // Pinterest finished-dish ref (LOWEST weight) — color palette / food-blog style anchor.
+      // Only ONE ref (not 2) for step N≥2 to minimize the risk of Flow
+      // "jumping ahead" to the finished dish on mid-cooking steps.
+      const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
+      if (pinterestRefs.length > 0) {
+        contextPaths.push(...pinterestRefs);
+        refRoles.push(`a Pinterest photo of the FINISHED dish — use ONLY for the dish's typical color palette, garnish style, and food-blog look. DO NOT copy this composition or render the finished plate — this is step ${idx + 1} of the cooking process, the food is still mid-cooking`);
+        Logger.info(`[Step ${idx + 1}] 1 Pinterest finished-dish ref attached (lowest weight, palette/style anchor only)`);
+      }
+      // Identity anchor (low-mid weight) — silhouette anchor only
+      const identityAnchors = (state.vgIdentityAnchorRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
+      if (identityAnchors.length > 0 && foodIdentityCanon?.primary_food) {
+        contextPaths.push(...identityAnchors);
+        refRoles.push(`a raw / pre-cook photo of "${foodIdentityCanon.primary_food}" — use this ONLY to anchor the food's silhouette and proportions, never for plating style`);
+        Logger.info(`[Step ${idx + 1}] identity anchor attached: raw "${foodIdentityCanon.primary_food}"`);
+      }
+      // Step N-3 (mid-low weight) — even-earlier-state continuity for color/texture trail.
+      // Skipped when idx < 3.
+      if (idx >= 3) {
+        const prevPrevPrevPath = this._findStepImage(state.steps, idx - 3, outputDir);
+        if (prevPrevPrevPath) {
+          contextPaths.push(prevPrevPrevPath);
+          refRoles.push(`an earlier step (step ${idx - 2}) — use this for color and texture continuity from earlier in the cooking trail, NOT for composition`);
+          Logger.info(`[Step ${idx + 1}] step ${idx - 2} attached as mid-low weight continuity ref (color/texture trail)`);
+        }
+      }
+      // Step N-2 (mid weight) — earlier-state continuity ref for color/texture
+      // Skipped when idx < 2.
+      if (idx >= 2) {
+        const prevPrevPath = this._findStepImage(state.steps, idx - 2, outputDir);
+        if (prevPrevPath) {
+          contextPaths.push(prevPrevPath);
+          refRoles.push(`an earlier step (step ${idx - 1}) — use this for color and texture continuity, NOT for composition (the food has moved since then)`);
+          Logger.info(`[Step ${idx + 1}] step ${idx - 1} attached as mid-weight continuity ref (color/texture)`);
+        }
+      }
+      // Previous step image last (highest weight) — strongest continuity anchor
+      const prevPath = this._findStepImage(state.steps, idx - 1, outputDir);
+      if (prevPath) {
         contextPaths.push(prevPath);
+        refRoles.push(`the immediately previous step (step ${idx}) — primary continuity anchor for state, container, and composition. Keep the SAME container, same plating, same lighting. Only change what the new step requires`);
       }
     } else {
-      const ingredientsPath = join(outputDir, FILENAMES.ingredients);
-      if (existsSync(ingredientsPath)) {
-        contextPaths.push(ingredientsPath);
-        Logger.info('[Step 1] using ingredients flatlay as continuity reference');
-      }
-      // Step 1 also benefits from Pinterest refs — they anchor the dish color/style
-      // to what real food blogs publish for this recipe.
+      // Step 1 — Pinterest hero refs first (lowest weight, style only)
       const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
       if (pinterestRefs.length > 0) {
         contextPaths.push(...pinterestRefs);
-        Logger.info(`[Step 1] also using ${pinterestRefs.length} Pinterest refs for visual style anchor`);
+        refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's typical color palette and style. Do NOT copy plating or composition — this is the FIRST cooking step, the food is raw, not finished`);
+        Logger.info(`[Step 1] ${pinterestRefs.length} Pinterest hero refs attached (low weight, style only)`);
+      }
+      // Identity anchor middle (silhouette anchor for canon food)
+      const identityAnchors = (state.vgIdentityAnchorRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
+      if (identityAnchors.length > 0 && foodIdentityCanon?.primary_food) {
+        contextPaths.push(...identityAnchors);
+        refRoles.push(`a raw / pre-cook photo of "${foodIdentityCanon.primary_food}" — use this ONLY to anchor the food's silhouette and proportions, never for plating style`);
+        Logger.info(`[Step 1] identity anchor attached: raw "${foodIdentityCanon.primary_food}"`);
+      }
+      // Ingredients flatlay LAST (highest weight) — same surface, same lighting, correct raw ingredients
+      const ingredientsPath = join(outputDir, FILENAMES.ingredients);
+      if (existsSync(ingredientsPath)) {
+        contextPaths.push(ingredientsPath);
+        refRoles.push(`the ingredients flat-lay — use this for the EXACT marble surface texture, the EXACT lighting direction and softness, and the EXACT visual identity of the raw ingredients`);
+        Logger.info('[Step 1] ingredients flatlay attached LAST (highest weight) — surface/lighting anchor');
       }
     }
+
+    // Now build the prompt with refRoles so the prose can label each ref explicitly
+    const prompt = buildStepPrompt(visualStep, vgSettings, { isLastStep, foodIdentityCanon, refRoles, firstStep: idx === 0 });
 
     // Similarity check + cross-step verifier: previous step image (saved-name aware)
     const prevImagePath = idx > 0 ? this._findStepImage(state.steps, idx - 1, outputDir) : null;
@@ -821,6 +992,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // Description that the reader will actually see in the blog post (helps Gemini cross-check)
     const recipeDescription = step?.description || visualStep.food_state || '';
 
+    // Pass canon into verifier (via stepState) so it can run identity/composition checks
+    // AND into correction-prompt builder via _canon side-channel.
+    const stepStateWithCanon = { ...visualStep, _canon: foodIdentityCanon };
+
     await this._generateAndVerify({
       prompt, backgroundPath, contextPaths,
       aspectRatio: settings.stepAspectRatio || 'PORTRAIT',
@@ -828,11 +1003,11 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       verifyFn: async (path) => verifyStepImage(
         await this._getGeminiApiKey(),
         path,
-        visualStep,
+        stepStateWithCanon,
         vgSettings,
-        { previousImagePath: prevImagePath, recipeDescription, previousStepTitle: prevStepTitle }
+        { previousImagePath: prevImagePath, recipeDescription, previousStepTitle: prevStepTitle, foodIdentityCanon }
       ),
-      correctionFn: (result) => buildCorrectionPrompt(visualStep, result, vgSettings),
+      correctionFn: (result) => buildCorrectionPrompt(stepStateWithCanon, result, vgSettings),
       // Similarity detection (still runs separately for the overall similarity score)
       prevImagePath,
       prevStepNum: idx,
@@ -881,8 +1056,8 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     Logger.step('Flow', 'Generating verified hero image...');
 
-    // Build prompt from structured state
-    const prompt = buildHeroPrompt(heroState, vgSettings);
+    // Build prompt LATER — need to know which refs got attached for role-labeling
+    const foodIdentityCanon = state.visualPlan?.food_identity_canon || null;
 
     // Write hero background to temp file with unique prefix
     const tmpDir = join(__dirname, '..', '..', '..', 'data', 'tmp');
@@ -896,26 +1071,52 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, state.recipeJSON?.hero_seo?.filename || FILENAMES.hero);
 
-    // Context: last step image (continuity) + Pinterest refs (style anchor).
-    // Pinterest refs guarantee the hero matches the canonical "what real food
-    // blogs publish for this dish" look — eliminates random-styling drift.
+    // Context refs for hero (max 4, in order from lowest to highest weight):
+    //   1. Pinterest hero refs (low) — style/color anchor
+    //   2. Middle step image (mid) — recipe trajectory continuity (3+ step recipes only)
+    //   3. Last step / serving image (high) — direct continuity, the food just left this state
+    // Note: identity anchor is intentionally skipped here — at hero stage the food is
+    // fully cooked, and the raw anchor would conflict with the finished look.
     const contextPaths = [];
-    if (state.steps?.length > 0) {
-      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
-      if (lastStepPath) contextPaths.push(lastStepPath);
-    }
+    const refRoles = [];
+
     const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
     if (pinterestRefs.length > 0) {
       contextPaths.push(...pinterestRefs);
+      refRoles.push(`Pinterest reference photos of the finished dish — use these for the canonical color palette, garnish style, and overall food-blog look this dish is known for`);
       Logger.info(`[Hero] using ${pinterestRefs.length} Pinterest refs as visual style anchor`);
     }
+
+    // Middle step ref — recipe-trajectory continuity for 3+ step recipes
+    if (state.steps?.length >= 3) {
+      const midIdx = Math.floor(state.steps.length / 2);
+      const midStepPath = this._findStepImage(state.steps, midIdx, outputDir);
+      if (midStepPath && !contextPaths.includes(midStepPath)) {
+        contextPaths.push(midStepPath);
+        refRoles.push(`a mid-recipe step image — use this for ingredient continuity (the food in the hero must look like the SAME ingredients shown cooking earlier, not random substitutes)`);
+        Logger.info(`[Hero] middle step ${midIdx + 1} attached as recipe-trajectory ref`);
+      }
+    }
+
+    // Last step / serving (highest weight) — most direct continuity anchor
+    if (state.steps?.length > 0) {
+      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
+      if (lastStepPath) {
+        contextPaths.push(lastStepPath);
+        refRoles.push(`the serving / final step image — primary continuity anchor: the hero shows the SAME finished food, possibly from a slightly different angle, same plate, same garnish, same lighting`);
+      }
+    }
+
+    // Now build the hero prompt with the refRoles labels embedded
+    const prompt = buildHeroPrompt(heroState, vgSettings, { foodIdentityCanon, refRoles });
+    const heroStateWithCanon = { ...heroState, _canon: foodIdentityCanon };
 
     await this._generateAndVerify({
       prompt, backgroundPath: heroTmpPath, contextPaths,
       aspectRatio: settings.heroAspectRatio || 'LANDSCAPE',
       outputPath, label: 'Hero', imageType: 'hero', vgSettings,
-      verifyFn: async (path) => verifyHeroImage(await this._getGeminiApiKey(), path, heroState, vgSettings),
-      correctionFn: (result) => buildCorrectionPrompt(heroState, result, vgSettings)
+      verifyFn: async (path) => verifyHeroImage(await this._getGeminiApiKey(), path, heroStateWithCanon, vgSettings, { foodIdentityCanon }),
+      correctionFn: (result) => buildCorrectionPrompt(heroStateWithCanon, result, vgSettings)
     });
 
     const imgBuf = readFileSync(outputPath);
