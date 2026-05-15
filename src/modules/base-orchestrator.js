@@ -37,6 +37,7 @@ export const FILENAMES = {
   heroBackground:  'background-hero.jpg',
   stepsBackground: 'background-steps.jpg',
   hero:            'hero.jpg',
+  serving:         'serving.jpg',
   ingredients:     'ingredients.jpg',
   heroBgTemp:      'hero-bg.jpg',
   recipeJSON:      'recipe.json',
@@ -272,15 +273,61 @@ export class BaseOrchestrator {
     // Update our reference to the new browser context
     this.context = ctx.browserContext;
 
-    // Recreate Flow and ChatGPT page objects with new context
-    // Preserve the preferred model across browser swaps
+    // Recreate page objects bound to the new context. Anything cached on this
+    // orchestrator that holds a Playwright context reference must be reset,
+    // otherwise it keeps pointing at the now-closed context and the next
+    // .init() call hits "Target page, context or browser has been closed".
+    // Preserve the preferred model across browser swaps.
     const savedModel = this.flow?.preferredModel || 'Nano Banana Pro';
     this.flow = new FlowPage(null, ctx.browserContext);
     this.flow.preferredModel = savedModel;
     this.chatgpt = new ChatGPTPage(null, ctx.browserContext);
+    this._geminiChat = null; // lazily rebuilt against the new context
 
     await StateManager.updateState({ flowAccountRotationNeeded: false });
     Logger.success(`[FlowAccounts] Now using account "${account.name}"`);
+    return true;
+  }
+
+  /**
+   * Verify the persistent browser context is still usable. With Playwright's
+   * launchPersistentContext, closing the last open page can shut the browser
+   * down, but the auto-spawned about:blank normally survives all-user-pages-
+   * closed (verified in scripts/test-context-lifecycle.mjs scenario A).
+   * On null/dead context, relaunches with the active Flow account's profile
+   * and rebinds chatgpt/flow page wrappers. Returns true if a relaunch ran.
+   *
+   * Probe strategy: null-reference only. Every explicit close-and-null path
+   * in this codebase (e.g. _ensureBrowserForAccount, cleanupBrowser) sets
+   * ctx.browserContext = null. So null IS the reliable death signal. Probing
+   * with newPage()+close() was rejected because closing the only page can
+   * itself trigger a shutdown (Codex adversarial review finding #1).
+   */
+  async _ensureContextAlive() {
+    const ctx = this.serverCtx;
+    if (!ctx?.launchBrowserWithProfile) return false;
+
+    if (ctx.browserContext) return false; // alive (or assumed alive)
+
+    Logger.warn('[Browser] Persistent context is null — relaunching');
+
+    let profileOverride = null;
+    try {
+      if (await FlowAccountManager.isEnabled()) {
+        const account = await FlowAccountManager.getActiveAccount();
+        if (account) profileOverride = FlowAccountManager.getProfileDir(account);
+      }
+    } catch {}
+
+    await ctx.launchBrowserWithProfile(profileOverride);
+
+    this.context = ctx.browserContext;
+    const savedModel = this.flow?.preferredModel || 'Nano Banana Pro';
+    this.flow = new FlowPage(null, ctx.browserContext);
+    this.flow.preferredModel = savedModel;
+    this.chatgpt = new ChatGPTPage(null, ctx.browserContext);
+    this._geminiChat = null;
+    Logger.success('[Browser] Context relaunched');
     return true;
   }
 
@@ -560,17 +607,6 @@ export class BaseOrchestrator {
         cleanDir(join(__dirname, '..', '..', 'data', 'tmp'));
       } catch {}
 
-      // Verify browser context is still alive — if not, flag for relaunch
-      try {
-        if (this.serverCtx?.browserContext) {
-          await this.serverCtx.browserContext.newPage().then(p => p.close());
-        }
-      } catch {
-        Logger.warn('[Batch] Browser context dead after error — will relaunch for next recipe');
-        if (this.serverCtx) this.serverCtx.browserContext = null;
-        await StateManager.updateState({ flowAccountRotationNeeded: true });
-      }
-
       if (nextIndex < state.batchQueue.length) {
         // More recipes in queue — reset state and continue
         await StateManager.resetState();
@@ -584,6 +620,8 @@ export class BaseOrchestrator {
         });
         // Small delay before next recipe
         await new Promise(r => setTimeout(r, 5000));
+        // Probe + relaunch if the context died
+        await this._ensureContextAlive();
         return true; // tell _runLoop to continue
       } else {
         // All recipes processed — batch complete
