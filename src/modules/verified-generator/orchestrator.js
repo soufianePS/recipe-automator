@@ -1161,55 +1161,90 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       await StateManager.updateState({ pinterestProjectReady: true });
     }
 
-    // Pick template — prefixed to avoid collisions with step backgrounds
+    // Pick template — dashboard-managed (backgrounds.json) takes priority,
+    // falls back to legacy folder for older installs. Mirrors hero backgrounds
+    // UX: upload templates via Dashboard → Settings → Images.
     const isScraper = settings.mode === 'scrape';
-    const templateFolder = isScraper
-      ? settings.pinterestTemplateFolderScraper
-      : settings.pinterestTemplateFolderGenerator;
+    const pinMode = isScraper ? 'scraper' : 'generator';
+    const dashboardTemplates = await StateManager.getPinterestTemplates(pinMode);
 
-    if (!templateFolder || !existsSync(templateFolder)) {
-      Logger.warn(`Pinterest template folder not configured or missing. Skipping pins.`);
-      await StateManager.updateState({ status: STATES.UPLOADING_PINS });
-      return;
+    let originalTemplatePath;
+
+    if (dashboardTemplates.length > 0) {
+      const picked = dashboardTemplates[pendingIdx % dashboardTemplates.length];
+      const tmpDir = join(__dirname, '..', '..', '..', 'data', 'tmp');
+      mkdirSync(tmpDir, { recursive: true });
+      const ext = picked.name?.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+      originalTemplatePath = join(tmpDir, `pin-template-src-${Date.now()}-${pendingIdx}.${ext}`);
+      writeFileSync(originalTemplatePath, Buffer.from(picked.base64, 'base64'));
+      Logger.info(`Using dashboard template: ${picked.name}`);
+    } else {
+      const legacyFolder = isScraper
+        ? settings.pinterestTemplateFolderScraper
+        : settings.pinterestTemplateFolderGenerator;
+      if (!legacyFolder || !existsSync(legacyFolder)) {
+        Logger.warn(`No Pinterest templates configured for ${pinMode} (dashboard or folder). Skipping pins.`);
+        await StateManager.updateState({ status: STATES.UPLOADING_PINS });
+        return;
+      }
+      const templateImages = StateManager.listImagesInFolder(legacyFolder);
+      if (!templateImages.length) {
+        throw new Error(`No template images found in: ${legacyFolder}`);
+      }
+      originalTemplatePath = templateImages[pendingIdx % templateImages.length];
+      Logger.info(`Using legacy folder template: ${basename(originalTemplatePath)}`);
     }
 
-    const templateImages = StateManager.listImagesInFolder(templateFolder);
-    if (!templateImages.length) {
-      throw new Error(`No template images found in: ${templateFolder}`);
-    }
-
-    const originalTemplatePath = templateImages[pendingIdx % templateImages.length];
     const templatePath = this._prepareFile(originalTemplatePath, `pin-${pendingIdx + 1}`);
-    Logger.info(`Using template: ${basename(originalTemplatePath)} → ${basename(templatePath)}`);
 
-    // Context: hero + last step (serving image)
+    // Context: HERO ONLY. The hero is the canonical finished-dish visual —
+    // every pin remixes it (different framing, crop, or cut-view). Mixing in
+    // mid-cooking step photos used to leak raw/half-cooked appearance into
+    // the pin output (= bad Pinterest CTR).
     const contextPaths = [];
     const outputDir = this._getOutputDir(state, settings);
     const heroFilename = state.recipeJSON?.hero_seo?.filename || FILENAMES.hero;
     const heroPath = join(outputDir, heroFilename);
     if (existsSync(heroPath)) contextPaths.push(heroPath);
 
-    if (state.steps?.length > 0) {
-      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
-      if (lastStepPath) {
-        contextPaths.push(lastStepPath);
-        Logger.info(`[Pinterest] Using last step context: ${basename(lastStepPath)}`);
-      } else {
-        Logger.warn('[Pinterest] No step image found for context — using hero only');
-      }
-    }
-
     // Build prompt from VG's own Pinterest template
     const defaults = VERIFIED_GENERATOR_DEFAULTS;
     const recipeTitle = state.recipeJSON?.post_title || state.recipeTitle || '';
     const websiteUrl = settings.wpUrl || '';
     const websiteDomain = websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+    // Bullet-formatted ingredient list for templates that show ingredients.
+    // The default VG prompt embeds {{ingredients}} with a conditional — if
+    // the template has an ingredients section, the AI fills it; otherwise
+    // the data is ignored. Cap at 8 lines to avoid cramming the layout.
+    const formatIng = (ing) => {
+      const qty = (ing?.quantity || '').toString().trim();
+      const name = (ing?.name || '').toString().trim();
+      if (qty && name) return `${qty} ${name}`;
+      return name || qty;
+    };
+    const ingredientsList = (state.recipeJSON?.ingredients || [])
+      .slice(0, 8)
+      .map(formatIng)
+      .filter(Boolean)
+      .map(s => `• ${s}`)
+      .join('\n');
+
     const pinterestTemplate = vgSettings.prompts?.pinterest || defaults.prompts.pinterest;
-    const prompt = pinterestTemplate
+    let prompt = pinterestTemplate
       .replace(/\{\{pin_title\}\}/g, pin.title || recipeTitle)
       .replace(/\{\{pin_description\}\}/g, pin.description || '')
       .replace(/\{\{recipe_title\}\}/g, recipeTitle)
-      .replace(/\{\{website\}\}/g, websiteDomain);
+      .replace(/\{\{website\}\}/g, websiteDomain)
+      .replace(/\{\{ingredients\}\}/g, ingredientsList || '(none specified)');
+
+    // Pin #2 is a money-shot variation: instead of placing the standard hero
+    // in the template's photo zone, ask for a close-up reveal (cut/sliced/
+    // forked/poured). This boosts series diversity — Pinterest favors visual
+    // variety within a recipe's pins.
+    if (pendingIdx === 1) {
+      prompt += `\n\nMONEY-SHOT VARIATION: in the template's main photo zone, render the dish from image two as a tighter close-up that REVEALS the interior or texture — a knife slicing through, a fork lifting a bite, the dish split in half showing the filling/layers, sauce being poured, or steam rising. Keep the SAME dish, plating, and lighting as the hero, just reframe to be appetizing and crave-worthy.`;
+    }
 
     const pinFilename = `pin-${pendingIdx + 1}.jpg`;
     const outputPath = join(outputDir, pinFilename);

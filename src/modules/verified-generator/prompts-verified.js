@@ -923,11 +923,14 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
 
 export const DEFAULT_VG_PINTEREST_PROMPT = `A vertical Pinterest food pin with a professional, eye-catching design. The pin shows the recipe "{{recipe_title}}" with the title "{{pin_title}}" prominently displayed and the website {{website}} as a small footer credit.
 
-Three reference images are attached. The first image is the design template — copy its exact layout: where text goes, where photo areas are, the color scheme, the typography, and the section arrangement. Do not use the food from the template. The second image is the real hero photo of the finished dish. The third image is the real serving or slice close-up showing inside detail. The pin must use the food from images two and three placed into the photo areas of the template's layout — if the template has two photo zones, put the hero in one and the serving in the other; if it has one, split it to show both photos.
+Two reference images are attached. The first image is the design template — copy its exact layout: where text goes, where photo areas are, the color scheme, the typography, and the section arrangement. Do not use the food from the template. The second image is the real hero photo of the finished dish. The pin must use the food from image two placed into the photo areas of the template's layout.
 
-The food photos in images two and three must appear unmodified — preserve their backgrounds, colors, lighting, and composition exactly as captured. The text on the pin should be readable, well-placed, and match the template's typography style.
+If the template has a visible ingredients section, fill it with this list (keep the template's bullet/typography style):
+{{ingredients}}
 
-Critical: the food in the final pin comes only from images two and three, never from the template. No text overlays beyond the title and footer. No watermark, no logo.`;
+The food photo in image two must appear unmodified — preserve its background, colors, lighting, and composition exactly as captured. The text on the pin should be readable, well-placed, and match the template's typography style.
+
+Critical: the food in the final pin comes only from image two, never from the template. No text overlays beyond the title, footer, and the ingredients list when the template includes one. No watermark, no logo.`;
 
 
 // ─────────────────────────────────────────────────────────────
