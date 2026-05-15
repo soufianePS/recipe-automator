@@ -1333,40 +1333,30 @@
                 </label>
                 <div class="prompt-hint">After publishing the draft, generate 3 Pinterest pin images and save data to Google Sheet.</div>
               </div>
-              <!-- Generator Template Folder -->
+              <!-- Generator Pinterest Templates (same UX as Hero Backgrounds) -->
               <div class="form-group">
-                <label>Generator Template Folder</label>
-                <div style="display:flex;gap:8px;">
-                  <input type="text" id="sPinterestGenRoot" placeholder="C:\Users\...\pinterest-templates" style="flex:1;" />
-                  <button class="btn" onclick="scanPinterestFolder('gen')" style="background:#4285f4;color:#fff;padding:8px 16px;white-space:nowrap;">Scan</button>
+                <label>Generator Pinterest Templates</label>
+                <div id="pinGenDropzone" class="dropzone">
+                  <div class="dropzone-text"><strong>Drop pin templates here</strong> or click to browse</div>
+                  <div class="dropzone-hint">JPG, PNG, WebP. Used as the background canvas when generating pin images in generator mode.</div>
+                  <input type="file" id="pinGenFileInput" accept="image/*" multiple style="display:none" />
                 </div>
-                <div class="prompt-hint">Root folder with subfolders of example Pinterest pin images (generator mode)</div>
+                <div id="pinGenFileList" class="file-list"></div>
               </div>
-              <div class="form-group">
-                <label>Active Generator Template Set</label>
-                <select id="sPinterestGenSubfolder" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
-                  <option value="">-- Select subfolder --</option>
-                </select>
-                <div id="pinterestGenInfo" class="prompt-hint"></div>
-              </div>
-              <input type="hidden" id="sPinterestTemplateFolderGenerator" />
 
-              <!-- Scraper Template Folder -->
+              <!-- Scraper Pinterest Templates -->
               <div class="form-group">
-                <label>Scraper Template Folder</label>
-                <div style="display:flex;gap:8px;">
-                  <input type="text" id="sPinterestScrRoot" placeholder="C:\Users\...\pinterest-templates" style="flex:1;" />
-                  <button class="btn" onclick="scanPinterestFolder('scr')" style="background:#4285f4;color:#fff;padding:8px 16px;white-space:nowrap;">Scan</button>
+                <label>Scraper Pinterest Templates</label>
+                <div id="pinScrDropzone" class="dropzone">
+                  <div class="dropzone-text"><strong>Drop pin templates here</strong> or click to browse</div>
+                  <div class="dropzone-hint">JPG, PNG, WebP. Used in scraper mode.</div>
+                  <input type="file" id="pinScrFileInput" accept="image/*" multiple style="display:none" />
                 </div>
-                <div class="prompt-hint">Root folder with subfolders of example Pinterest pin images (scraper mode)</div>
+                <div id="pinScrFileList" class="file-list"></div>
               </div>
-              <div class="form-group">
-                <label>Active Scraper Template Set</label>
-                <select id="sPinterestScrSubfolder" style="width:100%;padding:10px 12px;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:8px;color:#e0e0e0;font-size:13px;">
-                  <option value="">-- Select subfolder --</option>
-                </select>
-                <div id="pinterestScrInfo" class="prompt-hint"></div>
-              </div>
+
+              <!-- Hidden inputs kept for backwards-compat folder fallback -->
+              <input type="hidden" id="sPinterestTemplateFolderGenerator" />
               <input type="hidden" id="sPinterestTemplateFolderScraper" />
               <div class="form-row-2">
                 <div class="form-group">

@@ -1121,25 +1121,14 @@
         document.getElementById('sPinterestPinCount').value = settings.pinterestPinCount || 3;
         document.getElementById('sPinterestPromptPrefix').value = settings.pinterestPromptPrefix || '';
         document.getElementById('sPinterestPromptSuffix').value = settings.pinterestPromptSuffix || '';
-        // Pinterest folder: split saved full path into root + subfolder
-        if (settings.pinterestTemplateFolderGenerator) {
-          const genPath = settings.pinterestTemplateFolderGenerator.replace(/\//g, '\\');
-          const genParts = genPath.split('\\');
-          const genSub = genParts.pop();
-          const genRoot = genParts.join('\\');
-          document.getElementById('sPinterestGenRoot').value = genRoot;
-          document.getElementById('sPinterestTemplateFolderGenerator').value = settings.pinterestTemplateFolderGenerator;
-          await scanPinterestFolder('gen', genSub);
-        }
-        if (settings.pinterestTemplateFolderScraper) {
-          const scrPath = settings.pinterestTemplateFolderScraper.replace(/\//g, '\\');
-          const scrParts = scrPath.split('\\');
-          const scrSub = scrParts.pop();
-          const scrRoot = scrParts.join('\\');
-          document.getElementById('sPinterestScrRoot').value = scrRoot;
-          document.getElementById('sPinterestTemplateFolderScraper').value = settings.pinterestTemplateFolderScraper;
-          await scanPinterestFolder('scr', scrSub);
-        }
+        // Legacy folder fallback (still supported by the orchestrator if
+        // no templates uploaded via the new dashboard dropzone). The folder
+        // UI was removed in favor of inline uploads, but the hidden inputs
+        // are kept so settings.json round-trips cleanly for old installs.
+        const hiddenGen = document.getElementById('sPinterestTemplateFolderGenerator');
+        if (hiddenGen) hiddenGen.value = settings.pinterestTemplateFolderGenerator || '';
+        const hiddenScr = document.getElementById('sPinterestTemplateFolderScraper');
+        if (hiddenScr) hiddenScr.value = settings.pinterestTemplateFolderScraper || '';
         document.getElementById('sWpCategories').value = settings.wpCategories || '';
 
         wprmEnabled = settings.wprmEnabled || false;
@@ -1411,8 +1400,8 @@
         stepAspectRatio: document.getElementById('sStepAspectRatio').value,
         ingredientAspectRatio: document.getElementById('sIngredientAspectRatio').value,
         pinterestEnabled: document.getElementById('sPinterestEnabled').checked,
-        pinterestTemplateFolderGenerator: document.getElementById('sPinterestTemplateFolderGenerator').value.trim() || (document.getElementById('sPinterestGenRoot').value.trim() || ''),
-        pinterestTemplateFolderScraper: document.getElementById('sPinterestTemplateFolderScraper').value.trim() || (document.getElementById('sPinterestScrRoot').value.trim() || ''),
+        pinterestTemplateFolderGenerator: (document.getElementById('sPinterestTemplateFolderGenerator')?.value || '').trim(),
+        pinterestTemplateFolderScraper: (document.getElementById('sPinterestTemplateFolderScraper')?.value || '').trim(),
         pinterestAspectRatio: document.getElementById('sPinterestAspectRatio').value,
         pinterestPinCount: parseInt(document.getElementById('sPinterestPinCount').value) || 3,
         pinterestPromptPrefix: document.getElementById('sPinterestPromptPrefix').value,
@@ -1722,6 +1711,167 @@
         };
         reader.onerror = reject;
         reader.readAsDataURL(file);
+      });
+    }
+
+    // ================================================================
+    // PINTEREST PIN TEMPLATES (mirrors Hero Backgrounds UX)
+    // ================================================================
+    const pinCache = {};
+
+    async function loadPinterestTemplates() {
+      try {
+        const resp = await fetch('/api/pinterest-templates');
+        const data = await resp.json();
+        pinCache.generator = data.generator || [];
+        pinCache.scraper = data.scraper || [];
+        renderPinList('pinGenFileList', pinCache.generator, 'generator');
+        renderPinList('pinScrFileList', pinCache.scraper, 'scraper');
+      } catch (e) {
+        console.error('[pin] load failed', e);
+      }
+    }
+
+    function renderPinList(containerId, items, mode) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      if (items.length === 0) {
+        container.className = '';
+        container.innerHTML = '<span style="color:#555;font-size:12px">No templates uploaded</span>';
+        return;
+      }
+      container.className = 'image-gallery';
+      const mimeFor = (name) => {
+        const ext = (name || '').toLowerCase().split('.').pop();
+        return ({png:'image/png', webp:'image/webp', gif:'image/gif', jpg:'image/jpeg', jpeg:'image/jpeg'})[ext] || 'image/jpeg';
+      };
+      container.innerHTML = items.map((item, idx) => {
+        const name = item.name || ('Template ' + (idx + 1));
+        const src = 'data:' + mimeFor(name) + ';base64,' + (item.base64 || '');
+        const safeName = escapeHtml(name);
+        return (
+          '<div class="image-card" onclick="openPinModal(\'' + mode + '\',' + idx + ')">' +
+            '<img src="' + src + '" alt="' + safeName + '" loading="lazy" />' +
+            '<div class="image-card-overlay">' +
+              '<div class="image-card-name" title="' + safeName + '">' + safeName + '</div>' +
+              '<div class="image-card-actions">' +
+                '<button class="image-card-btn edit" onclick="event.stopPropagation(); replacePinTemplate(\'' + mode + '\',' + idx + ')">Replace</button>' +
+                '<button class="image-card-btn delete" onclick="event.stopPropagation(); deletePinTemplate(\'' + mode + '\',' + idx + ')">Delete</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    async function openPinModal(mode, idx) {
+      try {
+        const items = pinCache[mode] || [];
+        const item = items[idx];
+        if (!item) return;
+        const ext = (item.name || '').toLowerCase().split('.').pop();
+        const mime = ({png:'image/png', webp:'image/webp', gif:'image/gif', jpg:'image/jpeg', jpeg:'image/jpeg'})[ext] || 'image/jpeg';
+        const src = 'data:' + mime + ';base64,' + item.base64;
+        const modal = document.createElement('div');
+        modal.className = 'image-modal';
+        modal.onclick = () => modal.remove();
+        modal.innerHTML =
+          '<button class="image-modal-close" onclick="this.parentElement.remove()" title="Close">&times;</button>' +
+          '<img src="' + src + '" alt="' + escapeHtml(item.name) + '" onclick="event.stopPropagation()" />' +
+          '<div class="image-modal-caption">' + escapeHtml(item.name) + '</div>';
+        document.body.appendChild(modal);
+        const esc = (e) => { if (e.key === 'Escape') { modal.remove(); document.removeEventListener('keydown', esc); } };
+        document.addEventListener('keydown', esc);
+      } catch (e) {
+        toast('Failed to open image: ' + e.message, 'error');
+      }
+    }
+
+    async function replacePinTemplate(mode, idx) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+          const base64 = await fileToBase64(file);
+          const delResp = await fetch('/api/pinterest-templates/' + mode + '/' + idx, { method: 'DELETE' });
+          if (!delResp.ok) { toast('Failed to remove old template', 'error'); return; }
+          const upResp = await fetch('/api/pinterest-templates/' + mode, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ name: file.name, base64 }] })
+          });
+          const data = await upResp.json();
+          if (data.ok) {
+            toast('Template replaced', 'success');
+            loadPinterestTemplates();
+          } else {
+            toast(data.error || 'Replace failed', 'error');
+          }
+        } catch (err) {
+          toast('Replace error: ' + err.message, 'error');
+        }
+      };
+      input.click();
+    }
+
+    async function deletePinTemplate(mode, idx) {
+      try {
+        const resp = await fetch('/api/pinterest-templates/' + mode + '/' + idx, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) {
+          toast('Template removed', 'info');
+          loadPinterestTemplates();
+        } else {
+          toast(data.error || 'Failed to remove', 'error');
+        }
+      } catch (e) {
+        toast('Error: ' + e.message, 'error');
+      }
+    }
+
+    function setupPinDropzone(dropzoneId, fileInputId, mode) {
+      const dropzone = document.getElementById(dropzoneId);
+      const fileInput = document.getElementById(fileInputId);
+      if (!dropzone || !fileInput) return;
+      const handle = async (fileList) => {
+        const files = [];
+        for (const file of fileList) {
+          if (!file.type.startsWith('image/')) continue;
+          const base64 = await fileToBase64(file);
+          files.push({ name: file.name, base64 });
+        }
+        if (files.length === 0) return;
+        try {
+          const resp = await fetch('/api/pinterest-templates/' + mode, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files })
+          });
+          const data = await resp.json();
+          if (data.ok) {
+            toast(files.length + ' template(s) uploaded', 'success');
+            loadPinterestTemplates();
+          } else {
+            toast(data.error || 'Upload failed', 'error');
+          }
+        } catch (e) {
+          toast('Upload error: ' + e.message, 'error');
+        }
+      };
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        handle(e.dataTransfer.files);
+      });
+      fileInput.addEventListener('change', (e) => {
+        handle(e.target.files);
+        fileInput.value = '';
       });
     }
 
@@ -2856,6 +3006,9 @@
     // ================================================================
     // Set up dropzones
     setupDropzone('heroDropzone', 'heroFileInput', 'hero');
+    setupPinDropzone('pinGenDropzone', 'pinGenFileInput', 'generator');
+    setupPinDropzone('pinScrDropzone', 'pinScrFileInput', 'scraper');
+    loadPinterestTemplates();
 
     // Navigate to initial page based on hash
     const initialHash = location.hash.replace('#', '') || 'dashboard';

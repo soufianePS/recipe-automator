@@ -488,6 +488,36 @@ export const StateManager = {
     await this._saveBgFile(data);
   },
 
+  // --- Pinterest pin templates (stored as base64 alongside backgrounds) ---
+  // Mirrors getHeroBackgrounds/saveHeroBackgrounds. Two pools because the
+  // generator and scraper modes use different template designs (different
+  // composition, different ingredient slots).
+  _pinKey(mode) {
+    return mode === 'scraper' ? 'pinterestTemplatesScraper' : 'pinterestTemplatesGenerator';
+  },
+  async getPinterestTemplates(mode) {
+    const data = await this._loadBgFile();
+    return data[this._pinKey(mode)] || [];
+  },
+  async savePinterestTemplates(mode, templates) {
+    const data = await this._loadBgFile();
+    data[this._pinKey(mode)] = templates;
+    await this._saveBgFile(data);
+  },
+  async addPinterestTemplates(mode, files) {
+    const existing = await this.getPinterestTemplates(mode);
+    const updated = [...existing, ...files];
+    await this.savePinterestTemplates(mode, updated);
+    return updated.length;
+  },
+  async deletePinterestTemplate(mode, index) {
+    const existing = await this.getPinterestTemplates(mode);
+    if (index < 0 || index >= existing.length) throw new Error('Invalid index');
+    const removed = existing.splice(index, 1);
+    await this.savePinterestTemplates(mode, existing);
+    return removed[0];
+  },
+
   // --- Backgrounds folder system ---
   listSubfolders(rootPath) {
     if (!rootPath || !existsSync(rootPath)) return [];

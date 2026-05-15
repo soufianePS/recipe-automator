@@ -418,6 +418,43 @@ export function setupRoutes(app, ctx) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── API: Pinterest pin templates (mirrors /api/backgrounds) ────
+  app.get('/api/pinterest-templates', async (_req, res) => {
+    try {
+      const generator = await StateManager.getPinterestTemplates('generator');
+      const scraper = await StateManager.getPinterestTemplates('scraper');
+      res.json({ generator, scraper });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/pinterest-templates/:mode', async (req, res) => {
+    try {
+      const mode = req.params.mode;
+      if (!['generator', 'scraper'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be "generator" or "scraper"' });
+      }
+      const { files } = req.body || {};
+      if (!Array.isArray(files)) {
+        return res.status(400).json({ error: 'Expected { files: [{ name, base64 }] }' });
+      }
+      const count = await StateManager.addPinterestTemplates(mode, files);
+      Logger.info(`${files.length} Pinterest template(s) added to ${mode} (total: ${count})`);
+      res.json({ ok: true, count });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/pinterest-templates/:mode/:index', async (req, res) => {
+    try {
+      const { mode, index } = req.params;
+      if (!['generator', 'scraper'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be "generator" or "scraper"' });
+      }
+      const removed = await StateManager.deletePinterestTemplate(mode, parseInt(index));
+      Logger.info(`Pinterest template "${removed?.name}" removed from ${mode}`);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── API: Automation Controls ─────────────────────────────────
 
   app.post('/api/start', async (req, res) => {

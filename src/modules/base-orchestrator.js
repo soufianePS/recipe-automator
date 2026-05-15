@@ -1138,26 +1138,45 @@ export class BaseOrchestrator {
     Logger.info(`[Pinterest] Closing Flow session — fresh project for pin ${pendingIdx + 1}`);
     try { await this.flow.closeSession(); } catch {}
 
-    // Pick template from the right folder (generator vs scraper)
+    // Resolve a Pinterest template for this pin.
+    // Source priority (mirrors hero backgrounds + kitchens):
+    //   1. Dashboard-managed templates in backgrounds.json (base64)
+    //   2. Legacy folder path setting (backwards compat)
+    // For source #1 we write the picked template to data/tmp so Flow has a
+    // disk path to upload (Flow's generate() needs a path, not bytes).
     const isScraper = settings.mode === 'scrape';
-    const templateFolder = isScraper
-      ? settings.pinterestTemplateFolderScraper
-      : settings.pinterestTemplateFolderGenerator;
+    const pinMode = isScraper ? 'scraper' : 'generator';
+    const dashboardTemplates = await StateManager.getPinterestTemplates(pinMode);
 
-    if (!templateFolder || !existsSync(templateFolder)) {
-      Logger.warn(`Pinterest template folder not configured or missing: ${templateFolder || '(empty)'}. Skipping pins.`);
-      await StateManager.updateState({ status: STATES.UPLOADING_PINS });
-      return;
+    let templatePath;
+    let templateLabel;
+
+    if (dashboardTemplates.length > 0) {
+      const picked = dashboardTemplates[pendingIdx % dashboardTemplates.length];
+      const tmpDir = join(__dirname, '..', '..', 'data', 'tmp');
+      mkdirSync(tmpDir, { recursive: true });
+      const ext = picked.name?.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+      templatePath = join(tmpDir, `pin-template-${Date.now()}-${pendingIdx}.${ext}`);
+      writeFileSync(templatePath, Buffer.from(picked.base64, 'base64'));
+      templateLabel = picked.name || `template-${pendingIdx + 1}`;
+    } else {
+      const legacyFolder = isScraper
+        ? settings.pinterestTemplateFolderScraper
+        : settings.pinterestTemplateFolderGenerator;
+      if (!legacyFolder || !existsSync(legacyFolder)) {
+        Logger.warn(`No Pinterest templates configured for ${pinMode} (dashboard or folder). Skipping pins.`);
+        await StateManager.updateState({ status: STATES.UPLOADING_PINS });
+        return;
+      }
+      const templateImages = StateManager.listImagesInFolder(legacyFolder);
+      if (!templateImages.length) {
+        throw new Error(`No template images found in: ${legacyFolder}`);
+      }
+      templatePath = templateImages[pendingIdx % templateImages.length];
+      templateLabel = basename(templatePath);
     }
 
-    const templateImages = StateManager.listImagesInFolder(templateFolder);
-    if (!templateImages.length) {
-      throw new Error(`No template images found in: ${templateFolder}`);
-    }
-
-    // Pick a different template for each pin (cycle through available templates)
-    const templatePath = templateImages[pendingIdx % templateImages.length];
-    Logger.info(`Using template: ${basename(templatePath)}`);
+    Logger.info(`Using template: ${templateLabel}`);
 
     // Build context images: HERO ONLY. The hero is the ground-truth visual
     // for the finished dish — every pin should remix it (different framing,
