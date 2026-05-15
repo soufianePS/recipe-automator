@@ -82,6 +82,16 @@ export function validateVisualPlan(rawPlan, vgSettings) {
     if (!Array.isArray(step.forbidden_ingredients)) step.forbidden_ingredients = [];
     if (!step.food_state) step.food_state = '';
     if (!step.continuity) step.continuity = { uses_previous_image: false, reason: 'not specified' };
+    // New fields — optional, but normalize when present
+    if (typeof step.shape_change !== 'boolean') {
+      // Coerce string "true"/"false" or default to false
+      if (typeof step.shape_change === 'string') {
+        step.shape_change = step.shape_change.toLowerCase() === 'true';
+      } else {
+        step.shape_change = false;
+      }
+    }
+    if (step.composition && typeof step.composition !== 'object') step.composition = null;
     step.step_id = i + 1;
   }
 
@@ -90,9 +100,23 @@ export function validateVisualPlan(rawPlan, vgSettings) {
     throw new Error('Visual plan missing hero_image');
   }
 
+  // Normalize food_identity_canon — optional, but log presence/absence for visibility
+  let canon = rawPlan.food_identity_canon || null;
+  if (canon && typeof canon === 'object' && canon.primary_food) {
+    // Coerce hallmark_features to array
+    if (!Array.isArray(canon.hallmark_features)) {
+      canon.hallmark_features = canon.hallmark_features ? [String(canon.hallmark_features)] : [];
+    }
+    Logger.info(`[VisualPlan] food_identity_canon present: "${canon.primary_food}" — silhouette will be anchored across steps`);
+  } else {
+    canon = null;
+    Logger.info('[VisualPlan] No food_identity_canon — amorphous food or null canon (no silhouette anchoring)');
+  }
+
   Logger.info(`[VisualPlan] Validated: ${rawPlan.ingredients_image.items.length} ingredients, ${rawPlan.visual_steps.length} visual steps`);
 
   return {
+    food_identity_canon: canon,
     ingredients_image: rawPlan.ingredients_image,
     visual_steps: rawPlan.visual_steps,
     hero_image: rawPlan.hero_image

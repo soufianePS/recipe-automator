@@ -699,6 +699,15 @@ export const WordPressAPI = {
       'Ingredients', recipe, onProgress, 'Uploading ingredients image...', suffix
     );
 
+    // Serving close-up — GV-only image. For other modes state.servingImage
+    // stays null and StateManager.getImageData('serving') returns nothing,
+    // so _uploadSingleImage short-circuits and uploads.servingImage stays
+    // undefined. No-op for non-GV pipelines.
+    uploads.servingImage = await _uploadSingleImage(
+      this, settings, 'serving', state.servingImage,
+      `${state.recipeTitle} — close-up`, recipe, onProgress, 'Uploading serving close-up...', suffix
+    );
+
     const updatedSteps = [...state.steps];
     for (let i = 0; i < updatedSteps.length; i++) {
       const step = updatedSteps[i];

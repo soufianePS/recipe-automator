@@ -60,6 +60,13 @@ export async function saveFiles(state, outputDir) {
     await safeSave(join(outputDir, name), Buffer.from(heroBase64, 'base64'));
   }
 
+  // Save serving (GV mode only — other modes never store this image key)
+  const servingBase64 = await StateManager.getImageData('serving');
+  if (servingBase64) {
+    const name = sanitizeFilename(state.recipeJSON?.serving_seo?.filename || FILENAMES.serving);
+    await safeSave(join(outputDir, name), Buffer.from(servingBase64, 'base64'));
+  }
+
   // Save ingredients
   const ingBase64 = await StateManager.getImageData('ingredients');
   if (ingBase64) {
@@ -129,6 +136,7 @@ export async function uploadMedia(state, settings) {
     status: STATES.PUBLISHING_DRAFT,
     heroImage: uploads.heroImage || state.heroImage,
     ingredientsImage: uploads.ingredientsImage || state.ingredientsImage,
+    servingImage: uploads.servingImage || state.servingImage,
     steps: uploads.steps || state.steps
   });
   Logger.success('All images uploaded to WordPress');

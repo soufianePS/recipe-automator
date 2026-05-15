@@ -1,206 +1,307 @@
 /**
- * Prompt Builder — converts structured visual state JSON into Flow text prompts.
+ * Prompt Builder — converts structured visual state into prose prompts for Flow.
  *
- * Sends structured JSON to Flow with arrangement details so Nano Banana
- * knows exactly WHERE and HOW to place each ingredient.
+ * Format: narrative prose (per Google's official Imagen/Nano Banana guidance).
+ * Subject + action + setting first. Composition and identity middle. Positive
+ * style anchors next. Only proven negatives at the end ("no text, no watermark,
+ * no logo"). All other "no X" phrasing converted to positive descriptions, since
+ * the model tends to latch onto nouns after "no".
  */
 
 import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
 
-/**
- * Build a Flow prompt for a recipe step image.
- */
+// ─────────────────────────────────────────────────────────────────────
+// Shared helpers
+// ─────────────────────────────────────────────────────────────────────
+
+function joinList(items, opts = {}) {
+  const arr = (items || []).filter(Boolean);
+  if (arr.length === 0) return '';
+  if (arr.length === 1) return arr[0];
+  const sep = opts.sep || ', ';
+  const finalSep = opts.finalSep || ' and ';
+  return arr.slice(0, -1).join(sep) + finalSep + arr[arr.length - 1];
+}
+
+function describeIngredient(ing) {
+  if (typeof ing === 'string') return ing;
+  let s = ing.name;
+  if (ing.state) s += ` (${ing.state})`;
+  if (ing.placement) s += ` ${ing.placement}`;
+  return s;
+}
+
+function describeIngredientLine(item) {
+  let s = `- ${item.name}`;
+  if (item.state) s += ` — ${item.state}`;
+  if (item.presentation) s += `, ${item.presentation}`;
+  if (item.brand) s += ` with the brand label "${item.brand}" visible on the package`;
+  if (item.placement) s += ` (${item.placement})`;
+  return s;
+}
+
+function buildCanonSentence(canon, stageHint = '') {
+  if (!canon || !canon.primary_food) return '';
+  const features = (canon.hallmark_features || []).filter(Boolean);
+  let s = `The food in this image is "${canon.primary_food}". Its silhouette: ${canon.silhouette}.`;
+  if (canon.size) s += ` Size: ${canon.size}.`;
+  if (features.length > 0) s += ` Hallmark features that should be clearly visible: ${joinList(features, { sep: ', ', finalSep: ', and ' })}.`;
+  if (stageHint) {
+    s += ` Color at this stage: ${stageHint}.`;
+  } else if (canon.color_progression) {
+    s += ` Color progression across the recipe: ${canon.color_progression}.`;
+  }
+  s += ` The silhouette must stay consistent with every other step image of this recipe.`;
+  return s;
+}
+
+function buildRefRolesParagraph(refRoles) {
+  if (!Array.isArray(refRoles) || refRoles.length === 0) return '';
+  if (refRoles.length === 1) {
+    return `One reference image is attached: ${refRoles[0]}.`;
+  }
+  const numbered = refRoles.map((role, i) => `(${i + 1}) ${role}`);
+  return `${refRoles.length} reference images are attached, in order from first to last attached: ${numbered.join('; ')}. Use each reference for its specific purpose only — do not blend the roles.`;
+}
+
+function buildCompositionSentence(comp) {
+  if (!comp || typeof comp !== 'object') return '';
+  const parts = [];
+  if (comp.subject_placement) parts.push(`The main subject sits ${comp.subject_placement}.`);
+  if (comp.subject_orientation) parts.push(`It is oriented: ${comp.subject_orientation}.`);
+  if (comp.depth) parts.push(`Depth: ${comp.depth}.`);
+  if (Array.isArray(comp.secondary_elements) && comp.secondary_elements.length > 0) {
+    const els = comp.secondary_elements
+      .filter(e => e && (e.what || e.where))
+      .map(e => {
+        let s = e.what || '';
+        if (e.where) s += ` ${e.where}`;
+        if (e.count) s += ` (${e.count})`;
+        return s.trim();
+      })
+      .filter(Boolean);
+    if (els.length > 0) {
+      parts.push(`Other visible elements: ${joinList(els, { sep: '; ', finalSep: '; and ' })}.`);
+    }
+  }
+  if (comp.negative_space) parts.push(`The surface around the subject is ${comp.negative_space}.`);
+  return parts.join(' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 1. STEP PROMPT (used for every recipe step + the serving step)
+// ─────────────────────────────────────────────────────────────────────
+
 export function buildStepPrompt(stepState, vgSettings, opts = {}) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
   const isServingStep = opts.isLastStep || false;
+  const canon = opts.foodIdentityCanon || null;
+  const container = stepState.container || defaults.defaultContainer;
+  const camera = stepState.camera_angle || defaults.defaultCameraAngle;
+  const foodState = stepState.food_state || '';
+  const positionPhrase = stepState.position || stepState.arrangement || '';
+  const ingredientsList = (stepState.visible_ingredients || []).map(describeIngredient).filter(Boolean);
+  const visibleProse = ingredientsList.length > 0
+    ? `Inside the ${container}: ${joinList(ingredientsList, { sep: ', ', finalSep: ', and ' })}.`
+    : '';
 
-  const rules = [
-    "Show only the specified container — no extra bowls, plates, utensils, or props",
-    "No garnish unless listed in visible_ingredients",
-    "No ingredients outside visible_ingredients list",
-    "Show ONLY this step, not future steps",
-    "All food must be inside the container",
-    "No text, no watermark",
-    "BACKGROUND IS SACRED — PRESERVE the uploaded reference surface EXACTLY: same color, same marble veining (every white vein and dark area in the reference), same grain, same texture, same edges and minor flaws. Do NOT replace, regenerate, lighten, darken, blur, or stylize the background. The background of this image must be visually IDENTICAL to the uploaded reference.",
-    "NATURAL LIGHTING MATCH — the lighting MUST match the uploaded reference image: same direction, same softness, same warmth, same shadow length and angle. Soft diffused daylight from one side, gentle ambient fill. NO studio lighting, NO ring lights, NO HDR, NO harsh shadows, NO dramatic spotlights, NO commercial color grading, NO bokeh blur. Looks like a real home-kitchen photo on the same counter.",
-    "Food must look natural and homemade — slight imperfections, uneven sauce, casual placement",
-    "Do NOT make food look perfectly arranged or symmetrical",
-    "Follow the position_change description for food placement and movement",
-    // IMAGE QUALITY RULES — apply to ALL steps
-    "WARM COLOR TONES — food must have warm inviting colors. Golden-brown for cooked items. Rich deep colors for sauces. Vibrant greens for vegetables. NO grey or washed-out food",
-    "SHARP FOCUS — the food must be in crisp sharp focus with visible texture detail. You should see grain in rice and fibers in meat and bubbles in sauce and flakes in pastry",
-    "DEPTH AND DIMENSION — food must look 3D with volume. Not flat. Sauce should glisten. Cheese should stretch or melt unevenly. Meat should have visible sear marks",
-    "MOISTURE AND FRESHNESS — food must look fresh and moist. Vegetables look crisp. Sauces look glossy. Nothing looks dried out or stale"
-  ];
+  const canonStageColor = canon?.color_progression ? '' : '';
+  const canonSentence = buildCanonSentence(canon, canonStageColor);
+  const compositionSentence = buildCompositionSentence(stepState.composition);
 
-  // Serving/last step gets extra quality rules
+  // ── 1. Opening: subject + action + setting (front-loaded) ──
+  const opening = isServingStep
+    ? `Photorealistic food photography — the serving shot of a finished dish. Natural homemade iPhone-style kitchen photo, not a commercial studio shot.`
+    : `Photorealistic food photography — natural homemade iPhone-style kitchen photo, not a commercial studio shot.`;
+
+  // ── 2. Main scene paragraph ──
+  const mainScene = [
+    `The scene shows ${container} on a marble counter, captured from a ${camera} angle under soft natural daylight from a kitchen window.`,
+    foodState ? `Food state right now: ${foodState}` : '',
+    visibleProse,
+    positionPhrase ? `Position and movement from the previous step: ${positionPhrase}` : ''
+  ].filter(Boolean).join(' ');
+
+  // ── 3. Identity anchor (if canon) ──
+  const identityPara = canonSentence;
+
+  // ── 4. Composition direction ──
+  const compositionPara = compositionSentence
+    ? `Composition: ${compositionSentence} The marble surface around the ${container} is completely bare — only the ${container} sits on the counter.`
+    : `Composition: the ${container} is centered slightly off-axis in the frame. The marble surface around it is completely bare — only the ${container} sits on the counter.`;
+
+  // ── 5. Style anchors (all positive, no "NO X") ──
+  let stylePara = `Style: warm rich colors with golden-brown for cooked items, vibrant greens for vegetables, glossy sauces. Sharp focus with visible texture — grain in rice, fibers in meat, bubbles in sauce, flakes in pastry. Food looks three-dimensional with depth and volume, moist and fresh. Casual home-cooked look with natural imperfections — asymmetric placement, slight unevenness, no sterile symmetry.`;
+
   if (isServingStep) {
-    rules.push(
-      "This is the SERVING step — the food MUST look absolutely delicious and appetizing",
-      "Show texture detail: glossy sauce and melted cheese and crispy edges and juicy interior",
-      "The portion must look generous and satisfying — not flat or empty",
-      "Professional food blog quality — the image a reader would save or share",
-      "Close-up angle showing the best features of the dish",
-      "This image must make someone immediately hungry when they see it"
-    );
+    stylePara += ` This is the serving shot, so the portion looks generous and appetizing, with glossy sauce, melted cheese, crispy edges, and juicy interior all clearly visible — the kind of photo a reader would save and share.`;
   }
 
-  // First step gets explicit anti-flatlay differentiation rules.
-  // Without these, Gemini's chat memory often produces a near-duplicate of the
-  // ingredients flatlay (raw food on a counter) when asked for step 1 — because
-  // the previous turn was a flatlay and the model anchors on it.
   if (opts.firstStep) {
-    rules.push(
-      "CRITICAL DIFFERENTIATION — this is the FIRST cooking step, NOT a flatlay or ingredients shot. The previous image in this conversation was a still-life of raw ingredients on a counter. THIS image must be unmistakably a PROCESS shot: show ACTIVE cooking — a pot or pan in use, food on heat, steam or motion, food in mid-transformation, cookware actively involved.",
-      "DO NOT replicate, echo, or re-style the ingredients flatlay. The composition, framing, dominant cookware, and food state MUST clearly differ from any raw-ingredients photo. A viewer must instantly see this is the start of cooking, not a still-life of ingredients."
-    );
+    stylePara += ` This is the FIRST cooking step — clearly a process shot showing active cooking (food in the pan or pot, mid-transformation), not a still-life of raw ingredients on a counter.`;
   }
 
-  const jsonPrompt = {
-    task: isServingStep ? "Photorealistic food photography — SERVING SHOT (must look delicious and appetizing)" : "Photorealistic food photography",
-    step_id: stepState.step_id,
-    image_type: isServingStep ? "serving_step" : "recipe_step",
-    container: stepState.container || defaults.defaultContainer,
-    camera: stepState.camera_angle || defaults.defaultCameraAngle,
-    lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "PRESERVE the uploaded reference image surface EXACTLY (color, marble veining, grain, texture, edges). Do NOT replace, regenerate, lighten, darken, or stylize. Background must look identical to the reference, like the same counter on the same day.",
-    visible_ingredients: (stepState.visible_ingredients || []).map(ing => {
-      if (typeof ing === 'string') return ing;
-      let desc = `${ing.name}: ${ing.state}`;
-      if (ing.placement) desc += ` (${ing.placement})`;
-      return desc;
-    }),
-    forbidden_ingredients: stepState.forbidden_ingredients || [],
-    state: stepState.food_state || '',
-    position_change: stepState.position || '',
-    arrangement: stepState.arrangement || '',
-    rules
-  };
+  // ── 6. Background and lighting anchor (reference image) ──
+  const referencePara = `Background and lighting come from the uploaded reference image: preserve its marble surface exactly — same color, same veining, same grain, same texture, same edges. Match the reference lighting precisely: same direction, same softness, same warmth, same shadow length. The scene should look like the same counter on the same day, lit by the same window.`;
 
-  // Remove empty arrangement to keep prompt clean
-  if (!jsonPrompt.arrangement) delete jsonPrompt.arrangement;
+  // ── 7. Reference image roles (explicit per-ref purpose — critical when 3+ refs are attached) ──
+  const refRolesPara = buildRefRolesParagraph(opts.refRoles);
 
-  return JSON.stringify(jsonPrompt, null, 2);
+  // ── 8. Critical constraints (only proven-effective negatives) ──
+  const criticalPara = `Critical: only the ${container} sits on the marble counter — the surface around it is completely bare, with no stray berries, herbs, crumbs, droplets, slices, or scattered ingredients of any kind on the surface. All food is inside the ${container}. No text, no watermark, no logo.`;
+
+  return [opening, mainScene, identityPara, compositionPara, stylePara, referencePara, refRolesPara, criticalPara]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
-/**
- * Build a Flow prompt for the ingredients flat-lay image.
- */
+// ─────────────────────────────────────────────────────────────────────
+// 2. INGREDIENTS FLAT-LAY PROMPT
+// ─────────────────────────────────────────────────────────────────────
+
 export function buildIngredientsPrompt(ingredientsState, vgSettings) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
+  const camera = ingredientsState.camera_angle || defaults.defaultCameraAngle;
+  const items = ingredientsState.items || [];
+  const layoutHint = ingredientsState.layout || '';
 
-  const jsonPrompt = {
-    task: "Photorealistic food photography — ingredients flat lay",
-    image_type: "ingredients",
-    layout: ingredientsState.layout || "Natural asymmetric scatter across the ENTIRE surface edge-to-edge. Mixed forms — whole items, standing packaged products, and only a few small ramekins for chopped/grated bits. Items at different heights and different distances apart. NO grid, NO circle, NO matching bowls.",
-    camera: ingredientsState.camera_angle || defaults.defaultCameraAngle,
-    lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "PRESERVE the uploaded reference image filling the ENTIRE frame edge-to-edge. No blank space, no white borders, no cropping. Preserve EXACT marble veining, grain, color, stripes, texture, edges and any minor flaws of the reference. The lighting must match the reference (soft natural daylight, NO studio look, NO HDR).",
-    ingredients: (ingredientsState.items || []).map(item => {
-      const entry = {
-        name: item.name,
-        state: item.state,
-        presentation: item.presentation || "whole or natural form"
-      };
-      if (item.brand) entry.brand = item.brand;
-      if (item.placement) entry.placement = item.placement;
-      return entry;
-    }),
-    forbidden: ingredientsState.forbidden || ["cooked food", "mixed items", "garnish", "utensils", "grid layout", "identical bowls for every item", "blank unlabeled packaging"],
-    rules: [
-      "BACKGROUND IS SACRED — PRESERVE the uploaded reference surface EXACTLY (color, marble veining, grain, texture, edges, every visible detail). Do NOT replace, regenerate, lighten, darken, blur, or stylize. Background must be visually IDENTICAL to the reference.",
-      "NATURAL LIGHTING MATCH — lighting must match the uploaded reference image (same direction, softness, warmth, shadow length and angle). Soft diffused daylight from one side, gentle ambient fill. NO studio lighting, NO HDR, NO harsh shadows, NO dramatic spotlights, NO color grading, NO bokeh.",
-      "NATURAL SCATTER — items placed organically with asymmetric spacing. NO grid, NO circle, NO straight lines, NO symmetric arrangement",
-      "USE REAL FORMS — whole vegetables as-is (whole potatoes, whole garlic, whole onion), bottles upright, boxes and bags upright, jars with labels forward",
-      "REAL PRODUCT PACKAGING — ONLY ingredients that come in a package from the store (oil bottles, spice shakers, flour bags, sugar boxes, sauce jars, canned goods, butter blocks, cream cheese bricks) may show a brand label. The brand label goes ON THE ACTUAL PHYSICAL PACKAGE itself — the bottle, the jar, the box, the wrapper — NEVER on a bowl or ramekin or on the ingredient directly. Invent fake brand names like 'Heath Riles BBQ', 'GRAZA Oil', 'Great Value Flour'.",
-      "SCOOPED INGREDIENTS GO IN PLAIN BOWLS — anything scooped out of its package (sour cream in a bowl, shredded cheese in a bowl, chopped herbs in a ramekin, salt in a small dish) goes in a PLAIN white or ceramic bowl with NO label, NO sticker, NO brand stamp. Do NOT paint brand logos onto bowls or onto the surface of the ingredient itself.",
-      "LIMITED SMALL RAMEKINS — ONLY finely chopped herbs, spices, grated cheese, or pre-diced items go in small ramekins (2-4 max). Everything else stays in its whole / packaged / plated form",
-      "VARY CONTAINER SIZES — some large plates, some tiny ramekins, NEVER all identical bowls",
-      "MIX HEIGHTS — tall standing bottles and boxes create depth alongside flat items",
-      "FILL THE FRAME — items reach near all 4 edges, no empty void around the composition",
-      "No ingredient is cooked or mixed (raw state only)",
-      "No garnish, no utensils, no extra props",
-      "No watermark, no floating text overlays — text on packaging is REQUIRED",
-      "Authentic home-kitchen food-blog aesthetic, not a sterile commercial shoot"
-    ]
-  };
+  // ── 1. Opening ──
+  const opening = `Photorealistic raw-ingredients flat-lay photo for a food blog. Natural editorial style, soft natural daylight from a window. This is the only image in the recipe where ingredients sit directly on the surface — items are spread across the frame to show what the cook is about to use.`;
 
-  return JSON.stringify(jsonPrompt, null, 2);
+  // ── 2. Frame and background ──
+  const framePara = `The entire frame is filled with the uploaded reference surface (marble, wood, or linen). Preserve that surface exactly — its grain, color, stripes, texture, edges, and any minor flaws. The reference fills 100% of the frame edge to edge, with no white borders or blank space.`;
+
+  // ── 3. Items as prose bulleted list ──
+  const itemsHeader = `Items visible across the surface:`;
+  const itemsLines = items.map(describeIngredientLine).join('\n');
+
+  // ── 4. Layout ──
+  const layoutPara = `Layout: items are placed organically with asymmetric spacing — some clustered, some with gaps, none perfectly aligned, and they reach near all four edges of the frame to fill the composition. Heights vary: tall standing bottles and boxes alongside flat bowls and whole produce. Sizes vary: a few large plates or wooden boards for the star ingredients, a small number of ceramic ramekins (2–4 maximum) for finely chopped herbs, spices, grated cheese, or pre-diced items. Everything else stays in its whole, packaged, or plated form. ${layoutHint}`.trim();
+
+  // ── 5. Packaging rule ──
+  const packagingPara = `Packaging: every ingredient that comes in a store package (oil bottles, spice shakers, flour bags, sugar boxes, sauce jars, canned goods, butter blocks, cream cheese bricks) shows a realistic, readable brand label printed directly on the physical package — invent believable fake brand names like "Heath Riles BBQ", "GRAZA Oil", or "Great Value Flour". Scooped ingredients (sour cream, shredded cheese, chopped herbs, salt) sit in plain white or ceramic bowls with no label, no sticker, and no brand stamp.`;
+
+  // ── 6. Style anchors ──
+  const stylePara = `Camera angle: ${camera}. Style: authentic home-kitchen food-blog aesthetic, warm tones, sharp focus, raw uncooked ingredients only. Lighting matches the reference image — soft diffused daylight from one side, gentle ambient fill, natural shadow length.`;
+
+  // ── 7. Critical constraints (positive where possible) ──
+  const criticalPara = `Critical: ingredients are raw and uncooked, never mixed together. No utensils, no cutting boards as separate items (the surface itself is the background). No text overlays, no watermark, no logo — the only text visible is the brand labels printed on actual packaging.`;
+
+  return [opening, framePara, itemsHeader + '\n' + itemsLines, layoutPara, packagingPara, stylePara, criticalPara]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
-/**
- * Build a Flow prompt for the hero/final image.
- */
-export function buildHeroPrompt(heroState, vgSettings) {
+// ─────────────────────────────────────────────────────────────────────
+// 3. HERO PROMPT
+// ─────────────────────────────────────────────────────────────────────
+
+export function buildHeroPrompt(heroState, vgSettings, opts = {}) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
+  const canon = opts.foodIdentityCanon || null;
+  const container = heroState.container || defaults.defaultContainer;
+  const camera = heroState.camera_angle || '45-degree angle';
+  const description = heroState.base_description || 'the finished dish';
+  const arrangement = heroState.arrangement || 'appetizing final presentation, casually plated like a careful home cook would';
+  const allowed = (heroState.allowed_additions || []).filter(Boolean);
+  const canonSentence = buildCanonSentence(canon, 'fully cooked, finished and glazed to its final color');
+  const compositionSentence = buildCompositionSentence(heroState.composition);
 
-  const jsonPrompt = {
-    task: "Photorealistic food photography — HERO SHOT (the BEST image of the entire recipe — must be stunning and appetizing)",
-    image_type: "hero",
-    description: heroState.base_description || "finished dish",
-    container: heroState.container || defaults.defaultContainer,
-    camera: heroState.camera_angle || "45-degree angle",
-    lighting: vgSettings?.defaultLighting || defaults.defaultLighting,
-    background: "PRESERVE the uploaded reference image surface EXACTLY (color, marble veining, grain, texture, edges). Do NOT replace, regenerate, lighten, darken, or stylize. Looks like the same counter on the same day with the same window light.",
-    arrangement: heroState.arrangement || "appetizing final presentation, casually plated like a careful home cook would",
-    allowed_additions: heroState.allowed_additions || [],
-    forbidden: heroState.forbidden || ["raw ingredients", "extra bowls", "utensils"],
-    rules: [
-      "Show the FINISHED dish only — fully cooked and appetizing",
-      "This is the HERO IMAGE — it must be the most beautiful and mouth-watering photo of the entire recipe BUT still look natural and homemade, not commercial",
-      "BACKGROUND IS SACRED — PRESERVE the uploaded reference surface EXACTLY (color, marble veining, grain, texture, edges). Do NOT replace, regenerate, lighten, darken, blur, or stylize. The background must be visually IDENTICAL to the uploaded reference.",
-      "NATURAL LIGHTING MATCH — the lighting MUST match the uploaded reference image (same direction, softness, warmth, shadow shape). Soft diffused daylight, gentle ambient fill. NO studio lighting, NO HDR, NO harsh shadows, NO dramatic spotlights, NO commercial color grading, NO bokeh.",
-      "WARM RICH COLORS — golden-brown seared surfaces and deep rich sauces and bright fresh herbs. Absolutely NO grey or washed-out or pale food",
-      "VISIBLE TEXTURE in sharp focus — crispy edges and glossy sauce and melted cheese and caramelized surfaces and visible grain and fiber",
-      "DEPTH AND VOLUME — food must look 3D and abundant. Sauce pooling naturally. Toppings piled generously. Nothing flat or sparse",
-      "MOISTURE — sauce must glisten. Meat must look juicy. Vegetables must look fresh and crisp. Nothing dry or stale",
-      "Magazine-cover quality: this image alone must make someone want to cook this recipe",
-      "Natural but beautiful — slight imperfections but overall stunning and appetizing",
-      "Follow the arrangement description for garnish placement and sauce drizzle",
-      "No raw ingredients visible",
-      "No extra containers or utensils",
-      "No text, no watermark"
-    ]
-  };
+  // ── 1. Opening: hero declaration + subject ──
+  const opening = `Photorealistic food photography — the hero shot of the finished recipe. Natural homemade style on a real home kitchen counter, not a commercial studio shoot. This is the most beautiful, magazine-cover-worthy photo of the entire recipe.`;
 
-  return JSON.stringify(jsonPrompt, null, 2);
+  // ── 2. Scene paragraph ──
+  const mainScene = `The scene shows ${description} in ${container}, captured from a ${camera} angle on a marble counter under soft natural daylight from a kitchen window. ${arrangement}.`;
+
+  // ── 3. Identity anchor ──
+  const identityPara = canonSentence;
+
+  // ── 4. Composition ──
+  const compositionPara = compositionSentence
+    ? `Composition: ${compositionSentence}`
+    : '';
+
+  // ── 5. Allowed garnish ──
+  const garnishPara = allowed.length > 0
+    ? `Allowed garnish on the plate: ${joinList(allowed, { sep: ', ', finalSep: ', and ' })}. Garnish sits on the plate or directly next to the food on the plate.`
+    : '';
+
+  // ── 6. Style anchors (positive) ──
+  const stylePara = `Style: warm rich colors — golden-brown seared surfaces, deep rich sauces, bright fresh herbs. Sharp focus with visible texture: crispy edges, glossy sauce, melted cheese, caramelized surfaces, visible grain and fiber. Three-dimensional depth and volume — sauce pools naturally, toppings sit generously, nothing flat or sparse. Moisture is visible: sauce glistens, meat looks juicy, vegetables look fresh and crisp. The food is fully cooked, the dish is finished, and the image alone should make a reader want to cook this recipe. Slight imperfections that look home-cooked, never sterile or symmetric.`;
+
+  // ── 7. Reference image anchor ──
+  const referencePara = `Background and lighting come from the uploaded reference image: preserve its marble surface exactly — same color, same veining, same grain, same texture, same edges. Match the reference lighting precisely: same direction, same softness, same warmth, same shadow shape. The hero looks like the same counter on the same day with the same window light.`;
+
+  // ── Reference image roles (explicit per-ref purpose) ──
+  const refRolesPara = buildRefRolesParagraph(opts.refRoles);
+
+  // ── 8. Critical constraints ──
+  const criticalPara = `Critical: only the plate or serving dish is on the marble counter — the surface around it is completely bare. All food stays on or inside the plate; any garnish sits on the plate edge or directly next to the food on the plate, never scattered on the bare counter. No raw ingredients are visible, only the finished cooked dish. No text, no watermark, no logo.`;
+
+  return [opening, mainScene, identityPara, compositionPara, garnishPara, stylePara, referencePara, refRolesPara, criticalPara]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
-/**
- * Build a correction prompt after a failed verification.
- */
+// ─────────────────────────────────────────────────────────────────────
+// 4. CORRECTION PROMPT (appended on retry after verifier fails)
+// ─────────────────────────────────────────────────────────────────────
+
 export function buildCorrectionPrompt(stepState, verifierResult, vgSettings) {
-  const defaults = VERIFIED_GENERATOR_DEFAULTS;
-  const template = vgSettings?.prompts?.correction || defaults.prompts.correction;
-
-  const issuesList = (verifierResult.issues || [])
-    .map(issue => `- ${issue}`)
-    .join('\n');
-
   const fixes = [];
+
+  if (verifierResult.stray_items_outside_container === true) {
+    fixes.push(`The previous image showed food items on the bare counter around the container. Move every food item inside the container. The marble surface around the container must be completely bare — only the container is on it.`);
+  }
+
+  if (verifierResult.identity_match === false) {
+    const canon = stepState._canon || null;
+    if (canon && canon.primary_food) {
+      const features = (canon.hallmark_features || []).join(', ');
+      fixes.push(`The food in the previous image had the wrong silhouette. It must look unmistakably like "${canon.primary_food}" — silhouette: ${canon.silhouette}. The hallmark features that must be visible: ${features}.`);
+    } else {
+      fixes.push(`The food in the previous image had the wrong shape. Render the correct silhouette and proportions for this recipe's primary food.`);
+    }
+  }
+
+  if (verifierResult.composition_match === false) {
+    fixes.push(`The placement of the food did not match the composition direction. Re-render with the subject in the correct quadrant of the frame and the correct orientation, with the secondary elements where specified and the surface around the subject empty as described.`);
+  }
+
   if (verifierResult.forbidden_found?.length > 0) {
     for (const item of verifierResult.forbidden_found) {
-      fixes.push(`- REMOVE: ${item}`);
-    }
-  }
-  if (verifierResult.container_count > 1) {
-    fixes.push(`- Show only 1 container (found ${verifierResult.container_count})`);
-  }
-  if (verifierResult.state_match === false) {
-    fixes.push(`- Fix food state: must show "${stepState.food_state}"`);
-  }
-  if (verifierResult.missing_ingredients?.length > 0) {
-    for (const item of verifierResult.missing_ingredients) {
-      fixes.push(`- ADD missing: ${item}`);
-    }
-  }
-  if (verifierResult.extra_items?.length > 0) {
-    for (const item of verifierResult.extra_items) {
-      fixes.push(`- REMOVE extra: ${item}`);
+      fixes.push(`Remove the ${item} from the image — it should not be visible at this step.`);
     }
   }
 
-  return template
-    .replace(/\{\{issues_list\}\}/g, issuesList || '- Unknown issue')
-    .replace(/\{\{fixes_list\}\}/g, fixes.join('\n') || '- Re-generate following all previous rules');
+  if (verifierResult.container_count > 1) {
+    fixes.push(`The previous image showed ${verifierResult.container_count} containers. Show only one container.`);
+  }
+
+  if (verifierResult.state_match === false && stepState.food_state) {
+    fixes.push(`The food state did not match. The current state should be: ${stepState.food_state}.`);
+  }
+
+  if (verifierResult.missing_ingredients?.length > 0) {
+    for (const item of verifierResult.missing_ingredients) {
+      fixes.push(`Add the missing ${item} — it belongs in this step.`);
+    }
+  }
+
+  if (verifierResult.extra_items?.length > 0) {
+    for (const item of verifierResult.extra_items) {
+      fixes.push(`Remove the extra ${item} — it does not belong in this step.`);
+    }
+  }
+
+  const issueText = (verifierResult.issues || []).filter(Boolean).join('. ');
+
+  let body;
+  if (fixes.length > 0) {
+    body = `Specific corrections required:\n\n` + fixes.map((f, i) => `${i + 1}. ${f}`).join('\n');
+  } else {
+    body = `Re-render the image, paying closer attention to every detail in the previous prompt.`;
+  }
+
+  return `The previous image was rejected by quality control. ${issueText ? 'Issues noted: ' + issueText + '.' : ''}\n\n${body}\n\nAll other rules from the previous prompt still apply.`;
 }

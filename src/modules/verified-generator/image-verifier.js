@@ -47,6 +47,36 @@ export async function verifyStepImage(apiKey, imagePath, stepState, vgSettings, 
     .replace(/\{\{forbidden_ingredients_list\}\}/g, forbiddenList || '- (none specified)')
     .replace(/\{\{food_state\}\}/g, stepState.food_state || '');
 
+  // Inject food_identity_canon + composition spec when present — verifier uses
+  // these to fail images that drift on silhouette or major spatial placement.
+  const canon = opts.foodIdentityCanon || stepState._canon || null;
+  if (canon && canon.primary_food) {
+    let canonBlock = '\n\n──────────────────────────────────────────\nFOOD IDENTITY CANON (the food MUST look like this — same silhouette across every step):\n';
+    canonBlock += `- Primary food: ${canon.primary_food}\n`;
+    canonBlock += `- Silhouette: ${canon.silhouette || '(not specified)'}\n`;
+    canonBlock += `- Size: ${canon.size || '(not specified)'}\n`;
+    canonBlock += `- Hallmark features: ${(canon.hallmark_features || []).join('; ') || '(not specified)'}\n`;
+    canonBlock += '\nSet identity_match: false if the visible food has a clearly DIFFERENT silhouette than the canon (e.g. canon says pear-shaped bone-in ham but the image shows a rectangular slab). Tolerate minor stylistic differences — only fail on hard silhouette/cut mismatches.';
+    prompt += canonBlock;
+  }
+
+  const comp = stepState.composition;
+  if (comp && typeof comp === 'object' && (comp.subject_placement || comp.subject_orientation || (comp.secondary_elements || []).length > 0)) {
+    let compBlock = '\n\n──────────────────────────────────────────\nCOMPOSITION SPEC (where things should be in the frame):\n';
+    if (comp.subject_placement) compBlock += `- Subject placement: ${comp.subject_placement}\n`;
+    if (comp.subject_orientation) compBlock += `- Subject orientation: ${comp.subject_orientation}\n`;
+    if ((comp.secondary_elements || []).length > 0) {
+      compBlock += '- Secondary elements:\n';
+      for (const el of comp.secondary_elements) {
+        compBlock += `  • ${el.what || ''} — ${el.where || ''}${el.count ? ` (${el.count})` : ''}\n`;
+      }
+    }
+    if (comp.negative_space) compBlock += `- Negative space: ${comp.negative_space}\n`;
+    if (comp.depth) compBlock += `- Depth: ${comp.depth}\n`;
+    compBlock += '\nSet composition_match: false ONLY if the subject is clearly in the WRONG QUADRANT or WRONG ORIENTATION, or if a key secondary element is missing/misplaced. Do NOT fail for small percentage differences — only fail on MAJOR spatial mismatches.';
+    prompt += compBlock;
+  }
+
   const { existsSync } = await import('fs');
   const hasPrev = opts.previousImagePath && existsSync(opts.previousImagePath);
   const hasDesc = opts.recipeDescription && opts.recipeDescription.trim().length > 0;
@@ -80,7 +110,7 @@ export async function verifyStepImage(apiKey, imagePath, stepState, vgSettings, 
 
   if (!result) {
     Logger.warn('[Verifier] Gemini returned no result — treating as PASS (safety valve)');
-    return { status: 'PASS', detected_items: [], forbidden_found: [], container_count: 1, state_match: true, issues: ['Verification skipped — API error'] };
+    return { status: 'PASS', detected_items: [], forbidden_found: [], container_count: 1, state_match: true, identity_match: true, composition_match: true, issues: ['Verification skipped — API error'] };
   }
 
   // Normalize status
@@ -138,7 +168,7 @@ export async function verifyIngredientsImage(apiKey, imagePath, ingredientsState
  * @param {object} vgSettings — verifiedGenerator settings
  * @returns {object} verification result
  */
-export async function verifyHeroImage(apiKey, imagePath, heroState, vgSettings) {
+export async function verifyHeroImage(apiKey, imagePath, heroState, vgSettings, opts = {}) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
   const template = vgSettings?.prompts?.verifierHero || defaults.prompts.verifierHero;
 
@@ -150,18 +180,38 @@ export async function verifyHeroImage(apiKey, imagePath, heroState, vgSettings) 
     .map(f => `- ${f}`)
     .join('\n');
 
-  const prompt = template
+  let prompt = template
     .replace(/\{\{base_description\}\}/g, heroState.base_description || 'finished dish')
     .replace(/\{\{container\}\}/g, heroState.container || defaults.defaultContainer)
     .replace(/\{\{camera_angle\}\}/g, heroState.camera_angle || '45-degree angle')
     .replace(/\{\{allowed_additions_list\}\}/g, additionsList || '- None')
     .replace(/\{\{forbidden_list\}\}/g, forbiddenList || '- None');
 
+  // Inject canon + composition same as step verifier
+  const canon = opts.foodIdentityCanon || heroState._canon || null;
+  if (canon && canon.primary_food) {
+    let canonBlock = '\n\n──────────────────────────────────────────\nFOOD IDENTITY CANON (the hero must match this — same food the step images established):\n';
+    canonBlock += `- Primary food: ${canon.primary_food}\n`;
+    canonBlock += `- Silhouette: ${canon.silhouette || '(not specified)'}\n`;
+    canonBlock += `- Hallmark features: ${(canon.hallmark_features || []).join('; ') || '(not specified)'}\n`;
+    canonBlock += '\nSet identity_match: false if the hero food has a clearly different silhouette than the canon.';
+    prompt += canonBlock;
+  }
+  const comp = heroState.composition;
+  if (comp && typeof comp === 'object' && (comp.subject_placement || comp.subject_orientation || (comp.secondary_elements || []).length > 0)) {
+    let compBlock = '\n\n──────────────────────────────────────────\nHERO COMPOSITION SPEC:\n';
+    if (comp.subject_placement) compBlock += `- Subject placement: ${comp.subject_placement}\n`;
+    if (comp.subject_orientation) compBlock += `- Subject orientation: ${comp.subject_orientation}\n`;
+    if (comp.negative_space) compBlock += `- Negative space: ${comp.negative_space}\n`;
+    compBlock += '\nSet composition_match: false ONLY on MAJOR spatial mismatch — wrong quadrant or wrong orientation.';
+    prompt += compBlock;
+  }
+
   const result = await geminiVision(apiKey, imagePath, prompt);
 
   if (!result) {
     Logger.warn('[Verifier] Gemini returned no result for hero — treating as PASS');
-    return { status: 'PASS', detected_items: [], forbidden_found: [], issues: ['Verification skipped — API error'] };
+    return { status: 'PASS', detected_items: [], forbidden_found: [], identity_match: true, composition_match: true, issues: ['Verification skipped — API error'] };
   }
 
   result.status = (result.status || 'PASS').toUpperCase();
@@ -247,7 +297,28 @@ export async function verifyPinterestImage(apiKey, imagePath, recipeTitle, vgSet
  * @returns {{ shouldRetry: boolean, reason: string }}
  */
 export function shouldRetry(result, softFailAction = 'accept') {
+  // Stray items outside the container — always HARD_FAIL, regardless of status.
+  // Flow has a strong tendency to scatter ingredients decoratively on the surface
+  // around the container; the rule in the prompt isn't enough on its own.
+  if (result.stray_items_outside_container === true) {
+    return { shouldRetry: true, reason: 'STRAY ITEMS: food on the bare counter outside the container' };
+  }
+
+  // Identity drift always forces retry — silhouette mismatch is a HARD failure
+  // regardless of what Gemini set status to. Without this, identity_match: false
+  // can slip through when Gemini still rates the image as PASS overall.
+  if (result.identity_match === false) {
+    return { shouldRetry: true, reason: 'IDENTITY DRIFT: food silhouette does not match canon' };
+  }
+
   if (result.status === 'PASS') {
+    // Composition drift downgrades to SOFT_FAIL — retry only when softFailAction is 'retry'
+    if (result.composition_match === false) {
+      if (softFailAction === 'retry') {
+        return { shouldRetry: true, reason: 'COMPOSITION DRIFT (retry mode): subject placement off' };
+      }
+      return { shouldRetry: false, reason: 'composition drift accepted (soft)' };
+    }
     return { shouldRetry: false, reason: 'passed' };
   }
 

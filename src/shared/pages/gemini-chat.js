@@ -154,6 +154,10 @@ export class GeminiChatPage {
       if (input) {
         await input.setInputFiles(refs);
       } else {
+        // CRITICAL: dismiss the open menu/CDK overlay backdrop before throwing.
+        // Otherwise the invisible backdrop blocks the next click (e.g. send button)
+        // and the orchestrator times out 30s later with "cdk-overlay-backdrop intercepts pointer events".
+        await this._dismissOverlays();
         throw new Error(`Gemini file input/chooser not available: ${e.message.split('\n')[0]}`);
       }
     }
@@ -187,12 +191,49 @@ export class GeminiChatPage {
   }
 
   /**
+   * Dismiss any open Gemini menu, popover, or CDK overlay backdrop.
+   * Called after a failed attach to prevent the invisible backdrop from
+   * blocking subsequent clicks (send button, etc.).
+   */
+  async _dismissOverlays() {
+    try {
+      // Press Escape twice — first dismisses any open menu, second any nested popover
+      await this.page.keyboard.press('Escape').catch(() => {});
+      await this.page.waitForTimeout(200);
+      await this.page.keyboard.press('Escape').catch(() => {});
+      await this.page.waitForTimeout(200);
+      // Click the CDK overlay backdrop directly if it's still present
+      await this.page.evaluate(() => {
+        const backdrops = document.querySelectorAll('.cdk-overlay-backdrop, .cdk-overlay-transparent-backdrop');
+        for (const b of backdrops) {
+          try { b.click(); } catch {}
+        }
+        // Also remove any orphaned backdrops Angular failed to clean up
+        const container = document.querySelector('.cdk-overlay-container');
+        if (container) {
+          for (const c of container.children) {
+            if (c.classList.contains('cdk-overlay-backdrop') ||
+                c.classList.contains('cdk-overlay-transparent-backdrop')) {
+              try { c.remove(); } catch {}
+            }
+          }
+        }
+      }).catch(() => {});
+      await this.page.waitForTimeout(300);
+    } catch {}
+  }
+
+  /**
    * Send a prompt and get the full response.
    * Same interface as ChatGPTPage.sendPromptAndGetResponse()
    */
   async sendPromptAndGetResponse(prompt, expectJSON = false) {
     Logger.step('Gemini', 'Sending prompt...');
     await this.screenshot('before-prompt');
+
+    // Defensive cleanup: if a previous attachFiles failed, a CDK overlay backdrop
+    // may still be intercepting clicks. Clear it before trying to interact with the composer.
+    await this._dismissOverlays();
 
     // Wait for input
     const input = await this.page.waitForSelector(SEL.promptInput, { timeout: 15000 });

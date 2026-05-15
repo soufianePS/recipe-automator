@@ -18,7 +18,7 @@ Given the recipe JSON below, create a VISUAL PRODUCTION PLAN — a structured JS
 CRITICAL RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps (adapt to recipe complexity)
 - Each step must show ONE clear visual change from the previous step
-- Each step specifies its own container (containers CAN change between steps when the recipe requires it)
+- Each step specifies its container. DEFAULT = same container as previous step. Containers ONLY change when the recipe physically transfers food (mixing bowl → baking pan when pouring batter, skillet → plate when serving). Two consecutive "mixing" steps share the SAME mixing bowl — not "a glass bowl" then "a ceramic bowl"
 - Every step must list EXACT visible ingredients and FORBIDDEN ingredients
 - Forbidden = anything that has NOT been added yet at this step + any garnish/decoration (unless it's the last step)
 - For continuity: only allow previous image as context when same container + small change
@@ -26,6 +26,19 @@ CRITICAL RULES:
 - Previously mixed ingredients cannot reappear separately
 - The ingredients image must show ALL raw ingredients laid out separately
 - The hero image must show the final finished dish
+
+FOOD IDENTITY CANON (CRITICAL — prevents shape/identity drift across steps):
+- If the recipe has a recognizable WHOLE-FOOD or DISTINCTIVE-SHAPE protagonist (whole ham, whole roast, whole chicken/turkey, brisket, fish fillet, salmon side, cake, pie, loaf, casserole, lasagna, taco/burrito, sandwich, dumpling, cookie batch, pasta dish with characteristic shape, etc.), generate a "food_identity_canon" object.
+- If the food is AMORPHOUS (soup, sauce, scrambled mix, smoothie, dip, oatmeal, stew without recognizable shape), set food_identity_canon to null.
+- The canon DEFINES the food's visual identity ONCE and every step that contains this food MUST repeat the silhouette + size descriptors verbatim in its food_state field.
+- Generate the canon from the recipe (what cut of meat, what cake pan size, what fold for tacos, etc.).
+- Also generate a "prep_search_query" — 3-6 word Pinterest search query that would return a real photo of the food in its RAW or PRE-COOK state. Example: "raw bone-in spiral ham scored uncooked", "unbaked layer cake batter pan", "raw uncooked tacos folded". The pipeline scrapes this to anchor step 1's silhouette.
+
+COMPOSITION (CRITICAL — Flow won't position things unless told exactly where):
+- Every step has a "composition" object describing WHERE everything goes in the frame.
+- Use spatial language Flow respects: quadrants (top-left/top-right/center-left/center/center-right/bottom-left/bottom-right), frame coverage percent ("food fills 60% of frame width"), depth ("front of pan", "back-left corner"), counts ("4 visible orange slices fanning to lower-right"), orientation ("bone end angled top-right at 30°").
+- The composition object is REQUIRED on every step. Vague terms like "scattered" or "loosely arranged" alone are NOT enough — name the quadrant AND the count AND the orientation.
+- STRICT CONTAINMENT: when describing food_state, secondary_elements, or arrangement, NEVER say things like "berries scattered around the blender", "herbs scattered on the counter", "crumbs around the bowl", "ingredients on the marble", "stray items on the surface", "spilled X on the counter". Flow renders those phrases literally and produces images with food on the bare counter. ALL food MUST be inside the container. Negative_space should describe the empty surface as "completely bare — no food items".
 
 CAMERA ANGLE SELECTION PER STEP:
 - Choose the BEST angle for each step based on what needs to be visible:
@@ -42,6 +55,14 @@ RECIPE JSON:
 
 Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
 {
+  "food_identity_canon": {
+    "primary_food": "name the recognizable whole-food protagonist, e.g. 'bone-in spiral-cut ham', 'round layer cake', 'soft folded tacos'. Set the entire canon to null if the food is amorphous (soup, sauce, scrambled mix).",
+    "silhouette": "describe the OVERALL SHAPE/SILHOUETTE in 1-2 sentences: classic pear/teardrop for ham, 9-inch round 2-inch tall for cake, soft U-fold for tacos, log-shaped for meatloaf. Be specific.",
+    "size": "describe size relative to its container: 'fills ~70% of a 13×9 roasting pan', '6-inch round cake', '5-inch tortilla folded',",
+    "hallmark_features": ["array of 2-4 DISTINGUISHING visual features that identify this food: e.g. for ham — 'spiral cuts around wider end', 'diamond-scored top dome', 'bone protruding from wider end at angle'. These are what make it unmistakably this food."],
+    "color_progression": "describe how color evolves across steps: 'raw pink → mahogany glaze' for ham, 'pale batter → golden top' for cake, 'raw beige tortilla → lightly charred' for tacos. Used to maintain identity at every cook stage.",
+    "prep_search_query": "3-6 word Pinterest query that would return a real photo of this food in its RAW/PRE-COOK state. Examples: 'raw bone-in spiral ham scored', 'unbaked layer cake batter pan', 'raw folded soft tacos'. Used as identity anchor reference."
+  },
   "ingredients_image": {
     "image_type": "ingredients",
     "layout": "Describe a NATURAL asymmetric scatter across the ENTIRE surface edge-to-edge. Specify WHICH items stay in their whole form (whole vegetables, bottles/boxes/jars standing upright WITH visible fake brand labels), WHICH are in small ramekins (ONLY finely chopped herbs, spices, grated cheese, diced small items). Explicitly say items are at DIFFERENT heights and DIFFERENT distances apart. NO grid, NO circle, NO matching bowls for every item.",
@@ -61,7 +82,17 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
         { "name": "ingredient", "state": "visual state description" }
       ],
       "forbidden_ingredients": ["list of ingredients NOT allowed in this image"],
-      "food_state": "detailed description of food appearance at this exact moment",
+      "food_state": "detailed description of food appearance at this exact moment. If food_identity_canon is non-null AND this step contains the primary_food, COPY-PASTE the silhouette + size + hallmark_features descriptors VERBATIM at the start of this field, then add what's specific to this step. Example: 'Classic pear/teardrop bone-in spiral ham, fills ~70% of roasting pan, diamond-scored top with cloves at every intersection — raw pink color, no glaze yet at this scoring stage.'",
+      "shape_change": "true|false — true ONLY if this step physically transforms the food's silhouette (slicing, mashing, pouring batter into pan, folding tacos). false for cosmetic changes (basting, scoring, glazing, adding garnish).",
+      "composition": {
+        "subject_placement": "name the quadrant + frame coverage: 'center-left, fills 65% of frame width', 'bottom-center, fills 50% of frame'",
+        "subject_orientation": "how the food is oriented: 'spiral-cut side facing camera', 'bone end angled top-right at 30°', 'cake cut-side up'",
+        "secondary_elements": [
+          { "what": "diamond score marks", "where": "entire top dome in 1.5-inch diagonal grid", "count": "~24 intersections visible" }
+        ],
+        "negative_space": "describe what's empty: 'top-right of pan empty', 'back of plate shows tile wall'",
+        "depth": "front/back relationships: 'food sits 2 inches from front pan edge', 'garnish in foreground, food center'"
+      },
       "continuity": {
         "uses_previous_image": false,
         "reason": "why or why not use previous image as context"
@@ -70,9 +101,16 @@ Output ONLY valid JSON (no markdown, no explanation) matching this exact schema:
   ],
   "hero_image": {
     "image_type": "hero",
-    "base_description": "final dish description",
+    "base_description": "final dish description. If food_identity_canon is non-null, INCLUDE the silhouette + hallmark_features VERBATIM here too.",
     "container": "choose based on recipe type",
     "camera_angle": "45-degree angle",
+    "composition": {
+      "subject_placement": "quadrant + frame coverage",
+      "subject_orientation": "how oriented in the frame",
+      "secondary_elements": [{ "what": "", "where": "", "count": "" }],
+      "negative_space": "what's empty",
+      "depth": "front/back relationships"
+    },
     "allowed_additions": ["garnish if recipe includes it", "final presentation touches"],
     "forbidden": ["raw ingredients", "extra bowls", "utensils", "side dishes not in recipe"]
   }
@@ -215,9 +253,11 @@ SEVERITY RULES:
 - HARD_FAIL: forbidden ingredient found, future ingredient visible, food completely wrong state, totally wrong container type
 - HARD_FAIL: food is grey or completely washed-out with no color
 - HARD_FAIL: image is blurry or food is unrecognizable
+- HARD_FAIL: identity_match is false (food does not match the food_identity_canon — wrong silhouette/shape/cut)
 - SOFT_FAIL: framing slightly off, minor texture difference, container slightly different style but same category
 - SOFT_FAIL: food is slightly pale but still recognizable
-- PASS: food matches expected state AND looks appetizing with good colors and texture
+- SOFT_FAIL: composition_match is false (food is in the wrong quadrant / wrong orientation / secondary elements out of place) but identity is OK
+- PASS: food matches expected state AND looks appetizing with good colors and texture AND matches identity canon
 
 OUTPUT JSON ONLY (no markdown, no explanation):
 {
@@ -226,11 +266,17 @@ OUTPUT JSON ONLY (no markdown, no explanation):
   "forbidden_found": [],
   "container_count": 1,
   "state_match": true,
+  "identity_match": true,
+  "composition_match": true,
+  "stray_items_outside_container": false,
   "quality_score": 8,
   "issues": []
 }
 
-quality_score: 1-10 rating of image quality (colors, texture, appeal). Below 5 = SOFT_FAIL.`;
+quality_score: 1-10 rating of image quality (colors, texture, appeal). Below 5 = SOFT_FAIL.
+identity_match: true unless a food_identity_canon was specified and the visible food does NOT match its silhouette/hallmark features. When no canon is specified, default to true.
+composition_match: true unless a composition spec was specified and the food is in the WRONG QUADRANT or WRONG ORIENTATION. Only check the 2-3 most important spatial facts (subject quadrant, subject orientation, presence of secondary elements in their specified zones). Do NOT fail for small percentage differences. When no composition is specified, default to true.
+stray_items_outside_container: true if you see ANY food items (berries, herbs, crumbs, droplets, slices, spilled ingredients) sitting on the bare counter/marble/surface OUTSIDE the container. The surface around the container should be completely bare. The ingredients flat-lay image is the ONLY image where items on the surface are allowed — for every other step/hero image, food on the surface around the container is a HARD_FAIL. Set this to false ONLY if the surface is genuinely bare around the container.`;
 
 
 // ─────────────────────────────────────────────────────────────
@@ -314,8 +360,10 @@ SEVERITY RULES:
 - HARD_FAIL: wrong food entirely, no food visible, forbidden elements, food looks raw/uncooked
 - HARD_FAIL: food is washed-out or extremely pale with no color contrast
 - HARD_FAIL: food looks flat or empty or unappetizing
+- HARD_FAIL: identity_match is false (hero does not match food_identity_canon — wrong silhouette)
 - SOFT_FAIL: food looks slightly pale but acceptable, minor presentation issue
-- PASS: food looks delicious and appetizing with good colors and texture
+- SOFT_FAIL: composition_match is false (subject in wrong quadrant) but identity is OK
+- PASS: food looks delicious and appetizing AND matches the identity canon
 
 OUTPUT JSON ONLY:
 {
@@ -323,8 +371,14 @@ OUTPUT JSON ONLY:
   "detected_items": [],
   "forbidden_found": [],
   "appetizing": true,
+  "identity_match": true,
+  "composition_match": true,
+  "stray_items_outside_container": false,
   "issues": []
-}`;
+}
+
+identity_match / composition_match: same rules as the step verifier — default to true when no canon/composition was specified.
+stray_items_outside_container: true if food items (crumbs, herb leaves, droplets, slices) sit on the bare counter OUTSIDE the plate/serving dish. Garnish ON the plate edge is fine. Stray food on the bare counter around the plate is HARD_FAIL.`;
 
 
 // ─────────────────────────────────────────────────────────────
@@ -525,17 +579,22 @@ ACCURATE COOKING TEMPERATURES (CRITICAL — readers will follow this and ruin fo
 - If you're unsure: pick the temperature most chef sources recommend for this exact dish. Do NOT round down to "feel safe" — undercooked food is a worse failure than slightly over.
 
 TRANSFORMATION-ONLY STEP RULE:
-- Each step in "recipe.steps" must be a real cooking transformation a food photographer would actually shoot. Something visibly changes: color, texture, container, volume, state.
+- Each step in "recipe.steps" should be a cooking moment a food photographer would actually shoot. Some change is welcome (color, texture, container, volume, state) but SUBTLE progressions are perfectly fine — a sauce reducing slightly, a crust deepening one shade, a fold being added.
 - Trivial single-line additions ("add salt", "splash water", "season to taste", "stir briefly") are NOT steps. Fold them INTO the description of the adjacent transformation. Example: instead of "season the meat" + "sear the meat", write a single SEAR step whose description begins "Season the meat right before it hits the pan, then sear..."
 - Cap: keep step count tight. Most recipes need 4 to 5 steps. If your draft has more, MERGE adjacent low-impact steps into their nearest transformation.
 - If you can't picture the photo for a step, it's not a step.
 
 COOKING VISUAL PROGRESSION RULE:
-- Food MUST visually evolve across steps: raw > combined > coated > softened > thickened > structured > melted > slightly browned > finished.
-- Allowed transformations: sauce thickening and cheese melting unevenly and texture softening and slight browning and folding or layering.
+- Food should naturally progress across steps. Reasonable arc: raw > combined > coated > softened > thickened > structured > melted > slightly browned > finished. Treat this as a HINT for the dish's overall journey, NOT a checklist that must be hit every step.
+- Subtle progressions are encouraged: color deepening one shade, edges browning, sauce reducing, texture firming. Big jumps are NOT required — small visible changes are fine.
+
+NO-SURPRISE-COMPONENT RULE (CRITICAL):
+- NEVER introduce a major new component mid-recipe to create visual difference. If the dish ends with cream, frosting, glaze, sauce, garnish, or any topping, that component must appear in a step that EXPLICITLY assembles it (e.g., "spread the cream over the cooled cake"), not pop into existence between two cooking steps.
+- The dish identity must hold across steps. A carrot cake without cream stays a carrot cake without cream until the recipe says to add cream — it does not silently gain cream just to look different in the next photo.
+- If a step would feel "too similar" to the previous, prefer SUBTLE progression (deeper color, slight reduction, edges crisping) over inventing a new ingredient.
 
 VISUAL UNIQUENESS RULE:
-- Each step MUST include at least ONE of: color change / texture change / structure change / ingredient interaction change.
+- Each step should be RECOGNIZABLE as different from the previous, but the difference can be subtle. ONE of: small color change / texture change / partial transformation / minor ingredient interaction is enough — full visual reinvention is not required.
 
 HUMAN REALISM RULE:
 - Food must NEVER look perfect.
@@ -603,6 +662,26 @@ CONCLUSION RULE: Write 3 to 4 sentences. Wrap up with one personal moment, one r
 SECTION 2 — "visual_plan" (for AI image generation):
 This tells the image generator EXACTLY what each photo should show.
 
+FOOD IDENTITY CANON (CRITICAL — prevents shape/identity drift across steps):
+- The visual_plan MUST start with a "food_identity_canon" object IF the recipe has a recognizable whole-food or distinctive-shape protagonist.
+- Applies to: whole ham, whole roast, whole chicken/turkey, brisket, fish fillet, salmon side, cake, pie, loaf, bread, casserole, lasagna, tacos, burritos, sandwiches, dumplings, cookies, pasta with distinctive shape, etc.
+- Set the entire food_identity_canon to null when the food is AMORPHOUS: soup, sauce, scrambled mix, smoothie, dip, oatmeal, stew without recognizable shape, scattered stir-fry.
+- When non-null, every visual_step that contains the primary_food MUST COPY-PASTE the silhouette + size + hallmark_features descriptors VERBATIM at the start of its food_state. Do not paraphrase. Same copy-paste discipline as the container continuity rule.
+- Also generate "prep_search_query" — a 3-6 word Pinterest search returning a real photo of the food's RAW or PRE-COOK state. Used by the pipeline as an identity-anchor reference image.
+
+COMPOSITION OBJECT PER STEP (CRITICAL — Flow won't position things unless told exactly where):
+- Every visual_step MUST have a "composition" object describing WHERE everything goes.
+- Use spatial language Flow respects: quadrants (top-left, center-left, center, bottom-right, etc.), frame coverage percent ("food fills 60% of frame width"), depth ("front of pan", "back-left corner"), counts ("4 visible orange slices fanning to lower-right"), orientation ("bone end angled top-right at 30°").
+- Vague terms like "scattered loosely" alone are NOT enough — name the quadrant AND the count AND the orientation.
+- STRICT CONTAINMENT: NEVER write "berries scattered around the blender", "herbs on the counter", "crumbs around the bowl", "ingredients on the marble", or any phrase placing food OUTSIDE the container. Flow renders those literally. ALL food belongs INSIDE the container. Use negative_space to say "marble surface completely bare — no food items".
+- The hero_image also gets a composition object — same schema.
+
+SHAPE_CHANGE FLAG PER STEP:
+- Each step MUST include "shape_change": true|false.
+- true ONLY if this step physically transforms the food's silhouette (slicing, mashing, pouring batter into a different vessel, folding tacos, layering cake).
+- false for cosmetic changes that keep the silhouette intact (basting, scoring, glazing, adding garnish, sprinkling toppings, reducing sauce).
+- Used by the silhouette-drift detector to flag bad images when the food's shape changes without justification.
+
 CONTAINER SELECTION PER STEP — use the container a REAL cook would use at EACH phase:
 - Mixing bowl: mixing batters and marinades and doughs
 - Cast iron skillet: searing and pan-frying and sautéing
@@ -641,12 +720,12 @@ CAMERA ANGLE SELECTION PER STEP:
 
 VISUAL PLAN RULES:
 - Create between {{min_steps}} and {{max_steps}} visual steps
-- Each step = ONE clear visual change from previous
+- Each step = at least ONE visible change from previous, but it can be SUBTLE (color deepening, sauce reducing, texture firming) — big visual jumps are NOT required.
 - List EXACT visible and FORBIDDEN ingredients per step
 - visible_ingredients entries and every step/hero image prompt MUST repeat the exact ingredient variety used in the recipe (e.g., "cooked penne" not "cooked pasta", "shredded mozzarella" not "shredded cheese"). Flow needs the specific shape.
-- Forbidden = anything NOT yet added + garnish (unless last step)
-- Each step VISUALLY DISTINCT - different color, texture, sauce amount, state
-- Food must evolve: raw > combined > coated > softened > melted > browned > finished
+- Forbidden = anything NOT yet added + garnish (unless last step). NEVER add a major new component (cream, frosting, sauce, glaze, topping) to a step just to make it look distinct from the previous one — only add it if the recipe explicitly assembles it then.
+- Steps should be recognizably different but a soft progression is preferred over a dramatic re-styling.
+- Food progresses naturally: raw > combined > coated > softened > melted > browned > finished — use this as a HINT, not a rigid checklist that must be hit every step.
 - Do NOT create steps for: heating oil, preheating pan, boiling water, or any step without food visible. Every step must show food in the container
 
 NO SKIPPED TRANSFORMATION RULE (CRITICAL):
@@ -660,8 +739,8 @@ NO SKIPPED TRANSFORMATION RULE (CRITICAL):
 
 STEP MERGING RULE:
 - If adding an ingredient does NOT create a visible change (salt and vanilla extract and oil spray) then merge it into the NEXT step that DOES create a visible change.
-- Each step MUST have an OBVIOUS visual difference from the previous step.
-- If two consecutive steps would look nearly identical then combine them into one step.
+- Each step should have a NOTICEABLE visual difference from the previous step — subtle is fine (color deepening, texture firming, edges browning), dramatic is NOT required.
+- If two consecutive steps would look NEARLY IDENTICAL (no progression at all, exact same image) then combine them. But mild differences are perfectly acceptable.
 
 FOOD SHUFFLING BETWEEN STEPS (CRITICAL):
 - A real cook moves food while cooking. The food MUST NOT stay frozen in the same position.
@@ -700,6 +779,20 @@ CONTAINER REALISM RULE:
 - NEVER serve from the mixing bowl (transfer to the cooking vessel or serving plate).
 - NEVER cook in a plate (plates are for serving only).
 
+CONTAINER CONTINUITY RULE (CRITICAL — common failure):
+- Default behavior: REUSE the EXACT same container across consecutive steps. Not "a similar bowl", not "another mixing bowl" — the SAME bowl with the same material, same color, same size, same descriptor.
+- A container only changes when the recipe physically moves food to a different vessel. Acceptable transitions:
+  * mixing bowl → baking pan (pouring batter)
+  * baking pan → cooling rack → serving plate
+  * skillet → plate (serving cooked food)
+  * pot → bowl (ladling soup)
+- Unacceptable container changes:
+  * "glass mixing bowl" in step 1 → "ceramic mixing bowl" in step 2 (no transfer happened, just inconsistency)
+  * "stainless skillet" in step 3 → "cast iron skillet" in step 4 (cooking continues in the SAME pan)
+  * Any swap of material, color, or shape between steps where the food never actually left the vessel
+- When the SAME container is reused: write the EXACT same descriptor in visual_steps[].container — copy-paste it. "large clear glass mixing bowl" must remain "large clear glass mixing bowl" across every step that uses it. Never paraphrase.
+- The "position" field is where you describe what changed inside the SAME container (food shifted, color deepened, new ingredient folded in). Position changes ≠ container changes.
+
 FOOD MOVEMENT RULE (CRITICAL):
 - Between cooking steps food MUST change position or change container. A chef moves food while cooking.
 - NEVER keep food in the exact same position across two consecutive steps.
@@ -732,6 +825,14 @@ INGREDIENTS IMAGE:
 
 SECTION 3 - "pinterest_pins": 3 pins with title, description, image_prompt.
 
+INGREDIENT RECONCILIATION RULE (CRITICAL — common failure):
+- The "ingredients" array is generated AFTER "steps" in the JSON below for a reason. Write the steps first, completely, with all the techniques and ingredient mentions you naturally use. THEN derive "ingredients[]" by scanning every step text and listing every ingredient you referenced — each with a real quantity and unit.
+- If a step says "Sift the flour and cinnamon and baking soda" — then flour AND cinnamon AND baking soda must each be a separate entry in ingredients[] with a measurement.
+- If a step mentions salt, vanilla, water, oil for greasing, eggs to brush — they all belong in ingredients[] with quantities. Nothing is implied.
+- After writing ingredients[], read every step ONE more time and check: every solid, liquid, spice, leavener, garnish, and aromatic mentioned in any step is in your list. If something is missing — add it.
+- Do NOT use the unit "units" for eggs — write quantity as "4 large" with unit empty, or quantity "4" unit "large eggs". Same for whole-item things like "6 cookies", "1 lemon" — never "units".
+- Frosting / glaze / sauce ratios must be realistic. Cream cheese frosting needs roughly 1 part sweetener to 4 parts cream cheese (e.g., 16 oz cream cheese pairs with about 1/2 cup of liquid sweetener PLUS 1-2 cups powdered sugar, NOT 2 tablespoons of syrup alone). Sense-check ratios before finalizing.
+
 OUTPUT THIS EXACT JSON (no markdown, no explanation):
 {
   "recipe": {
@@ -742,13 +843,13 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "meta_description": "max 155 chars",
     "recipe_card_description": "450-480 chars, include: easy, quick, simple, best, healthy",
     "intro": "3+ paragraphs separated by newlines",
-    "ingredients": [{"name": "CLEAN ingredient name ONLY — no preparation, no state, no skin/peel notes. Examples GOOD: 'Yukon Gold potato', 'Duke's Mayonnaise', 'red onion', 'celery stalk', 'apple cider vinegar'. Examples BAD (do NOT do): 'Potato with skin', 'Onion, finely diced', 'Mayo (full-fat)', 'Eggs (room temp)'. The name is the LABEL a shopper would write. Capitalize sensibly (proper brand names yes, generic items lowercase or sentence-case).", "quantity": "amount + unit, e.g. '3 pounds', '1.5 cups', '2 tablespoons', '4 large'", "description": "PREPARATION + STATE detail goes here, never in the name. Sentence-style, ends with a period. Examples: 'Scrubbed, skin on, cut into 1-inch cubes for a waxier texture.', 'Hard-boiled and chopped to add richness to the base.', 'Finely diced for a necessary crunch.', 'Bring to room temperature before whisking.' If there's no special prep, write a short reason-to-use sentence instead of leaving empty."}],
     "hero_prompt": "Describe the FULLY COOKED finished dish with natural imperfections.",
     "hero_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
     "ingredients_prompt": "Natural asymmetric scatter of raw ingredients across the ENTIRE background edge-to-edge. Use each item in its real form when possible (whole vegetables, bottles and boxes standing upright). Only finely chopped/grated items go in small ramekins. Mix heights and distances. NO grid, NO matching bowls for every ingredient.",
     "ingredients_seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []},
     "steps": [{"number": 1, "title": "specific action", "description": "2 to 3 SHORT paragraphs SEPARATED BY \\n\\n (literal newline-newline in the JSON string). Each paragraph 50 to 80 words. Paragraph 1 = the actions to take (specific temps + times + technique). Paragraph 2 = the sensory cues to watch for (what you'll see, smell, hear). Optional paragraph 3 = the why-it-matters and the failure mode if you miss the window (max 60 words). Do NOT merge these into one block. Sentences max 20 words each. ~1 step in every 4 also carries a parenthetical first-person testing note (e.g., '(I tried 400°F first — top set before the center cooked. 375°F is the fix.)') in paragraph 1 or 2.", "tip": "ADDITIONAL practical tip — must NOT repeat anything from description. 15 to 30 words.", "image_prompt": "Describe natural imperfect food state after this step.", "seo": {"filename": "", "alt_text": "", "title": "", "description": "", "keywords": []}}],
     "equipment": [{"name": "tool name", "notes": "1 sentence covering BOTH what it does for this recipe AND what to look for when buying or substituting (size in quarts/inches, material, the failure mode of using the wrong one). Example: 'A heavy-bottomed 6-quart Dutch oven distributes heat evenly so the bottom doesn't scorch — a thin-walled stockpot will hot-spot and burn the sugars.'"}],
+    "ingredients": [{"name": "CLEAN ingredient name ONLY — no preparation, no state, no skin/peel notes. Examples GOOD: 'Yukon Gold potato', 'Duke's Mayonnaise', 'red onion', 'celery stalk', 'apple cider vinegar'. Examples BAD (do NOT do): 'Potato with skin', 'Onion, finely diced', 'Mayo (full-fat)', 'Eggs (room temp)'. The name is the LABEL a shopper would write. Capitalize sensibly (proper brand names yes, generic items lowercase or sentence-case).", "quantity": "amount + unit, e.g. '3 pounds', '1.5 cups', '2 tablespoons', '4 large'", "description": "PREPARATION + STATE detail goes here, never in the name. Sentence-style, ends with a period. Examples: 'Scrubbed, skin on, cut into 1-inch cubes for a waxier texture.', 'Hard-boiled and chopped to add richness to the base.', 'Finely diced for a necessary crunch.', 'Bring to room temperature before whisking.' If there's no special prep, write a short reason-to-use sentence instead of leaving empty."}],
     "why_this_works": "2 SHORT paragraphs SEPARATED BY \\n\\n. Each paragraph 50 to 80 words. Total 3 to 4 sentences explaining the science or technique that makes this recipe work — specific ingredient interactions, cooking temperatures, timing tricks. Mention 2 to 3 concrete details (e.g., 'Resting the dough for 30 minutes lets the gluten relax, so it rolls thinner without snapping back. Baking at 425°F triggers the Maillard reaction faster than 375°F'). Include 1 internal link to a related recipe naturally. Sentences max 20 words.",
     "substitutions": [{"ingredient": "ingredient name", "swap": "what to use instead", "note": "1-2 sentences on HOW the result differs (texture / flavor / outcome) AND a ratio or adjustment if needed (e.g., 'use 3/4 the amount because it's denser'). Be specific — never write 'works fine'."}],
     "pro_tips": ["6 to 8 entries — each a complete 1 to 2 sentence instruction (15 to 35 words) with at least ONE concrete data point (temperature, time, measurement, brand, sensory cue). Mix categories across the array: technique, ingredient selection, equipment, timing, common mistake, finishing touch. No fragments, no one-word tips."],
@@ -763,6 +864,14 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
     "conclusion": ""
   },
   "visual_plan": {
+    "food_identity_canon": {
+      "primary_food": "name the recognizable whole-food protagonist, e.g. 'bone-in spiral-cut ham', 'round layer cake', 'soft folded tacos'. Set entire canon to null if amorphous (soup, sauce, scrambled mix).",
+      "silhouette": "overall shape in 1-2 sentences: 'classic pear/teardrop bone-in ham, ~9-inch length, bone protruding from wider end at 30°', '9-inch round cake, 2-inch tall, level top', 'soft U-fold tacos, 5-inch tortilla'.",
+      "size": "relative to container: 'fills ~70% of a 13×9 roasting pan', '6-inch round cake takes up center of plate', '5-inch folded tortillas, 3 across the plate'.",
+      "hallmark_features": ["2-4 DISTINGUISHING visual features that identify this food. For ham: 'spiral cuts around wider circumference', 'diamond-scored top dome', 'bone protruding from wider end at angle'. For cake: 'level top, no doming', '2 visible layers with frosting between'."],
+      "color_progression": "describe how color evolves across cook stages: 'raw pink → mahogany glaze' for ham, 'pale batter → golden top' for cake, 'raw beige tortilla → lightly charred fold' for tacos.",
+      "prep_search_query": "3-6 word Pinterest query for a real photo of the RAW/PRE-COOK state: 'raw bone-in spiral ham scored', 'unbaked layer cake batter pan', 'raw folded soft tacos uncooked'."
+    },
     "ingredients_image": {
       "layout": "Natural asymmetric scatter edge-to-edge, NO grid, NO circle, NO matching bowls. Specify WHICH items stay in their whole form (whole vegetables, bottles/boxes/jars standing upright with visible brand labels) versus WHICH go in small ramekins (ONLY chopped herbs, spices, grated cheese). Items at different heights and different distances. For every packaged product (oils, spices, sauces, flours, sugars, canned goods) specify a believable fake brand name so the image shows real-looking packaging.",
       "camera_angle": "slight overhead (30-degree)",
@@ -774,14 +883,29 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
       "camera_angle": "choose best angle for this step",
       "visible_ingredients": [{"name": "", "state": "", "placement": "where in container"}],
       "forbidden_ingredients": ["ingredients NOT yet added"],
-      "food_state": "detailed appearance with natural imperfections",
-      "position": "how food moved from previous step (flipped/rotated/shifted/tilted)",
-      "arrangement": "overall composition with casual non-symmetrical layout"
+      "food_state": "detailed appearance. If food_identity_canon is non-null AND this step contains primary_food, COPY-PASTE the silhouette + size + hallmark_features descriptors VERBATIM at the start, then add what's specific to this step.",
+      "shape_change": "true|false — true ONLY if step physically transforms the silhouette (slicing/mashing/pouring batter to new vessel/folding). false for cosmetic changes (basting/scoring/glazing/garnishing).",
+      "composition": {
+        "subject_placement": "quadrant + frame coverage: 'center-left, fills 65% of frame width'",
+        "subject_orientation": "how oriented: 'spiral-cut side facing camera, bone end angled top-right at 30°'",
+        "secondary_elements": [{"what": "thyme sprigs", "where": "scattered around the base of the ham, NOT on top", "count": "3-4 sprigs visible"}],
+        "negative_space": "what's empty: 'top-right of pan empty', 'back-right shows tile wall'",
+        "depth": "front/back: 'ham sits 2 inches from front pan edge, cast soft shadow back-left'"
+      },
+      "position": "how food moved from previous step (flipped/rotated/shifted/tilted) — KEEP for backward compat with prompt-builder",
+      "arrangement": "overall composition — KEEP for backward compat"
     }],
     "hero_image": {
-      "base_description": "finished dish, natural look",
+      "base_description": "finished dish, natural look. If food_identity_canon is non-null, INCLUDE the silhouette + hallmark_features VERBATIM here.",
       "container": "plate or serving dish",
       "camera_angle": "45-degree angle",
+      "composition": {
+        "subject_placement": "quadrant + frame coverage",
+        "subject_orientation": "how oriented",
+        "secondary_elements": [{"what": "", "where": "", "count": ""}],
+        "negative_space": "what's empty",
+        "depth": "front/back relationships"
+      },
       "arrangement": "natural plating, casual garnish",
       "allowed_additions": [],
       "forbidden": ["raw ingredients", "extra bowls", "utensils"]
@@ -797,28 +921,13 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
 // 12. PINTEREST PROMPT — dedicated to verified generator
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_VG_PINTEREST_PROMPT = `Create a Pinterest food pin using THREE uploaded reference images:
+export const DEFAULT_VG_PINTEREST_PROMPT = `A vertical Pinterest food pin with a professional, eye-catching design. The pin shows the recipe "{{recipe_title}}" with the title "{{pin_title}}" prominently displayed and the website {{website}} as a small footer credit.
 
-IMAGE ROLES:
-1. FIRST image = DESIGN TEMPLATE (layout reference only — copy the text placement and section arrangement and color scheme and font style but NOT the food photos in it)
-2. SECOND image = HERO PHOTO (the actual finished dish — use this REAL photo in the pin)
-3. THIRD image = SERVING/SLICE PHOTO (close-up portion showing inside detail — use this REAL photo in the pin)
+Three reference images are attached. The first image is the design template — copy its exact layout: where text goes, where photo areas are, the color scheme, the typography, and the section arrangement. Do not use the food from the template. The second image is the real hero photo of the finished dish. The third image is the real serving or slice close-up showing inside detail. The pin must use the food from images two and three placed into the photo areas of the template's layout — if the template has two photo zones, put the hero in one and the serving in the other; if it has one, split it to show both photos.
 
-CRITICAL: The food in the SECOND and THIRD images are the REAL recipe photos. You MUST use BOTH of them in the final pin. Do NOT generate new food images. Do NOT use the food from the first template image. The template is ONLY for layout and style reference.
+The food photos in images two and three must appear unmodified — preserve their backgrounds, colors, lighting, and composition exactly as captured. The text on the pin should be readable, well-placed, and match the template's typography style.
 
-Title text on the pin: "{{pin_title}}"
-Website: {{website}}
-
-RULES:
-- Copy the LAYOUT from the template: where text goes and where photos go and colors and fonts
-- Place the HERO photo (image 2) and SERVING photo (image 3) into the photo areas of the layout
-- If the template has two photo areas then put hero in one and serving in the other
-- If the template has one photo area then split it to show both hero and serving photos
-- The food must come from image 2 and image 3 ONLY — never from the template
-- Do NOT replace or modify the background of the food photos
-- Text must be readable and well-placed matching the template style
-- Vertical Pinterest format
-- Professional eye-catching design`;
+Critical: the food in the final pin comes only from images two and three, never from the template. No text overlays beyond the title and footer. No watermark, no logo.`;
 
 
 // ─────────────────────────────────────────────────────────────

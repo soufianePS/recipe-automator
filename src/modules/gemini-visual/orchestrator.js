@@ -33,7 +33,7 @@ import { validateVisualPlan } from '../verified-generator/visual-planner.js';
 import { VGStats } from '../verified-generator/vg-stats.js';
 import { sanitizeRecipeJSON, FILENAMES } from '../base-orchestrator.js';
 import { scrapePinterestImages } from './pinterest-scraper.js';
-import { buildGVRecipePrompt, resolveBaseTemplate, describeBaseTemplate } from './prompts-gv.js';
+import { buildGVRecipePrompt, resolveBaseTemplate, describeBaseTemplate, buildServingPrompt } from './prompts-gv.js';
 import { GV_VOICES, pickVoice } from './voice-pool.js';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import { join, dirname, basename } from 'path';
@@ -95,6 +95,7 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
       [STATES.GENERATING_INGREDIENTS]: () => this._stepGeminiIngredients(),
       [STATES.GENERATING_STEPS]:       () => this._stepGeminiStep(),
       [STATES.GENERATING_HERO]:        () => this._stepGeminiHero(),
+      [STATES.GENERATING_SERVING]:     () => this._stepGeminiServing(),
       [STATES.GENERATING_PINS]:        () => this._stepGeminiPins(),
       [STATES.COMPLETED]: async () => {
         // Reset chat marker so the next recipe gets a fresh conversation
@@ -149,7 +150,7 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
     const recipe = state.recipeJSON || {};
     const stepsCount = state.steps?.length || 0;
     const pinsCount  = state.pinterestPins?.length || 0;
-    const total = 1 + stepsCount + 1 + pinsCount; // ingredients + steps + hero + pins
+    const total = 1 + stepsCount + 1 + 1 + pinsCount; // ingredients + steps + serving + hero + pins
 
     const intro = [
       `You are a professional food photographer with a recognizable, consistent visual style.`,
@@ -159,14 +160,16 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
       ``,
       `In this conversation I will ask you to generate ${total} photorealistic food photography images, ONE AT A TIME, in this exact order:`,
       ` 1. Ingredients flatlay (raw ingredients in small bowls on the kitchen surface)`,
-      ` 2-${stepsCount + 1}. ${stepsCount} cooking step images, in cooking-progression order`,
-      ` ${stepsCount + 2}. Hero image — finished plated dish`,
-      pinsCount ? ` ${stepsCount + 3}-${total}. ${pinsCount} Pinterest pin images (vertical 2:3, with title overlay)` : '',
+      ` 2-${stepsCount + 1}. ${stepsCount} cooking step images — PURE COOKING ONLY (active heat, transformation, cookware in use). NO plating shots in this group.`,
+      ` ${stepsCount + 2}. Hero image — wide magazine-cover plated dish`,
+      ` ${stepsCount + 3}. Serving close-up — tighter intimate "money shot" of the finished dish (forkful / slice / pour / steam detail). Distinct from the hero, same dish.`,
+      pinsCount ? ` ${stepsCount + 4}-${total}. ${pinsCount} Pinterest pin images (vertical 2:3, with title overlay)` : '',
       ``,
       `CRITICAL CONSISTENCY RULES:`,
       `- Every image must use the SAME kitchen surface, lighting direction, color grading, and cookware as the references I attach.`,
       `- Whenever I attach a previous step image, treat it as ground truth for the food's appearance — keep the same chicken / vegetables / sauce color / sear level evolving naturally between steps.`,
       `- Look at every image you have generated earlier in this conversation before producing the next one. They are part of the visual canon for this recipe.`,
+      `- Step images are PURE COOKING (active transformation, cookware in use). The hero and serving close-up are SEPARATE turns — never anticipate them inside a step image.`,
       `- Photorealistic, magazine food-photography style. Soft natural side light, shallow DoF, real steam/glaze/sear, no plastic look. No text or logo overlays unless I ask for one.`,
       ``,
       `I will send each prompt with the relevant background and previous images attached. Acknowledge with a single short sentence (no preamble), then I will send the first prompt.`,
@@ -214,20 +217,22 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
   _buildConsistencyRulesText(state) {
     const stepsCount = state.steps?.length || 0;
     const pinsCount  = state.pinterestPins?.length || 0;
-    const total = 1 + stepsCount + 1 + pinsCount; // ingredients + steps + hero + pins
+    const total = 1 + stepsCount + 1 + 1 + pinsCount; // ingredients + steps + serving + hero + pins
     return [
       `Now I will follow up with ${total} image-generation requests in this same conversation, ONE AT A TIME, in this order:`,
       ` 1. Ingredients flatlay (raw ingredients on the kitchen surface — still life)`,
-      ` 2-${stepsCount + 1}. ${stepsCount} cooking step images, in cooking-progression order (active cooking, motion, heat — visually distinct from the flatlay)`,
-      ` ${stepsCount + 2}. Hero image — finished plated dish`,
-      pinsCount ? ` ${stepsCount + 3}-${total}. ${pinsCount} Pinterest pin images (vertical 2:3, with title overlay)` : '',
+      ` 2-${stepsCount + 1}. ${stepsCount} cooking step images, in cooking-progression order — PURE COOKING ONLY (active heat, transformation, cookware in use). NO plating in this group.`,
+      ` ${stepsCount + 2}. Hero image — wide magazine-cover plated dish`,
+      ` ${stepsCount + 3}. Serving close-up — tighter "money shot" of the SAME finished dish (forkful / slice / pour / steam detail). Distinct angle and framing from the hero.`,
+      pinsCount ? ` ${stepsCount + 4}-${total}. ${pinsCount} Pinterest pin images (vertical 2:3, with title overlay)` : '',
       ``,
       `CRITICAL CONSISTENCY RULES for every upcoming image:`,
       `- ONE IMAGE PER TURN. When I ask for image N, produce EXACTLY ONE image — never a grid, never multiple variations, never anticipate future steps. I will request each image individually in its own turn.`,
       `- Same kitchen surface, same lighting direction, same color grading, same cookware family across all images.`,
       `- When I attach a previous step image, treat it as ground truth for the food's appearance — keep the food evolving naturally between steps (sear deepens, sauce thickens, etc., not random restarts).`,
       `- Look at every image you have generated earlier in this conversation before producing the next one. They are part of the visual canon for this recipe.`,
-      `- Step images must be visually DISTINCT from the ingredients flatlay — process shots with active cooking, never another still-life of raw ingredients.`,
+      `- Step images are PURE COOKING — visually DISTINCT from the ingredients flatlay AND from the hero / serving plated shots. Never plate or garnish in a step image.`,
+      `- The serving close-up is the SAME finished dish as the hero, just a tighter frame (a forkful, a slice, a pour). Same food, same garnish, same level of doneness — only the camera angle and framing change.`,
       `- Photorealistic, magazine food-photography style. Soft natural side light, shallow DoF, real steam/glaze/sear, no plastic look. No text or logo overlays unless I ask.`,
       ``,
       `Acknowledge with a single short sentence (no preamble), then I will send the first image prompt.`
@@ -263,10 +268,12 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
   _aspectLabel(setting) {
     const v = (setting || '').toString().toUpperCase();
     if (v === 'LANDSCAPE' || v === '16:9') return '16:9 landscape';
+    if (v === 'LANDSCAPE_4_3' || v === '4:3') return '4:3 landscape';
     if (v === 'SQUARE' || v === '1:1') return '1:1 square';
-    if (v === '3:4') return '3:4 portrait';
+    if (v === 'PORTRAIT_3_4' || v === '3:4') return '3:4 portrait';
+    if (v === 'PORTRAIT' || v === '9:16') return '9:16 vertical';
     if (v === '2:3') return '2:3 vertical';
-    return '4:5 portrait';
+    return '9:16 vertical';
   }
 
   // ───────────────────────────────────────────────────────────────────
@@ -344,29 +351,23 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
     Logger.step('GeminiVisual', `Step ${idx + 1}/${state.steps.length}: ${visualStep.title}`);
     await this._ensureChatStarted(state);
 
-    const isLastStep = idx === state.steps.length - 1;
     const isFirstStep = idx === 0;
-    // Use VG's proven prompt builder; wrap with a small chat-aware prefix.
-    // firstStep flag injects explicit anti-flatlay rules so Gemini doesn't
-    // produce a near-duplicate of the ingredients photo for step 1.
-    const vgPrompt = buildStepPrompt(visualStep, vgSettings, { isLastStep, firstStep: isFirstStep });
-    const totalShots = 1 + (state.steps?.length || 0) + 1 + (state.pinterestPins?.length || 0);
+    // Steps are PURE COOKING in GV — no implicit "last step = serving" coupling.
+    // Plating / serving lives in a separate state (GENERATING_SERVING), and the
+    // hero is its own state too. So every step here uses the kitchen pool bg
+    // and the same prompt rules. firstStep keeps its anti-flatlay safeguard.
+    const vgPrompt = buildStepPrompt(visualStep, vgSettings, { firstStep: isFirstStep });
+    const totalShots = 1 + (state.steps?.length || 0) + 1 + 1 + (state.pinterestPins?.length || 0);
     const prompt = this._wrapForChat(vgPrompt, 'step', {
       hasRefs: true,
       shotNumber: 2 + idx,        // ingredients = 1, step idx+1 starts at 2
       totalShots
     });
 
-    // Background: serving step uses HERO bg, earlier steps use kitchen pool.
-    let backgroundPath;
-    let bgIndex = state.backgroundQueueIndex || 0;
-    if (isLastStep && state.selectedHeroBackground?.base64) {
-      backgroundPath = this._writeBgToTmp(state.selectedHeroBackground, `step-hero-bg-${Date.now()}.jpg`);
-    } else {
-      if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
-      bgIndex = bgIndex % state.backgroundQueue.length;
-      backgroundPath = this._prepareFile(state.backgroundQueue[bgIndex], `bg-${bgIndex + 1}`);
-    }
+    // Background: kitchen pool for every step (serving + hero have their own states/bgs).
+    if (!state.backgroundQueue?.length) throw new Error('No backgrounds in queue');
+    let bgIndex = (state.backgroundQueueIndex || 0) % state.backgroundQueue.length;
+    const backgroundPath = this._prepareFile(state.backgroundQueue[bgIndex], `bg-${bgIndex + 1}`);
 
     const outputDir = this._getOutputDir(state, settings);
     const outputPath = join(outputDir, step.seo?.filename || FILENAMES.stepDefault(idx));
@@ -401,7 +402,7 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
   async _stepGeminiHero() {
     const state = await StateManager.getState();
     if (state.heroImage?.base64) {
-      await StateManager.updateState({ status: STATES.SAVING_FILES });
+      await StateManager.updateState({ status: STATES.GENERATING_SERVING });
       return;
     }
     const settings = await StateManager.getSettings();
@@ -439,8 +440,71 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
 
     const imgBuf = readFileSync(outputPath);
     await StateManager.storeImageData('hero', imgBuf.toString('base64'));
-    await StateManager.updateState({ status: STATES.SAVING_FILES, heroImage: { base64: true } });
+    await StateManager.updateState({ status: STATES.GENERATING_SERVING, heroImage: { base64: true } });
     Logger.success('[GeminiVisual] hero image generated');
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // STATE: GENERATING_SERVING — close-up "money shot" of the finished
+  // dish. Distinct from the hero (tighter framing, more intimate angle).
+  // GV-only state; other modes skip this entirely.
+  // ───────────────────────────────────────────────────────────────────
+
+  async _stepGeminiServing() {
+    const state = await StateManager.getState();
+    if (state.servingImage?.base64) {
+      await StateManager.updateState({ status: STATES.SAVING_FILES });
+      return;
+    }
+    const settings = await StateManager.getSettings();
+    const vgSettings = this._getVGSettings(settings);
+    const servingState = state.visualPlan?.serving_image;
+    if (!servingState) {
+      // Legacy state: visual plans built before the serving step was added
+      // don't have serving_image. Skip serving and proceed to SAVING_FILES so
+      // resumed jobs aren't stuck — the hero already covers the money shot.
+      Logger.warn('[GeminiVisual] visual plan has no serving_image (legacy state) — skipping serving generation');
+      await StateManager.updateState({ status: STATES.SAVING_FILES });
+      return;
+    }
+
+    Logger.step('GeminiVisual', 'Generating serving close-up...');
+    await this._ensureChatStarted(state);
+
+    const vgPrompt = buildServingPrompt(servingState, vgSettings);
+    const totalShots = 1 + (state.steps?.length || 0) + 1 + 1 + (state.pinterestPins?.length || 0);
+    const prompt = this._wrapForChat(vgPrompt, 'serving', {
+      hasRefs: true,
+      shotNumber: 2 + (state.steps?.length || 0) + 1, // after ingredients + steps + hero
+      totalShots
+    });
+    // Same hero background — serving is the same kitchen scene as the hero,
+    // just a tighter angle. Using the hero bg keeps surface continuity.
+    const bgPath = this._writeBgToTmp(state.selectedHeroBackground, `serving-bg-${Date.now()}.jpg`);
+
+    const outputDir = this._getOutputDir(state, settings);
+    const outputPath = join(outputDir, state.recipeJSON?.serving_seo?.filename || FILENAMES.serving);
+
+    // Refs: hero (visual ground truth for the food appearance) + last step
+    // (continuity with the cooking sequence). Together they pin down what the
+    // dish should look like, so Gemini only changes the framing.
+    const refs = [];
+    const heroFilename = state.recipeJSON?.hero_seo?.filename || FILENAMES.hero;
+    const heroPath = join(outputDir, heroFilename);
+    if (existsSync(heroPath)) refs.push(heroPath);
+    if (state.steps?.length > 0) {
+      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
+      if (lastStepPath && existsSync(lastStepPath)) refs.push(lastStepPath);
+    }
+
+    const aspect = this._aspectLabel(settings.servingAspectRatio || settings.heroAspectRatio || 'PORTRAIT');
+    const ok = await this.gemini.generate(prompt, bgPath, refs, aspect, outputPath);
+    if (!ok) throw new Error('Gemini serving generation failed after retries');
+
+    const imgBuf = readFileSync(outputPath);
+    await StateManager.storeImageData('serving', imgBuf.toString('base64'));
+    await StateManager.updateState({ status: STATES.SAVING_FILES, servingImage: { base64: true } });
+    Logger.success('[GeminiVisual] serving close-up generated');
   }
 
   // ───────────────────────────────────────────────────────────────────
@@ -688,11 +752,11 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
     await this.gemini.init();
     let responseText = '';
     try {
-      // deepResearch:true activates Outils → "Deep Research" before sending,
-      // so Gemini actually browses Food Network / Serious Eats / etc instead
-      // of relying on training data. Without this, the prompt's "web search
-      // is enabled" instruction is just a suggestion the model can ignore.
-      responseText = await this.gemini.startNewChat(prompt, imageRefs, { deepResearch: true });
+      // Note: NOT activating Deep Research — empirically it slowed Gemini down
+      // and frequently produced no usable response. Recipe-gen relies on the
+      // prompt's "web search is enabled" hint + Pinterest reference photos
+      // attached at the chat start. That's enough for grounded recipes.
+      responseText = await this.gemini.startNewChat(prompt, imageRefs);
     } catch (e) {
       throw new Error(`GV-Recipe: Gemini chat failed: ${e.message.split('\n')[0]}`);
     }
@@ -771,7 +835,34 @@ export class GeminiVisualOrchestrator extends VerifiedGeneratorOrchestrator {
       Logger.warn(`[GV-Recipe] nutrition fetch failed (non-fatal): ${e.message}`);
     }
 
+    // ── GV-specific: serving_image is required (VG's validator only checks
+    // ingredients/steps/hero, so we enforce it here in GV without touching
+    // the VG validator). serving_image is a CLOSE-UP money shot of the
+    // finished dish — distinct from the wide hero. ──
+    if (!rawVisualPlan?.serving_image || typeof rawVisualPlan.serving_image !== 'object') {
+      throw new Error('GV-Recipe: visual_plan.serving_image is missing — required for GV pipeline');
+    }
+    const servingImg = rawVisualPlan.serving_image;
+    if (!servingImg.base_description) {
+      Logger.warn('[GV-Recipe] serving_image.base_description missing — using fallback');
+      servingImg.base_description = `intimate close-up of ${recipe.post_title || state.recipeTitle}`;
+    }
+    if (!recipe.serving_seo) {
+      // Default serving_seo derived from hero_seo so file naming and alt text
+      // are still SEO-friendly even if the AI forgot the field.
+      const heroSeo = recipe.hero_seo || {};
+      recipe.serving_seo = {
+        filename: (heroSeo.filename || FILENAMES.serving).replace(/\.(jpg|jpeg|png|webp)$/i, m => `-serving${m}`),
+        alt_text: `${recipe.post_title || state.recipeTitle} — close-up serving shot`
+      };
+      Logger.warn('[GV-Recipe] recipe.serving_seo missing — defaulted from hero_seo');
+    }
+
     const visualPlan = validateVisualPlan(rawVisualPlan, vgSettings);
+    // VG's validator returns a NEW object that drops unknown keys (only
+    // ingredients_image/visual_steps/hero_image). Re-attach serving_image so
+    // _stepGeminiServing can read it from state.visualPlan.serving_image.
+    visualPlan.serving_image = servingImg;
 
     // Build steps array (merge recipe step text + visual plan + SEO) — same as VG
     const recipeSteps = recipe.steps || [];

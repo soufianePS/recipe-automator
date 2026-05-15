@@ -13,6 +13,7 @@
       'GENERATING_STEPS': 'Generating step images',
       'GENERATING_INGREDIENTS': 'Generating ingredients image',
       'GENERATING_HERO': 'Generating hero image',
+      'GENERATING_SERVING': 'Generating serving close-up',
       'SAVING_FILES': 'Saving files to disk',
       'UPLOADING_MEDIA': 'Uploading to WordPress',
       'PUBLISHING_DRAFT': 'Creating draft post',
@@ -33,7 +34,7 @@
 
     const STATE_ORDER = [
       'LOADING_JOB', 'SELECTING_BACKGROUND', 'GENERATING_RECIPE_JSON', 'PLANNING_VISUAL_STATES', 'CREATING_FOLDERS',
-      'GENERATING_STEPS', 'GENERATING_INGREDIENTS', 'GENERATING_HERO',
+      'GENERATING_STEPS', 'GENERATING_INGREDIENTS', 'GENERATING_HERO', 'GENERATING_SERVING',
       'SAVING_FILES', 'UPLOADING_MEDIA', 'PUBLISHING_DRAFT', 'GENERATING_PINS', 'UPLOADING_PINS', 'UPDATING_SHEET', 'COMPLETED'
     ];
 

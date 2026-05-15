@@ -210,6 +210,10 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
     { type: 'heading', textKey: 'storage', fallback: 'Storage Instructions', level: 2 },
     { type: 'storage', fontSize: '18px', lineHeight: '1.85' },
     { type: 'spacer', height: '30px' },
+    // Serving close-up — appetite trigger right before the recipe card.
+    // No-op for modes that don't generate a serving image (block self-skips).
+    { type: 'serving-image' },
+    { type: 'spacer', height: '30px' },
     // Recipe card
     { type: 'recipe-card' },
     { type: 'spacer', height: '30px' },
@@ -283,6 +287,13 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
       case 'ingredients-image':
         if (state.ingredientsImage?.wpImageUrl) {
           blocks.push(imgBlock(state.ingredientsImage.wpImageUrl, recipe?.ingredients_seo?.alt_text || 'Ingredients', state.ingredientsImage.wpImageId));
+        }
+        break;
+      case 'serving-image':
+        // GV-only block — silently skipped if no serving image was generated
+        // (other modes don't populate state.servingImage).
+        if (state.servingImage?.wpImageUrl) {
+          blocks.push(imgBlock(state.servingImage.wpImageUrl, recipe?.serving_seo?.alt_text || `${state.recipeTitle} — close-up`, state.servingImage.wpImageId));
         }
         break;
       case 'ingredients-list':

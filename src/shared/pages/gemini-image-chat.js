@@ -14,7 +14,8 @@
 
 import { Logger } from '../utils/logger.js';
 import { removeWatermarkInPlace } from '../utils/watermark-remover.js';
-import { writeFileSync, mkdirSync, existsSync, statSync, unlinkSync } from 'fs';
+import { attachGeminiListener } from '../utils/gemini-network-listener.js';
+import { writeFileSync, mkdirSync, existsSync, statSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
@@ -70,6 +71,10 @@ export class GeminiImageChat {
     this.page = null;
     this._userMsgCountBefore = 0;
     this._modelResponseCountBefore = 0;
+    // Network listener — set in init(), used by startNewChat() and generate()
+    // to read text + image responses straight from Gemini's API streams,
+    // bypassing the brittle DOM/canvas extraction.
+    this._netListener = null;
     // Last line of defence — MD5s of every image successfully downloaded for
     // the CURRENT recipe. If a "new" image we extract has a hash already in
     // this set, it's a known false positive (Gemini's chat re-mounted a prior
@@ -103,6 +108,14 @@ export class GeminiImageChat {
       await this.page.waitForSelector(SEL.promptInput, { timeout: 15000 });
     } catch {
       await this._dismissWelcome();
+    }
+
+    // Attach the network listener once. It listens on this.page for the rest
+    // of the chat's lifetime (until close()). Survives page.goto() — the
+    // listener binds to the page, not the navigation context.
+    if (!this._netListener) {
+      this._netListener = attachGeminiListener(this.page);
+      Logger.info('[GeminiImageChat] network listener attached');
     }
     Logger.info('[GeminiImageChat] page ready');
     return this;
@@ -168,13 +181,36 @@ export class GeminiImageChat {
       }
     }
 
+    // Reset network listener state before sending — fresh capture for this turn
+    if (this._netListener) this._netListener.reset();
+
     // Send the intro (with optional refs attached)
     await this._typePrompt(introText);
     await this._clickSend();
-    await this._waitForTextResponse();
-    // Extract Gemini's text response — used by single-conversation flow where
-    // the intro IS the recipe-gen prompt and the response is the recipe JSON.
-    const responseText = await this._extractLastResponseText();
+
+    // Read the response from the network listener (StreamGenerate API),
+    // not from the DOM — much more reliable. Falls back to DOM scraping
+    // only if the listener captured nothing (e.g. listener wasn't attached
+    // for legacy callers).
+    let responseText = '';
+    if (this._netListener) {
+      try {
+        const snap = await this._netListener.waitForResponse({
+          timeout: 600000,
+          quietMs: 4000,
+          minTextLen: 1,
+        });
+        responseText = snap.text || '';
+        Logger.info(`[GeminiImageChat] response via network listener: ${responseText.length} chars (${snap.bodiesSeen} bodies, ${snap.rawChunks} chunks)`);
+      } catch (e) {
+        Logger.warn(`[GeminiImageChat] network listener wait failed (${e.message.split('\n')[0]}) — falling back to DOM`);
+        await this._waitForTextResponse();
+        responseText = await this._extractLastResponseText();
+      }
+    } else {
+      await this._waitForTextResponse();
+      responseText = await this._extractLastResponseText();
+    }
     Logger.success(`[GeminiImageChat] chat initialized, ready for image generations (response ${responseText.length} chars)`);
     return responseText;
   }
@@ -232,6 +268,10 @@ export class GeminiImageChat {
   }
 
   async close() {
+    if (this._netListener) {
+      try { this._netListener.dispose(); } catch {}
+      this._netListener = null;
+    }
     if (this.page) {
       try { await this.page.close(); } catch {}
       this.page = null;
@@ -332,38 +372,62 @@ export class GeminiImageChat {
           await this._selectImageTool(); // throws on failure
         }
 
+        // Reset network listener BEFORE send so this turn's image bytes
+        // accumulate cleanly (no leftovers from prior turn).
+        if (this._netListener) this._netListener.reset();
+
         await this._clickSend();
 
-        // 3b) Confirm submission landed — user message count must increase
+        // Confirm submission landed — user message count must increase
         const submitted = await this._waitForUserMessage(15000);
         if (!submitted) {
           throw new Error('Send did not land — user message count never increased (button stuck disabled?)');
         }
         Logger.debug('[GeminiImageChat] submission confirmed (user message landed)');
 
-        // 4) Wait for image to appear in the NEW response
-        const newImageSrc = await this._waitForNewImage();
-        if (!newImageSrc) {
-          throw new Error('No new image appeared in chat after send');
+        // Wait for raw image bytes via the network listener (intercepts the
+        // googleusercontent.com response directly). Falls back to DOM/canvas
+        // extraction only if the listener isn't attached for any reason.
+        let imgBuf = null;
+        let imgSource = '';
+        if (this._netListener) {
+          try {
+            const captured = await this._netListener.waitForImage({
+              timeout: 600000,
+              minBytes: 30000,
+              quietMs: 2500,
+            });
+            imgBuf = captured.buf;
+            imgSource = `network:${captured.url.substring(0, 80)}`;
+          } catch (e) {
+            Logger.warn(`[GeminiImageChat] network image wait failed (${e.message.split('\n')[0]}) — falling back to DOM/canvas`);
+          }
+        }
+        if (!imgBuf) {
+          const newImageSrc = await this._waitForNewImage();
+          if (!newImageSrc) throw new Error('No new image appeared in chat after send');
+          await this._downloadImageToFile(newImageSrc, outputPath);
+          if (!existsSync(outputPath)) throw new Error('Image not written to disk');
+          imgBuf = readFileSync(outputPath);
+          imgSource = 'dom-canvas';
+        } else {
+          // Write the raw bytes from the network capture directly
+          try { mkdirSync(dirname(outputPath), { recursive: true }); } catch {}
+          writeFileSync(outputPath, imgBuf);
+          // Strip Gemini watermark in place (mirrors the DOM path's behaviour)
+          await removeWatermarkInPlace(outputPath);
+          imgBuf = readFileSync(outputPath); // re-read post-strip for hash
         }
 
-        // 5) Download
-        await this._downloadImageToFile(newImageSrc, outputPath);
-
-        // 6) Validate output
-        if (!existsSync(outputPath)) {
-          throw new Error('Image not written to disk');
-        }
+        // Validate output
         const size = statSync(outputPath).size;
         if (size < 5000) {
           throw new Error(`Image too small (${size} bytes) — likely corrupted`);
         }
 
-        // 7) Defensive MD5 dedup — if this image is a duplicate of one we
-        // already saved for this recipe, Gemini didn't actually generate
-        // (probably a virtual-scroll re-mount of a prior turn's image).
-        // Delete the file and retry — bumping our retry count protects
-        // us from saving N copies of the same hero shot as different steps.
+        // Defensive MD5 dedup — catches Gemini re-rendering a prior turn's
+        // image even byte-identically (the new flow doesn't make this less
+        // likely, just easier to spot).
         const hash = await this._fileHash(outputPath);
         if (this._seenImageHashes.has(hash)) {
           try { unlinkSync(outputPath); } catch {}
@@ -371,7 +435,7 @@ export class GeminiImageChat {
         }
         this._seenImageHashes.add(hash);
 
-        Logger.success(`[GeminiImageChat] generated ${(size / 1024).toFixed(0)}KB md5=${hash.slice(0, 8)} → ${outputPath}`);
+        Logger.success(`[GeminiImageChat] generated ${(size / 1024).toFixed(0)}KB md5=${hash.slice(0, 8)} via ${imgSource} → ${outputPath}`);
         return true;
       } catch (err) {
         if (err instanceof GeminiRateLimitError || err instanceof GeminiAccountBlockedError) {
