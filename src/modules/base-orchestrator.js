@@ -1159,26 +1159,19 @@ export class BaseOrchestrator {
     const templatePath = templateImages[pendingIdx % templateImages.length];
     Logger.info(`Using template: ${basename(templatePath)}`);
 
-    // Build context images: hero + last step (generator) or hero only (scraper)
+    // Build context images: HERO ONLY. The hero is the ground-truth visual
+    // for the finished dish — every pin should remix it (different framing,
+    // crop, or cut-view) rather than mixing in mid-cooking step photos which
+    // make pins look "wrong" (raw food in a pin = bad CTR).
     // NOTE: ingredients passed as TEXT in prompt via @ingredients, not as image
     const contextPaths = [];
     const outputDir = this._getOutputDir(state, settings);
 
-    // Add hero image as context
+    // Add hero image as the single visual reference
     const heroFilename = state.recipeJSON?.hero_seo?.filename || FILENAMES.hero;
     const heroPath = join(outputDir, heroFilename);
     if (existsSync(heroPath)) {
       contextPaths.push(heroPath);
-    }
-
-    // Generator mode: also add last step image
-    if (!isScraper && state.steps?.length > 0) {
-      const lastStep = state.steps[state.steps.length - 1];
-      const lastStepFilename = lastStep.seo?.filename || FILENAMES.stepDefault(state.steps.length - 1);
-      const lastStepPath = join(outputDir, lastStepFilename);
-      if (existsSync(lastStepPath)) {
-        contextPaths.push(lastStepPath);
-      }
     }
 
     // Build prompt with pin-specific variables
@@ -1187,8 +1180,18 @@ export class BaseOrchestrator {
     const rawSuffix = settings.pinterestPromptSuffix || '';
     const heroPrompt = state.recipeJSON?.hero_prompt || '';
     const recipeTitle = state.recipeJSON?.post_title || state.recipeTitle || '';
-    const pinPrompt = pin.image_prompt
-      || `Pinterest pin image for "${recipeTitle}". ${heroPrompt}. Title overlay: "${pin.title}". Styled like the uploaded template reference image.`;
+
+    // Pin #2 (index 1) is a money-shot variation of the hero — show the dish
+    // cut/sliced/forked to reveal interior texture. Pin #1 and #3 keep the
+    // AI-provided image_prompt or fall back to the hero shot. This boosts
+    // pin variety (Pinterest favors visual diversity within a series).
+    let pinPrompt;
+    if (pendingIdx === 1) {
+      pinPrompt = `Same dish and styling as the uploaded hero reference photo of "${recipeTitle}", but reframed as a close-up "money shot" that reveals the inside or texture of the food: a knife slicing through to show the interior, a fork lifting a bite, the dish split in half showing the filling/layers, sauce being poured, or steam rising. Tighter framing than the hero. Make it crave-worthy. Title overlay: "${pin.title}". Styled like the uploaded template reference image.`;
+    } else {
+      pinPrompt = pin.image_prompt
+        || `Pinterest pin image for "${recipeTitle}". ${heroPrompt}. Title overlay: "${pin.title}". Styled like the uploaded template reference image.`;
+    }
     // Extract website domain from settings for template branding
     const websiteUrl = settings.wpUrl || '';
     const websiteDomain = websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
