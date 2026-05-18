@@ -35,6 +35,11 @@ for (const dir of dirs) {
 // Initialize state manager (multi-site support)
 await StateManager.init();
 
+// Initialize Planifier (background ticks: weekly auto-regen + executor)
+const { Planifier } = await import('./modules/planifier/planifier.js');
+// NOTE: Planifier.init() is called below AFTER ctx is fully built, so the
+// executor tick can access the shared server context.
+
 // ══════════════════════════════════════════════════════════════
 // APP STATE
 // ══════════════════════════════════════════════════════════════
@@ -165,6 +170,11 @@ app.listen(PORT, () => {
   // Background tick for scheduled regen drips — DISABLED on user request.
   // To re-enable: uncomment the line below.
   // RegenScheduler.init(ctx);
+
+  // Arm the planifier ticks now that ctx is fully built.
+  // - weekly tick: regenerates J→J+horizon every Sunday
+  // - executor tick: runs due plan items if master switch ON
+  Planifier.init(ctx);
 });
 
 // Graceful shutdown

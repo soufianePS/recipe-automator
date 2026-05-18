@@ -15,6 +15,13 @@ import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orch
 import { GeminiVisualOrchestrator } from './modules/gemini-visual/orchestrator.js';
 import { RegenOrchestrator } from './modules/regen/regen-orchestrator.js';
 import { RegenScheduler } from './modules/regen/regen-scheduler.js';
+import { Planifier } from './modules/planifier/planifier.js';
+import { DolphinAnty } from './shared/utils/dolphin-anty.js';
+import { ACCOUNT_STATUSES, PIN_DISTRIBUTION_STRATEGIES } from './modules/planifier/default-config.js';
+import { readAllPools, summarizePool, markPinPosted, unmarkPinPosted, pickNextEligiblePin } from './modules/planifier/pin-pool.js';
+import { simulateSession, simulateMany } from './modules/planifier/browse-simulator.js';
+import { runPlanItem } from './modules/planifier/action-executor.js';
+import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { VERIFIED_GENERATOR_DEFAULTS } from './modules/verified-generator/prompts-verified.js';
@@ -674,6 +681,483 @@ export function setupRoutes(app, ctx) {
       res.json({ ok: true, ...result });
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  // PLANIFIER API
+  // ══════════════════════════════════════════════════════════════
+
+  // Metadata: account statuses, pin strategies (for dropdowns)
+  app.get('/api/planifier/meta', (req, res) => {
+    res.json({
+      accountStatuses: Object.entries(ACCOUNT_STATUSES).map(([key, v]) => ({ key, ...v })),
+      pinStrategies: Object.entries(PIN_DISTRIBUTION_STRATEGIES).map(([key, label]) => ({ key, label })),
+    });
+  });
+
+  app.get('/api/planifier/config', async (req, res) => {
+    try {
+      const config = await Planifier.getConfig();
+      res.json(config);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/planifier/config', async (req, res) => {
+    try {
+      if (!req.body || typeof req.body !== 'object') {
+        return res.status(400).json({ error: 'body must be a config object' });
+      }
+      const saved = await Planifier.saveConfig(req.body);
+      res.json({ ok: true, config: saved });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/planifier/enabled', async (req, res) => {
+    try {
+      const config = await Planifier.setEnabled(!!req.body?.enabled);
+      res.json({ ok: true, enabled: config.enabled });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Plans
+  app.get('/api/planifier/plan/:date', async (req, res) => {
+    try {
+      const plan = await Planifier.getPlan(req.params.date);
+      res.json(plan || { date: req.params.date, items: [], notFound: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/planifier/plan/:date/regenerate', async (req, res) => {
+    try {
+      const plan = await Planifier.regeneratePlan(req.params.date);
+      res.json({ ok: true, plan });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/planifier/plan/:date', async (req, res) => {
+    try {
+      await Planifier.deletePlan(req.params.date);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/planifier/plan/:date/items/:itemId', async (req, res) => {
+    try {
+      const updated = await Planifier.updatePlanItem(req.params.date, req.params.itemId, req.body || {});
+      res.json({ ok: true, item: updated });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.delete('/api/planifier/plan/:date/items/:itemId', async (req, res) => {
+    try {
+      const r = await Planifier.deletePlanItem(req.params.date, req.params.itemId);
+      res.json({ ok: true, ...r });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  // Run a plan item NOW (manual trigger). Fire-and-forget so the HTTP
+  // response returns immediately; the UI polls the plan endpoint for status.
+  app.post('/api/planifier/plan/:date/items/:itemId/run', async (req, res) => {
+    try {
+      const { date, itemId } = req.params;
+      const force = !!req.body?.force;
+      // Pre-check (synchronous) — same checks as runPlanItem but without side effects,
+      // so we can return a clear error to the user before the async run starts.
+      if (ctx.automationRunning) {
+        return res.status(409).json({ error: 'Another automation is running. Pause or wait for it to finish.' });
+      }
+      const plan = await Planifier.getPlan(date);
+      if (!plan) return res.status(404).json({ error: `No plan for ${date}` });
+      const item = plan.items.find(i => i.id === itemId);
+      if (!item) return res.status(404).json({ error: 'Item not found' });
+      if (item.status === 'in_progress') return res.status(409).json({ error: 'Already running' });
+      if (item.status === 'done' && !force) {
+        return res.status(409).json({ error: 'Already done. Use {force:true} to re-run.', alreadyDone: true });
+      }
+
+      // Kick off async execution
+      runPlanItem(date, itemId, ctx, { force, manual: true })
+        .then((r) => Logger.info(`[Planifier] manual run done — ${itemId}: ${JSON.stringify(r.result || {}).slice(0, 200)}`))
+        .catch(e => Logger.error(`[Planifier] manual run failed — ${itemId}: ${e.message}`));
+
+      res.json({ ok: true, started: true, itemId, type: item.type, site: item.site });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Add a new item to an existing day's plan (manual entry)
+  app.post('/api/planifier/plan/:date/items', async (req, res) => {
+    try {
+      const { date } = req.params;
+      const { type, site, accountId, scheduledAt, willPost, locked } = req.body || {};
+      if (!type || !site) return res.status(400).json({ error: 'type and site are required' });
+      if (type !== 'create-recipe' && type !== 'pinterest-session') {
+        return res.status(400).json({ error: 'type must be create-recipe or pinterest-session' });
+      }
+      if (type === 'pinterest-session' && !accountId) {
+        return res.status(400).json({ error: 'accountId required for pinterest-session' });
+      }
+      let plan = await Planifier.getPlan(date);
+      if (!plan) {
+        // Create empty plan for the date so we can append
+        plan = await Planifier.regeneratePlan(date);
+        // Wipe items so we start with just the manual one
+        plan.items = [];
+      }
+      // Resolve scheduledAt — accept "HH:MM" or full ISO
+      let scheduledIso = scheduledAt;
+      if (scheduledAt && /^\d{2}:\d{2}$/.test(scheduledAt)) {
+        const [y, m, d] = date.split('-').map(Number);
+        const [hh, mm] = scheduledAt.split(':').map(Number);
+        scheduledIso = new Date(y, m - 1, d, hh, mm, 0).toISOString();
+      } else if (!scheduledAt) {
+        // Default: now + 1 minute
+        scheduledIso = new Date(Date.now() + 60_000).toISOString();
+      }
+      // Lookup dolphinProfileId from config if pinterest-session
+      let dolphinProfileId = null;
+      if (type === 'pinterest-session') {
+        const cfg = await Planifier.getConfig();
+        const account = (cfg.sites?.[site]?.pinterestAccounts || []).find(a => a.id === accountId);
+        dolphinProfileId = account?.dolphinProfileId || null;
+      }
+      const newItem = {
+        id: randomUUID(),
+        type,
+        site,
+        accountId: accountId || null,
+        dolphinProfileId,
+        scheduledAt: scheduledIso,
+        status: 'pending',
+        willPost: willPost !== false && type === 'pinterest-session',
+        locked: !!locked,
+        manuallyAdded: true,
+      };
+      plan.items.push(newItem);
+      plan.items.sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+      // Save (overwrites the file)
+      const { savePlan } = await import('./modules/planifier/plan-storage.js');
+      await savePlan(date, plan);
+      res.json({ ok: true, item: newItem });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/planifier/randomize-week', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(14, Number(req.body?.days) || 7));
+      const dates = await Planifier.randomizeWeek(days);
+      res.json({ ok: true, dates });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/planifier/upcoming', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(31, Number(req.query.days) || 7));
+      const plans = await Planifier.getUpcoming(days);
+      res.json({ plans });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/planifier/preview', async (req, res) => {
+    try {
+      const { date, forceNoSkip } = req.body || {};
+      if (!date) return res.status(400).json({ error: 'date is required' });
+      const plan = await Planifier.previewPlan(date, { forceNoSkip: !!forceNoSkip });
+      res.json(plan);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // History
+  app.get('/api/planifier/history', async (req, res) => {
+    try {
+      const range = req.query.range || 'all';
+      const limit = Math.max(1, Math.min(2000, Number(req.query.limit) || 500));
+      const out = await Planifier.getHistory({ range, limit });
+      res.json(out);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/planifier/history', async (req, res) => {
+    try {
+      await Planifier.clearHistory();
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Browse session simulator — preview what a session looks like
+  app.post('/api/planifier/simulate-browse', async (req, res) => {
+    try {
+      const { site, override, runs } = req.body || {};
+      const config = await Planifier.getConfig();
+      const siteName = site || Object.keys(config.sites || {}).find(s => !s.startsWith('_'));
+      if (!siteName) return res.status(400).json({ error: 'No site available' });
+
+      // Build recipe titles list from pin-pool (most-recent first by publishedAt)
+      let recipeTitles = [];
+      try {
+        if (config.sites?.[siteName]?.useRecipeNamesAsKeywords) {
+          const { readSitePool } = await import('./modules/planifier/pin-pool.js');
+          const pool = await readSitePool(siteName, config);
+          recipeTitles = pool
+            .filter(r => r.topic)
+            .sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))
+            .map(r => r.topic);
+        }
+      } catch (e) {
+        Logger.warn(`[simulate-browse] recipe titles unavailable: ${e.message}`);
+      }
+
+      const one = simulateSession(config, siteName, override || {}, recipeTitles);
+      const agg = simulateMany(config, siteName, Math.max(1, Math.min(500, Number(runs) || 100)), override || {}, recipeTitles);
+      res.json({ ok: true, one, aggregate: agg, recipeTitlesAvailable: recipeTitles.length });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Pin Pool — read from Google Sheet, computed per-account assignment
+  app.get('/api/planifier/pin-pool', async (req, res) => {
+    try {
+      const config = await Planifier.getConfig();
+      const pool = await readAllPools(config);
+      const summary = summarizePool(pool);
+      res.json({ ok: true, pool, summary });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/planifier/pin-pool/next', async (req, res) => {
+    try {
+      const { site, accountId } = req.query;
+      if (!site || !accountId) return res.status(400).json({ error: 'site and accountId required' });
+      const config = await Planifier.getConfig();
+      const next = await pickNextEligiblePin(config, String(site), String(accountId));
+      res.json({ next });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/planifier/pin-pool/mark-posted', async (req, res) => {
+    try {
+      const { site, rowIndex, pinIndex, when } = req.body || {};
+      if (!site || rowIndex == null || pinIndex == null) {
+        return res.status(400).json({ error: 'site, rowIndex, pinIndex required' });
+      }
+      await markPinPosted(String(site), Number(rowIndex), Number(pinIndex), when);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/planifier/pin-pool/unmark-posted', async (req, res) => {
+    try {
+      const { site, rowIndex, pinIndex } = req.body || {};
+      if (!site || rowIndex == null || pinIndex == null) {
+        return res.status(400).json({ error: 'site, rowIndex, pinIndex required' });
+      }
+      await unmarkPinPosted(String(site), Number(rowIndex), Number(pinIndex));
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * Build a Dolphin settings object suitable for DolphinAnty constructor.
+   * Prefers the planifier global config; falls back to active site for
+   * backward-compatibility with older installs.
+   */
+  async function _resolveDolphinSettings() {
+    const planCfg = await Planifier.getConfig();
+    if (planCfg?.dolphinAnty?.apiToken) {
+      return { dolphinAnty: planCfg.dolphinAnty };
+    }
+    const siteSettings = await StateManager.getSettings();
+    if (siteSettings?.dolphinAnty?.apiToken) {
+      return siteSettings;
+    }
+    return null;
+  }
+
+  /**
+   * Decode JWT payload (no signature check — just inspecting claims).
+   */
+  function _decodeDolphinToken(token) {
+    try {
+      const parts = String(token || '').split('.');
+      if (parts.length < 2) return null;
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+      return payload;
+    } catch { return null; }
+  }
+
+  // GET → diagnostic + profiles. POST → diagnostic for a candidate token (without saving).
+  async function _diagnoseDolphin(token, cloudApi, localApi) {
+    const out = {
+      ok: false,
+      token: { provided: !!token },
+      plan: null,
+      expiresAt: null,
+      expiresInDays: null,
+      tokenExpired: false,
+      cloudReachable: false,
+      localReachable: false,
+      profileCount: 0,
+      profiles: [],
+      warnings: [],
+      error: null,
+    };
+    if (!token) {
+      out.error = 'No Dolphin token configured. Paste your JWT from https://dolphin-anty.com/panel → API and click Test.';
+      return out;
+    }
+    const payload = _decodeDolphinToken(token);
+    if (payload) {
+      out.plan = payload.team_plan || 'unknown';
+      out.userId = payload.sub || null;
+      out.teamId = payload.team_id || null;
+      if (payload.exp) {
+        out.expiresAt = new Date(payload.exp * 1000).toISOString();
+        const days = Math.round((payload.exp * 1000 - Date.now()) / 86400000);
+        out.expiresInDays = days;
+        out.tokenExpired = days < 0;
+      }
+      if (out.plan === 'free') {
+        out.warnings.push('Plan "free" — Dolphin returns HTTP 402 on CDP automation. The Planifier executor will fail on a free plan. Upgrade or regenerate the token after upgrading.');
+      }
+      if (out.tokenExpired) {
+        out.warnings.push('Token expired — regenerate at https://dolphin-anty.com/panel/index.html#/api');
+      }
+    } else {
+      out.warnings.push('Could not decode token (malformed JWT) — paste the full token from the Dolphin panel.');
+    }
+    // Probe cloud
+    try {
+      const dolphin = new DolphinAnty({ dolphinAnty: { apiToken: token, cloudApi, localApi } });
+      const list = await dolphin.listProfiles({ limit: 100 });
+      const arr = Array.isArray(list) ? list : (list.data || []);
+      out.cloudReachable = true;
+      out.profileCount = arr.length;
+      out.profiles = arr.map(p => ({
+        id: String(p.id),
+        name: p.name || '(no name)',
+        platform: p.platform || '',
+        proxy: p.proxy ? `${p.proxy.host || p.proxy.type || 'set'}` : null,
+        tags: p.tags || [],
+      }));
+    } catch (e) {
+      out.error = e.message;
+      out.warnings.push(`Cloud API unreachable: ${e.message}`);
+    }
+    // Probe local (best-effort, doesn't fail the whole diagnostic)
+    try {
+      const res = await fetch(`${localApi || 'http://localhost:3001'}/v1.0/status`, {
+        signal: AbortSignal.timeout(2500),
+      });
+      out.localReachable = res.ok;
+    } catch {
+      out.localReachable = false;
+      out.warnings.push('Local Dolphin app not reachable at ' + (localApi || 'http://localhost:3001') + '. The app must be running for CDP profile launch.');
+    }
+    out.ok = out.cloudReachable && !out.tokenExpired;
+    return out;
+  }
+
+  // Test connection — uses candidate token from body, or saved one
+  app.post('/api/planifier/dolphin/test', async (req, res) => {
+    try {
+      const planCfg = await Planifier.getConfig();
+      const token = req.body?.apiToken || planCfg?.dolphinAnty?.apiToken || (await StateManager.getSettings())?.dolphinAnty?.apiToken;
+      const cloudApi = req.body?.cloudApi || planCfg?.dolphinAnty?.cloudApi;
+      const localApi = req.body?.localApi || planCfg?.dolphinAnty?.localApi;
+      const diag = await _diagnoseDolphin(token, cloudApi, localApi);
+      res.json(diag);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Save token to planifier config (global, shared across sites)
+  app.post('/api/planifier/dolphin/save-token', async (req, res) => {
+    try {
+      const { apiToken, cloudApi, localApi } = req.body || {};
+      const config = await Planifier.getConfig();
+      if (!config.dolphinAnty) config.dolphinAnty = {};
+      if (typeof apiToken === 'string') config.dolphinAnty.apiToken = apiToken.trim();
+      if (typeof cloudApi === 'string' && cloudApi) config.dolphinAnty.cloudApi = cloudApi.trim();
+      if (typeof localApi === 'string' && localApi) config.dolphinAnty.localApi = localApi.trim();
+      // Run a quick test and cache the result
+      const diag = await _diagnoseDolphin(config.dolphinAnty.apiToken, config.dolphinAnty.cloudApi, config.dolphinAnty.localApi);
+      config.dolphinAnty.lastTestedAt = new Date().toISOString();
+      config.dolphinAnty.lastTestResult = {
+        ok: diag.ok, plan: diag.plan, expiresInDays: diag.expiresInDays, profileCount: diag.profileCount,
+      };
+      await Planifier.saveConfig(config);
+      res.json({ ok: true, diagnostic: diag });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Return the saved Dolphin connection (without exposing the full token)
+  // so the UI can populate the fields without leaking the secret value.
+  app.get('/api/planifier/dolphin/config', async (req, res) => {
+    try {
+      const planCfg = await Planifier.getConfig();
+      const siteSettings = await StateManager.getSettings();
+      const planToken = planCfg?.dolphinAnty?.apiToken || '';
+      const siteToken = siteSettings?.dolphinAnty?.apiToken || '';
+      const effective = planToken || siteToken;
+      const masked = effective ? (effective.slice(0, 18) + '…' + effective.slice(-12)) : '';
+      res.json({
+        hasToken: !!effective,
+        source: planToken ? 'planifier' : (siteToken ? 'site' : null),
+        masked,
+        cloudApi: planCfg?.dolphinAnty?.cloudApi || siteSettings?.dolphinAnty?.cloudApi || 'https://dolphin-anty-api.com',
+        localApi: planCfg?.dolphinAnty?.localApi || siteSettings?.dolphinAnty?.localApi || 'http://localhost:3001',
+        lastTestedAt: planCfg?.dolphinAnty?.lastTestedAt || null,
+        lastTestResult: planCfg?.dolphinAnty?.lastTestResult || null,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Dolphin integration: list profiles + diagnose token health
+  app.get('/api/planifier/dolphin-profiles', async (req, res) => {
+    try {
+      const resolved = await _resolveDolphinSettings();
+      if (!resolved) {
+        return res.json({ ok: false, error: 'No Dolphin token configured. Open the Configuration tab and paste your token.', profiles: [], warnings: [] });
+      }
+      const dolphin = new DolphinAnty(resolved);
+      const warnings = [];
+      const payload = _decodeDolphinToken(resolved.dolphinAnty.apiToken);
+      if (payload?.team_plan === 'free') {
+        warnings.push('Dolphin plan is "free" — CDP automation returns HTTP 402. Upgrade required.');
+      }
+      if (payload?.exp && (payload.exp * 1000) < Date.now()) {
+        warnings.push('Dolphin token expired — regenerate at https://dolphin-anty.com/panel/index.html#/api');
+      }
+      const list = await dolphin.listProfiles({ limit: 100 });
+      const arr = Array.isArray(list) ? list : (list.data || []);
+      const profiles = arr.map(p => ({
+        id: String(p.id),
+        name: p.name || '(no name)',
+        platform: p.platform || '',
+        proxy: p.proxy ? `${p.proxy.host || p.proxy.type || 'set'}` : null,
+        tags: p.tags || [],
+      }));
+      res.json({ ok: true, profiles, warnings });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message, profiles: [], warnings: [] });
     }
   });
 

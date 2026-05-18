@@ -50,6 +50,9 @@
       <a class="nav-item" data-page="gemini-visual" href="#gemini-visual">
         <span class="nav-icon">&#9889;</span> Gemini Visual
       </a>
+      <a class="nav-item" data-page="planifier" href="#planifier">
+        <span class="nav-icon">&#9201;</span> Planifier
+      </a>
       <a class="nav-item" data-page="settings" href="#settings">
         <span class="nav-icon">&#9881;</span> Settings
       </a>
@@ -1502,6 +1505,495 @@
     </section>
 
     <!-- ============================================================ -->
+    <!-- PAGE: PLANIFIER                                               -->
+    <!-- ============================================================ -->
+    <section id="page-planifier" class="page-section">
+      <div class="page-header">
+        <h1 class="page-title">Planifier</h1>
+        <div class="plf-subnav">
+          <button class="plf-tab active" data-plftab="overview">Overview</button>
+          <button class="plf-tab" data-plftab="config">Configuration</button>
+          <button class="plf-tab" data-plftab="rules">Rules</button>
+          <button class="plf-tab" data-plftab="plan">Plan 7j</button>
+          <button class="plf-tab" data-plftab="pool">Pin Pool</button>
+          <button class="plf-tab" data-plftab="history">History</button>
+        </div>
+        <span class="badge" id="plfMasterBadge" style="background:rgba(124,77,255,0.15);color:#b8a4ff;border:1px solid rgba(124,77,255,0.3);">Loading...</span>
+      </div>
+      <div class="page-content">
+
+        <!-- Diagnostics banner (Dolphin warnings, etc.) -->
+        <div id="plfDiagnostics" class="plf-diagnostics" style="display:none;"></div>
+
+        <!-- ═══ TAB: OVERVIEW ═══ -->
+        <div class="plf-panel active" data-plfpanel="overview">
+
+          <!-- Master switch card -->
+          <div class="card plf-master-card">
+            <div class="card-body" style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+              <div style="flex:1;min-width:220px;">
+                <div style="font-size:13px;color:#9a9ab8;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;">Master Switch</div>
+                <div style="font-size:22px;font-weight:700;color:#fff;line-height:1.2;">7-day auto-pilot</div>
+                <div style="font-size:12px;color:#6a6a8e;margin-top:4px;">Generates recipes + posts on Pinterest across all sites, 7d/7, on human-like timing</div>
+              </div>
+              <label class="plf-switch">
+                <input type="checkbox" id="plfEnabledToggle" />
+                <span class="plf-switch-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Stat cards -->
+          <div class="stat-grid" style="margin-bottom:18px;">
+            <div class="stat-card blue">
+              <div class="stat-label">Today's Actions</div>
+              <div class="stat-value" id="plfStatToday">--</div>
+            </div>
+            <div class="stat-card green">
+              <div class="stat-label">Recipes /day</div>
+              <div class="stat-value" id="plfStatRecipes">--</div>
+            </div>
+            <div class="stat-card orange">
+              <div class="stat-label">Pinterest /day</div>
+              <div class="stat-value" id="plfStatPins">--</div>
+            </div>
+            <div class="stat-card purple">
+              <div class="stat-label">Active Accounts</div>
+              <div class="stat-value" id="plfStatAccounts">--</div>
+            </div>
+          </div>
+
+          <!-- Today's plan -->
+          <div class="card">
+            <div class="card-header">
+              Today's Plan
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-secondary btn-sm" onclick="plfOpenAddSlotModal()" style="background:linear-gradient(135deg,#7c4dff,#b8a4ff);">+ Add Slot</button>
+                <button class="btn btn-secondary btn-sm" onclick="plfRegenToday()">Regenerate</button>
+                <button class="btn btn-secondary btn-sm" onclick="plfLoadOverview()">Refresh</button>
+              </div>
+            </div>
+            <div class="card-body" id="plfTodayTimeline" style="padding:18px 22px;">
+              <div style="color:#6a6a8e;font-size:13px;">Loading...</div>
+            </div>
+          </div>
+
+        </div><!-- /panel overview -->
+
+        <!-- ═══ TAB: CONFIGURATION ═══ -->
+        <div class="plf-panel" data-plfpanel="config" style="display:none;">
+
+          <!-- ── Dolphin Connection ── -->
+          <div class="card" style="border:1px solid rgba(124,77,255,0.2);">
+            <div class="card-header" style="background:linear-gradient(135deg,rgba(124,77,255,0.06),transparent);">
+              🐬 Dolphin Anty Connection
+              <span style="font-size:10px;color:#6a6a8e;text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px;">Global — shared across all sites</span>
+            </div>
+            <div class="card-body">
+              <!-- Status banner — populated by JS -->
+              <div id="plfDolphinStatus" style="padding:12px 14px;background:rgba(14,14,34,0.6);border:1px solid rgba(255,255,255,0.05);border-radius:10px;margin-bottom:14px;font-size:12.5px;color:#9a9ab8;">
+                Loading connection status…
+              </div>
+
+              <div class="form-group">
+                <label style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;">API Token (JWT)</label>
+                <div style="display:flex;gap:8px;">
+                  <input type="password" id="plfDolphinToken" placeholder="Paste your token from https://dolphin-anty.com/panel → API" style="flex:1;background:rgba(8,8,18,0.6);border:1px solid rgba(255,255,255,0.08);color:#e0e4f0;padding:10px 14px;border-radius:10px;font-size:12px;font-family:'JetBrains Mono','Consolas',monospace;" />
+                  <button class="btn btn-outline-secondary" onclick="plfToggleTokenVisibility()" type="button" id="plfTokenEyeBtn" style="padding:7px 12px;">👁</button>
+                </div>
+                <div style="font-size:11px;color:#6a6a8e;margin-top:5px;">Get it from <a href="https://dolphin-anty.com/panel/index.html#/api" target="_blank" rel="noopener" style="color:#6ea8fe;">dolphin-anty.com/panel → API</a>. Token never leaves this app (stored in <code>data/planifier/config.json</code>).</div>
+              </div>
+
+              <div class="plf-rule-row" style="grid-template-columns:1fr 1fr;">
+                <div class="plf-rule-field">
+                  <label>Cloud API</label>
+                  <input type="text" id="plfDolphinCloud" placeholder="https://dolphin-anty-api.com" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Local API</label>
+                  <input type="text" id="plfDolphinLocal" placeholder="http://localhost:3001" />
+                </div>
+              </div>
+
+              <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+                <button class="btn btn-resume" onclick="plfTestDolphin()" style="padding:9px 22px;font-size:13px;">🔍 Test Connection</button>
+                <button class="btn btn-save" onclick="plfSaveDolphinToken()" style="padding:9px 22px;font-size:13px;">💾 Save Token</button>
+                <span id="plfDolphinTestStatus" style="font-size:12px;color:#888;align-self:center;"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dolphin profile dropdown source (lazy loaded) -->
+          <div class="card">
+            <div class="card-header">
+              Dolphin Profiles
+              <button class="btn btn-secondary btn-sm" onclick="plfLoadDolphinProfiles()">Reload from Dolphin API</button>
+            </div>
+            <div class="card-body">
+              <div id="plfDolphinList" style="font-size:12px;color:#9a9ab8;">Loading Dolphin profiles…</div>
+            </div>
+          </div>
+
+          <!-- Per-site configuration -->
+          <div id="plfSitesConfig"></div>
+
+          <!-- Save button -->
+          <div style="display:flex;gap:12px;margin-top:14px;">
+            <button class="btn btn-save" onclick="plfSaveConfig()" style="padding:11px 36px;font-size:13px;">Save Configuration</button>
+            <span id="plfConfigSaveStatus" style="font-size:12px;color:#888;align-self:center;"></span>
+          </div>
+
+        </div><!-- /panel config -->
+
+        <!-- ═══ TAB: RULES (anti-detection) ═══ -->
+        <div class="plf-panel" data-plfpanel="rules" style="display:none;">
+
+          <div class="card">
+            <div class="card-header">Active Hours <span style="font-size:10px;color:#6a6a8e;text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px;">Hours during the day when actions are scheduled</span></div>
+            <div class="card-body">
+              <div class="plf-rule-row">
+                <div class="plf-rule-field">
+                  <label>Start hour</label>
+                  <input type="number" id="plfRuleStart" min="0" max="23" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>End hour</label>
+                  <input type="number" id="plfRuleEnd" min="0" max="23" />
+                </div>
+                <div class="plf-rule-hint">Recommended: 8h → 22h. Outside this window, no action is scheduled.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Timing Gaps (minutes)</div>
+            <div class="card-body">
+              <div class="plf-rule-row">
+                <div class="plf-rule-field">
+                  <label>Between any 2 actions</label>
+                  <input type="number" id="plfRuleGapAny" min="0" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Between 2 accounts of same site</label>
+                  <input type="number" id="plfRuleGapInter" min="0" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Same account, 2 sessions</label>
+                  <input type="number" id="plfRuleGapIntra" min="0" />
+                </div>
+              </div>
+              <div class="plf-rule-hint">Higher = safer (less correlated activity). Defaults: 90 / 45 / 120 min.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Randomization</div>
+            <div class="card-body">
+              <div class="plf-rule-row">
+                <div class="plf-rule-field">
+                  <label>Skip-day probability (0–1)</label>
+                  <input type="number" id="plfRuleSkip" min="0" max="1" step="0.01" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Browse-only session %</label>
+                  <input type="number" id="plfRuleBrowse" min="0" max="100" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Drop slot if late (min)</label>
+                  <input type="number" id="plfRuleMissed" min="0" />
+                </div>
+              </div>
+              <div class="plf-rule-hint">Skip days = full off-days for a site (~14%). Browse-only = % of Pinterest sessions that don't post (humanization). Late slot = abandon if missed by &gt; N min (anti-burst after crash).</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Plan Horizon</div>
+            <div class="card-body">
+              <div class="plf-rule-row">
+                <div class="plf-rule-field">
+                  <label>Days ahead to plan</label>
+                  <input type="number" id="plfRuleHorizon" min="1" max="14" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Pin spread (days from recipe)</label>
+                  <input type="text" id="plfRulePinSpread" placeholder="0,2,5" />
+                </div>
+                <div class="plf-rule-hint">Pin spread example: "0,2,5" = pin #1 same day as recipe, pin #2 J+2, pin #3 J+5. Anti-burst signal for Pinterest.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Browse Behaviors ── -->
+          <div class="card">
+            <div class="card-header">
+              Browse Behaviors — Pinterest session humanization
+              <span style="font-size:10px;color:#6a6a8e;text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px;">Defines what a non-posting session looks like (scrolls, closeups, saves, searches…)</span>
+            </div>
+            <div class="card-body">
+
+              <!-- Session length -->
+              <div style="margin-bottom:18px;">
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Session length</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Session min (minutes)</label><input type="number" id="plfBBSessionMin" min="1" /></div>
+                  <div class="plf-rule-field"><label>Session max (minutes)</label><input type="number" id="plfBBSessionMax" min="1" /></div>
+                  <div class="plf-rule-hint">Real sessions vary widely — sometimes 2 min, sometimes 15 min. That variance IS human.</div>
+                </div>
+              </div>
+
+              <!-- Feed scrolls -->
+              <div style="margin-bottom:18px;">
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Feed scroll on arrival</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Min seconds</label><input type="number" id="plfBBInitScrollMin" min="0" /></div>
+                  <div class="plf-rule-field"><label>Max seconds</label><input type="number" id="plfBBInitScrollMax" min="0" /></div>
+                  <div class="plf-rule-hint">Always happens. Each "scroll wave" lasts 1.5-4s and moves 300-800px.</div>
+                </div>
+              </div>
+
+              <!-- Closeups -->
+              <div style="margin-bottom:18px;">
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Pin closeups (click to view detail)</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Probability per session (%)</label><input type="number" id="plfBBCloseupProb" min="0" max="100" /></div>
+                  <div class="plf-rule-field"><label>Min closeups</label><input type="number" id="plfBBCloseupMin" min="0" /></div>
+                  <div class="plf-rule-field"><label>Max closeups</label><input type="number" id="plfBBCloseupMax" min="0" /></div>
+                </div>
+                <div class="plf-rule-row" style="margin-top:10px;">
+                  <div class="plf-rule-field"><label>Linger min (s)</label><input type="number" id="plfBBCloseupLingerMin" min="0" /></div>
+                  <div class="plf-rule-field"><label>Linger max (s)</label><input type="number" id="plfBBCloseupLingerMax" min="0" /></div>
+                  <div class="plf-rule-hint">Time spent on the detail view after clicking a pin (humans READ the description).</div>
+                </div>
+              </div>
+
+              <!-- Save/Repin -->
+              <div style="margin-bottom:18px;">
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Save / Re-pin to your own boards</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Probability per closeup (%)</label><input type="number" id="plfBBSaveProb" min="0" max="100" /></div>
+                  <div class="plf-rule-hint" style="grid-column:1/-1;"><strong>This is the #1 signal Pinterest trusts</strong> for "real user". Recommended 30-50%. Requires boards configured per account.</div>
+                </div>
+              </div>
+
+              <!-- Search -->
+              <div style="margin-bottom:18px;">
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Search (using keyword list per site)</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Probability per session (%)</label><input type="number" id="plfBBSearchProb" min="0" max="100" /></div>
+                  <div class="plf-rule-field"><label>Click result probability (%)</label><input type="number" id="plfBBSearchClickProb" min="0" max="100" /></div>
+                  <div class="plf-rule-hint">Picks a random keyword from site.searchKeywords[] (configurable per site below).</div>
+                </div>
+              </div>
+
+              <!-- Video + Visit + Profile -->
+              <div style="margin-bottom:18px;">
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Other activities</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Watch video pin (%)</label><input type="number" id="plfBBVideoProb" min="0" max="100" /></div>
+                  <div class="plf-rule-field"><label>Click "Visit" (% per closeup)</label><input type="number" id="plfBBVisitProb" min="0" max="100" /></div>
+                  <div class="plf-rule-field"><label>Profile glance (%)</label><input type="number" id="plfBBProfileProb" min="0" max="100" /></div>
+                </div>
+              </div>
+
+              <!-- Final scroll -->
+              <div>
+                <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">Final feed scroll before close</div>
+                <div class="plf-rule-row">
+                  <div class="plf-rule-field"><label>Min seconds</label><input type="number" id="plfBBFinalScrollMin" min="0" /></div>
+                  <div class="plf-rule-field"><label>Max seconds</label><input type="number" id="plfBBFinalScrollMax" min="0" /></div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- ── Search keywords per site ── -->
+          <div class="card">
+            <div class="card-header">
+              Search Keywords — per site
+              <span style="font-size:10px;color:#6a6a8e;text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px;">Used when the session decides to search. Pick 1 at random.</span>
+            </div>
+            <div class="card-body">
+              <div id="plfKeywordsPerSite"></div>
+            </div>
+          </div>
+
+          <!-- ── Session Preview ── -->
+          <div class="card" style="border:1px solid rgba(124,77,255,0.2);">
+            <div class="card-header" style="background:linear-gradient(135deg,rgba(124,77,255,0.08),transparent);">
+              🔬 Session Preview
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="plfPreviewSite" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;"></select>
+                <button class="btn btn-secondary btn-sm" onclick="plfRunSimulation()">Generate Preview</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="plfSimulationOutput" style="font-size:12px;color:#9a9ab8;">Click <strong>Generate Preview</strong> to see what a session with the current settings would look like (no browser opens — pure simulation).</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:12px;margin-top:14px;">
+            <button class="btn btn-save" onclick="plfSaveConfig()" style="padding:11px 36px;font-size:13px;">Save Rules</button>
+            <span id="plfRulesSaveStatus" style="font-size:12px;color:#888;align-self:center;"></span>
+          </div>
+
+        </div><!-- /panel rules -->
+
+        <!-- ═══ TAB: PLAN 7j ═══ -->
+        <div class="plf-panel" data-plfpanel="plan" style="display:none;">
+
+          <div class="card">
+            <div class="card-header">
+              7-Day Outlook
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-secondary btn-sm" onclick="plfLoadUpcoming(7)">Refresh</button>
+                <button class="btn btn-secondary btn-sm" onclick="plfRandomizeWeek()" title="Wipe and re-roll the next 7 days (preserves locked slots)" style="background:linear-gradient(135deg,#7c4dff,#b8a4ff);color:#fff;">🎲 Random Week</button>
+              </div>
+            </div>
+            <div class="card-body" id="plfUpcoming" style="padding:0;">
+              <div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading…</div>
+            </div>
+          </div>
+
+        </div><!-- /panel plan -->
+
+        <!-- ═══ TAB: PIN POOL ═══ -->
+        <div class="plf-panel" data-plfpanel="pool" style="display:none;">
+
+          <!-- Pool stats -->
+          <div class="stat-grid" style="margin-bottom:16px;">
+            <div class="stat-card blue">
+              <div class="stat-label">Recipes</div>
+              <div class="stat-value" id="plfPoolRecipes">--</div>
+            </div>
+            <div class="stat-card green">
+              <div class="stat-label">Pins Posted</div>
+              <div class="stat-value" id="plfPoolPosted">--</div>
+            </div>
+            <div class="stat-card orange">
+              <div class="stat-label">Pending</div>
+              <div class="stat-value" id="plfPoolPending">--</div>
+            </div>
+            <div class="stat-card purple">
+              <div class="stat-label">Eligible Now</div>
+              <div class="stat-value" id="plfPoolEligible">--</div>
+            </div>
+          </div>
+
+          <!-- Pool filters -->
+          <div class="card">
+            <div class="card-header">
+              Pin Pool
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="plfPoolFilterSite" onchange="plfRenderPool()" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;">
+                  <option value="">All sites</option>
+                </select>
+                <select id="plfPoolFilterStatus" onchange="plfRenderPool()" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;">
+                  <option value="">All pins</option>
+                  <option value="pending">Pending only</option>
+                  <option value="posted">Posted only</option>
+                  <option value="eligible">Eligible now</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="plfLoadPool()">Refresh</button>
+              </div>
+            </div>
+            <div class="card-body" id="plfPoolTable" style="padding:0;">
+              <div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading pin pool…</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Per-Account Breakdown</div>
+            <div class="card-body" id="plfPoolByAccount">
+              <div style="color:#6a6a8e;font-size:13px;">Loading…</div>
+            </div>
+          </div>
+
+          <!-- ── How to enable sheet coloring ── -->
+          <div class="card" style="border:1px solid rgba(124,77,255,0.15);">
+            <div class="card-header" style="cursor:pointer;" onclick="document.getElementById('plfColoringBody').style.display = document.getElementById('plfColoringBody').style.display === 'none' ? 'block' : 'none'">
+              🎨 How to color posted cells in your Google Sheet
+              <span style="font-size:11px;color:#6a6a8e;font-weight:400;text-transform:none;letter-spacing:0;">Click to expand</span>
+            </div>
+            <div class="card-body" id="plfColoringBody" style="display:none;">
+              <p style="font-size:12.5px;color:#c8c8e8;line-height:1.6;margin-bottom:14px;">
+                The Planifier writes <code>posted_at</code> timestamps to columns <strong>U / V / W</strong> when pins go live.
+                To make these visually pop in your sheet, you have <strong>2 options</strong>:
+              </p>
+
+              <div style="font-size:12.5px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:10px;">
+                Option A — Apps Script update (auto-colors on every write, recommended)
+              </div>
+              <ol style="font-size:12.5px;color:#c8c8e8;line-height:1.7;padding-left:22px;margin-bottom:14px;">
+                <li>Open your Apps Script:
+                  <a href="https://script.google.com/" target="_blank" rel="noopener" style="color:#6ea8fe;">script.google.com</a>
+                  → open the script linked to your sheet (the one in <code>settings.appsScriptUrl</code>).
+                </li>
+                <li>Replace the entire <code>doPost</code> function with the snippet below.</li>
+                <li>Deploy → New deployment → <strong>Web app</strong> → Execute as: <em>Me</em>, Access: <em>Anyone</em>.</li>
+                <li><strong>Copy the new web app URL</strong> if it changed, and paste it into your site settings (Settings → General → Apps Script URL).</li>
+              </ol>
+
+              <div style="position:relative;">
+                <pre style="background:rgba(8,8,18,0.8);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 16px;color:#c8c8e8;font-size:12px;font-family:'JetBrains Mono','Consolas',monospace;overflow-x:auto;white-space:pre;margin:0;">function doPost(e) {
+  const body = JSON.parse(e.postData.contents);
+  const ss = SpreadsheetApp.openById(body.spreadsheetId);
+  const range = ss.getRange(body.range);
+
+  if (body.values) range.setValues(body.values);
+  if (body.bgColor) range.setBackground(body.bgColor);
+
+  return ContentService.createTextOutput("OK");
+}</pre>
+                <button class="btn btn-outline-secondary" onclick="plfCopyAppsScript()" style="position:absolute;top:8px;right:8px;padding:5px 12px;font-size:11px;">Copy</button>
+              </div>
+
+              <div style="font-size:12.5px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin:20px 0 10px;">
+                Option B — Conditional Formatting (no code change, 30s setup)
+              </div>
+              <ol style="font-size:12.5px;color:#c8c8e8;line-height:1.7;padding-left:22px;">
+                <li>Open your Google Sheet → select columns <strong>U:W</strong>.</li>
+                <li>Menu → <strong>Format</strong> → <strong>Conditional formatting</strong>.</li>
+                <li>"Format cells if…" → <strong>Is not empty</strong>.</li>
+                <li>Fill color: <span style="display:inline-block;width:14px;height:14px;background:#c6efce;border:1px solid rgba(0,0,0,0.1);vertical-align:middle;border-radius:2px;"></span> light green (or whatever you want).</li>
+                <li>Save. Done — every cell with a posted_at date now glows green automatically.</li>
+              </ol>
+              <p style="font-size:11.5px;color:#6a6a8e;margin-top:10px;font-style:italic;">
+                Both options work together — if Apps Script can't color (older script), Conditional Formatting still does the job.
+              </p>
+            </div>
+          </div>
+
+        </div><!-- /panel pool -->
+
+        <!-- ═══ TAB: HISTORY ═══ -->
+        <div class="plf-panel" data-plfpanel="history" style="display:none;">
+
+          <div class="card">
+            <div class="card-header">
+              Execution History
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="plfHistoryRange" onchange="plfLoadHistory()" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;">
+                  <option value="today">Today</option>
+                  <option value="week">This Week</option>
+                  <option value="all" selected>All Time</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="plfLoadHistory()">Refresh</button>
+                <button class="btn btn-secondary btn-sm" onclick="plfClearHistory()" style="color:#ff6b6b;">Clear</button>
+              </div>
+            </div>
+            <div class="card-body" id="plfHistoryList" style="padding:0;max-height:600px;overflow-y:auto;">
+              <div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading…</div>
+            </div>
+          </div>
+
+        </div><!-- /panel history -->
+
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
     <!-- PAGE: SITES                                                   -->
     <!-- ============================================================ -->
     <section id="page-sites" class="page-section">
@@ -1533,5 +2025,6 @@
   <!-- JAVASCRIPT                                                      -->
   <!-- ============================================================== -->
   <script src="dashboard.js"></script>
+  <script src="planifier.js"></script>
 </body>
 </html>

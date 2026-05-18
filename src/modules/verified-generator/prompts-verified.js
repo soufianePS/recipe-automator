@@ -921,25 +921,134 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
 // 12. PINTEREST PROMPT — dedicated to verified generator
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_VG_PINTEREST_PROMPT = `Generate a vertical Pinterest food pin (3:4 aspect). The first attached reference image is the DESIGN TEMPLATE — your output must reproduce its visual composition exactly. The second attached reference image is the REAL HERO PHOTO of the finished dish "{{recipe_title}}" — the food in your output comes ONLY from this image.
+export const DEFAULT_VG_PINTEREST_PROMPT = `Create a premium Pinterest recipe pin in vertical 3:4 format.
 
-TEMPLATE FIDELITY (mandatory — read the first image carefully and match all of these):
-1. SPATIAL LAYOUT: copy the template's exact spatial arrangement. If the template places the food photo on the RIGHT and the ingredients block on the LEFT, do the same. If it stacks them top/bottom, stack them. If it splits 50/50, split 50/50. Do NOT default to a top-text / bottom-photo Pinterest template — only use that arrangement if THIS template does.
-2. BACKGROUND: copy the template's background texture and color palette (e.g. speckled granite, marble, linen, plain pastel — whatever it shows).
-3. TYPOGRAPHY: copy the template's font family vibe (serif vs sans), weight (bold vs light), and color.
-4. SECTION POSITIONS: the title, the ingredients block, the food photo zone, and the website footer must each be in the SAME ON-PAGE POSITION as the template shows them.
+FIRST IMAGE = layout/design template reference
+SECOND IMAGE = food identity reference
 
-CONTENT FOR THE PIN (slot into the template positions above):
-- Title (in the template's title position): "{{pin_title}}"
-- If the template shows an ingredients section, use the literal header word "Ingredients:" (NOT the recipe name) and below it this exact bullet list (one item per line, keep the template's bullet style):
+━━━━━━━━━━━━
+MAIN GOAL
+━━━━━━━━━━━━
+
+Recreate the SAME clean editorial Pinterest layout from the FIRST image while using the SECOND image as the food identity reference.
+
+The final result must look like a premium viral Pinterest recipe pin from a top food blog.
+
+━━━━━━━━━━━━
+LAYOUT RULES
+━━━━━━━━━━━━
+
+Match the FIRST image:
+- same layout structure
+- same text placement
+- same ingredient section placement
+- same spacing and margins
+- same footer placement
+- same typography mood
+- same background texture and colors
+- same premium clean aesthetic
+
+Do NOT invent a different Pinterest composition.
+
+HOWEVER:
+Optimize the food image scale for Pinterest engagement by making the food larger, closer, and more visually dominant.
+
+━━━━━━━━━━━━
+TEXT CONTENT
+━━━━━━━━━━━━
+
+Title:
+"{{pin_title}}"
+
+Ingredients:
 {{ingredients}}
-- Food photo (in the template's photo zone): take it from the SECOND attached image. Preserve its background, colors, lighting, and composition unchanged. Do not redraw the food.
-- Footer credit (in the template's footer position): "{{website}}"
 
-CRITICAL RULES:
-- The food shown in the final pin comes ONLY from image two, never from the template.
-- Do not invent extra decorative elements the template doesn't have. Do not add watermarks or logos.
-- The pin must be visually crave-worthy and clearly tied to "{{recipe_title}}" — a viewer should instantly recognize the dish.`;
+Footer:
+"{{website}}"
+
+━━━━━━━━━━━━
+FOOD PHOTO RULES
+━━━━━━━━━━━━
+
+Use the SECOND image ONLY as the food identity reference.
+
+Keep:
+- same recipe identity
+- same ingredients/components
+- same food style
+- same plating identity
+- same dominant colors
+
+Re-render the food as premium commercial food photography.
+
+The food must look:
+- ultra realistic
+- highly appetizing
+- bright
+- premium
+- editorial
+- magazine quality
+
+━━━━━━━━━━━━
+FOOD COMPOSITION PRIORITY
+━━━━━━━━━━━━
+
+The food must be LARGE and visually dominant.
+
+The food should occupy around 45% to 60% of the pin.
+
+Use tighter crop framing for stronger Pinterest click appeal.
+
+Reduce unnecessary empty space around the food.
+
+The food must instantly attract attention while scrolling Pinterest.
+
+━━━━━━━━━━━━
+PHOTOGRAPHY STYLE
+━━━━━━━━━━━━
+
+- bright editorial lighting
+- soft natural shadows
+- shallow depth of field
+- crisp textures
+- glossy highlights
+- realistic food textures
+- commercial food photography
+- luxury food magazine style
+- premium restaurant presentation
+- modern Pinterest aesthetic
+
+━━━━━━━━━━━━
+STYLE KEYWORDS
+━━━━━━━━━━━━
+
+premium Pinterest pin,
+editorial food magazine,
+modern food blog,
+bright minimalism,
+commercial food photography,
+luxury cookbook aesthetic,
+viral Pinterest recipe pin,
+clean typography,
+high-end food styling
+
+━━━━━━━━━━━━
+NEGATIVE PROMPT
+━━━━━━━━━━━━
+
+dark lighting,
+plastic AI textures,
+messy composition,
+oversaturated colors,
+extra decorations,
+watermarks,
+distorted text,
+low quality typography,
+amateur phone photo,
+cluttered background,
+fake ingredients,
+poor anatomy,
+blurry food`;
 
 
 // ─────────────────────────────────────────────────────────────

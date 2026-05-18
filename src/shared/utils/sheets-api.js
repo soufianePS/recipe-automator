@@ -36,13 +36,30 @@ export const SheetsAPI = {
     );
   },
 
-  async writeRange(spreadsheetId, range, values, settings) {
+  /**
+   * Write values to a range, optionally with a background color.
+   *
+   * @param {string} spreadsheetId
+   * @param {string} range — A1 notation, e.g. "Sheet1!U2"
+   * @param {Array<Array>} values
+   * @param {object} settings — must contain appsScriptUrl
+   * @param {object} [opts]
+   * @param {string|null} [opts.bgColor] — CSS hex like "#c6efce" or null to clear
+   *
+   * NOTE: Background color requires the Apps Script to handle a `bgColor`
+   * payload field. See README "Sheet coloring" section. If the user's Apps
+   * Script doesn't support it, the value is still written; the color is
+   * ignored silently by older scripts.
+   */
+  async writeRange(spreadsheetId, range, values, settings, opts = {}) {
     if (!settings.appsScriptUrl) {
       throw new Error('Apps Script URL not configured.');
     }
+    const body = { spreadsheetId, range, values };
+    if (opts.bgColor !== undefined) body.bgColor = opts.bgColor;
     const response = await fetch(settings.appsScriptUrl, {
       method: 'POST',
-      body: JSON.stringify({ spreadsheetId, range, values }),
+      body: JSON.stringify(body),
       headers: { 'Content-Type': 'text/plain' }
     });
     if (!response.ok) {
