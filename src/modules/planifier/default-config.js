@@ -21,6 +21,17 @@ export const PLANIFIER_DEFAULTS = {
     lastTestResult: null,   // { ok, plan, expiresInDays, profileCount, error? }
   },
 
+  // Notifications — alerts sent on slot failures / important events
+  notifications: {
+    telegram: {
+      enabled: false,
+      botToken: '',           // from @BotFather (e.g. "1234567890:AAExxx...")
+      chatId: '',             // auto-fetched from getUpdates after first /start to the bot
+      notifyOnError: true,
+      notifyOnSuccess: false,
+    },
+  },
+
   // Global anti-detection rules
   rules: {
     // Active window — actions only scheduled inside this range (local time)
@@ -97,6 +108,13 @@ export const PLANIFIER_DEFAULTS = {
       recipesPerDayMin: 2,
       recipesPerDayMax: 2,
       pinDistribution: 'strategy_A',  // 'strategy_A' | 'strategy_B' | 'strategy_C'
+
+      // Sheet tab override — which tab in the Google Sheet the Planifier
+      // reads pin data + recipe rows from. If empty, falls back to the
+      // site's settings.sheetTabName (default). Useful when the site has
+      // multiple tabs (Gen / Scraper / etc.) and you want the Planifier
+      // to read from a specific one.
+      sheetTab: '',
 
       // Niche-specific search terms used during browse sessions.
       // The browse executor picks 1 random keyword from:

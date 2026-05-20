@@ -18,7 +18,8 @@ import { RegenScheduler } from './modules/regen/regen-scheduler.js';
 import { Planifier } from './modules/planifier/planifier.js';
 import { DolphinAnty } from './shared/utils/dolphin-anty.js';
 import { ACCOUNT_STATUSES, PIN_DISTRIBUTION_STRATEGIES } from './modules/planifier/default-config.js';
-import { readAllPools, summarizePool, markPinPosted, unmarkPinPosted, pickNextEligiblePin } from './modules/planifier/pin-pool.js';
+import { readAllPools, summarizePool, markPinPosted, unmarkPinPosted, pickNextEligiblePin, writeValidationToSheet, readAllRecipes, addRecipeToSheet, deleteRecipeFromSheet, resetRecipeToPending, getAvailableSheetTabs } from './modules/planifier/pin-pool.js';
+import { validateRecipe, clearValidationCache } from './modules/planifier/recipe-validator.js';
 import { simulateSession, simulateMany } from './modules/planifier/browse-simulator.js';
 import { runPlanItem } from './modules/planifier/action-executor.js';
 import { randomUUID } from 'crypto';
@@ -708,7 +709,18 @@ export function setupRoutes(app, ctx) {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'body must be a config object' });
       }
-      const saved = await Planifier.saveConfig(req.body);
+      // PRESERVE protected fields from existing config that the dashboard
+      // doesn't include in its payload — without this, sensitive sections
+      // like the Dolphin token get wiped on every Save Configuration click.
+      const existing = await Planifier.getConfig();
+      const PROTECTED_KEYS = ['dolphinAnty', 'notifications', '_lastWeeklyRegenWeek', '_lastWeeklyRegenAt'];
+      const merged = { ...req.body };
+      for (const k of PROTECTED_KEYS) {
+        if (existing[k] !== undefined && (merged[k] === undefined || merged[k] === null)) {
+          merged[k] = existing[k];
+        }
+      }
+      const saved = await Planifier.saveConfig(merged);
       res.json({ ok: true, config: saved });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -919,15 +931,287 @@ export function setupRoutes(app, ctx) {
     }
   });
 
-  // Pin Pool — read from Google Sheet, computed per-account assignment
+  // Pin Pool — read from Google Sheet, computed per-account assignment.
+  //
+  // Validation comes from sheet col X by default (populated when the user
+  // clicked "Validate All" previously). ?validate=1 re-runs the validator
+  // (fetches each WP post + persists fresh result back to the sheet).
   app.get('/api/planifier/pin-pool', async (req, res) => {
     try {
       const config = await Planifier.getConfig();
       const pool = await readAllPools(config);
+      // Optionally re-run the validator (fetches WP + writes back to sheet col X)
+      if (req.query.validate === '1') {
+        await Promise.all(pool.map(async r => {
+          try {
+            r.validation = await validateRecipe(r);
+            await writeValidationToSheet(r.site, r.rowIndex, r.validation);
+          } catch (e) {
+            r.validation = { valid: true, issues: [{ kind: 'validation-error', msg: e.message }] };
+          }
+        }));
+      }
       const summary = summarizePool(pool);
+      summary.recipesValid = pool.filter(r => r.validation?.valid === true).length;
+      summary.recipesInvalid = pool.filter(r => r.validation?.valid === false).length;
+      summary.recipesNotValidated = pool.filter(r => !r.validation).length;
       res.json({ ok: true, pool, summary });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // ── Recipes Management ──────────────────────────────────────
+  // GET — all recipes from all sites (every status, not just done)
+  app.get('/api/planifier/recipes', async (req, res) => {
+    try {
+      const config = await Planifier.getConfig();
+      const recipes = await readAllRecipes(config);
+      // Build summary
+      const summary = {
+        total: recipes.length,
+        bySite: {},
+        byStatus: {},
+        byWpStatus: {},
+        validationStats: { valid: 0, invalid: 0, notValidated: 0 },
+      };
+      for (const r of recipes) {
+        summary.bySite[r.site] = (summary.bySite[r.site] || 0) + 1;
+        const s = r.status || '(empty)';
+        summary.byStatus[s] = (summary.byStatus[s] || 0) + 1;
+        const ws = r.wpStatus || '(none)';
+        summary.byWpStatus[ws] = (summary.byWpStatus[ws] || 0) + 1;
+        if (r.validation?.valid === true) summary.validationStats.valid++;
+        else if (r.validation?.valid === false) summary.validationStats.invalid++;
+        else summary.validationStats.notValidated++;
+      }
+      res.json({ ok: true, recipes, summary });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Pin Regenerator ──────────────────────────────────────────
+  // List available heroes + templates from a site's backgrounds.json
+  app.get('/api/planifier/regen-assets/:site', async (req, res) => {
+    try {
+      const { readFile: rf } = await import('fs/promises');
+      const { existsSync: ex } = await import('fs');
+      const { join: jp } = await import('path');
+      const path = jp(ctx.__dirname, '..', 'data', 'sites', req.params.site, 'backgrounds.json');
+      if (!ex(path)) return res.json({ heroes: [], templatesGenerator: [], templatesScraper: [] });
+      const data = JSON.parse(await rf(path, 'utf8'));
+      // Strip base64 from list payload (too heavy) — UI fetches individual assets
+      const stripBase64 = (arr) => (arr || []).map((a, idx) => ({
+        idx, name: a.name || `item-${idx}`,
+        thumbDataUrl: 'data:image/' + (a.name?.endsWith('.png') ? 'png' : 'jpeg') + ';base64,' + a.base64,
+      }));
+      res.json({
+        heroes: stripBase64(data.hero),
+        templatesGenerator: stripBase64(data.pinterestTemplatesGenerator),
+        templatesScraper: stripBase64(data.pinterestTemplatesScraper),
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Trigger pin regeneration. Hero is fetched automatically from the recipe's
+  // WP featured image — the user only chooses the template.
+  app.post('/api/planifier/regenerate-pin', async (req, res) => {
+    try {
+      if (ctx.automationRunning) {
+        return res.status(409).json({ error: 'Other automation running — wait for it to finish' });
+      }
+      const { site, rowIndex, pinIndex, templateIdx } = req.body || {};
+      if (!site || rowIndex == null || pinIndex == null || templateIdx == null) {
+        return res.status(400).json({ error: 'site, rowIndex, pinIndex, templateIdx required' });
+      }
+      // Load backgrounds to grab the chosen template
+      const { readFile: rf } = await import('fs/promises');
+      const { existsSync: ex } = await import('fs');
+      const { join: jp } = await import('path');
+      const path = jp(ctx.__dirname, '..', 'data', 'sites', site, 'backgrounds.json');
+      if (!ex(path)) return res.status(404).json({ error: 'backgrounds.json not found for this site' });
+      const data = JSON.parse(await rf(path, 'utf8'));
+      const templateList = (req.body?.templateList === 'scraper')
+        ? (data.pinterestTemplatesScraper || [])
+        : (data.pinterestTemplatesGenerator || []);
+      const templateEntry = templateList[templateIdx];
+      if (!templateEntry) return res.status(400).json({ error: `Template idx ${templateIdx} not found` });
+
+      const { enqueueRegen, processJob } = await import('./modules/planifier/pin-regenerator.js');
+      const job = await enqueueRegen({
+        site, rowIndex, pinIndex,
+        templateName: templateEntry.name,
+        templateBase64: templateEntry.base64,
+      });
+      // Fire-and-forget the processing — UI polls /api/planifier/regen-job/:id
+      const planCfg = await Planifier.getConfig();
+      processJob(job.id, ctx, planCfg)
+        .then(r => Logger.success(`[Regen] job ${job.id} done: ${r?.newPinUrl}`))
+        .catch(e => Logger.error(`[Regen] job ${job.id} failed: ${e.message}`));
+      // Strip internal paths before returning
+      const { _heroPath, _templatePath, ...safe } = job;
+      res.json({ ok: true, job: safe });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Poll job status
+  app.get('/api/planifier/regen-job/:id', async (req, res) => {
+    try {
+      const { getJob } = await import('./modules/planifier/pin-regenerator.js');
+      const job = await getJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      const { _heroPath, _templatePath, ...safe } = job;
+      res.json(safe);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // List recent regen jobs
+  app.get('/api/planifier/regen-jobs', async (req, res) => {
+    try {
+      const { listJobs } = await import('./modules/planifier/pin-regenerator.js');
+      const jobs = await listJobs({ limit: Number(req.query.limit) || 50 });
+      res.json({ jobs: jobs.map(({ _heroPath, _templatePath, ...j }) => j) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Available sheet tabs for a site (from its settings.json)
+  app.get('/api/planifier/sheet-tabs/:site', async (req, res) => {
+    try {
+      const out = await getAvailableSheetTabs(req.params.site);
+      res.json(out);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST — add a new recipe (writes to next empty row in the sheet)
+  app.post('/api/planifier/recipes', async (req, res) => {
+    try {
+      const { site, topic } = req.body || {};
+      if (!site || !topic) return res.status(400).json({ error: 'site and topic required' });
+      const r = await addRecipeToSheet(site, String(topic).trim());
+      res.json({ ok: true, ...r, site });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE — HARD delete: removes WP post + all media, resets sheet row to
+  // "pending" with only the topic (col A) preserved. The orchestrator will
+  // pick it up to re-generate from scratch.
+  app.delete('/api/planifier/recipes/:site/:rowIndex', async (req, res) => {
+    try {
+      const { site, rowIndex } = req.params;
+      const r = await deleteRecipeFromSheet(site, Number(rowIndex));
+      res.json({ ok: true, ...r });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PUT — reset recipe status to 'pending' (e.g., to reprocess an orphan)
+  app.put('/api/planifier/recipes/:site/:rowIndex/reset', async (req, res) => {
+    try {
+      const { site, rowIndex } = req.params;
+      await resetRecipeToPending(site, Number(rowIndex));
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+
+  // Telegram test + fetch chat ID endpoints
+  app.post('/api/planifier/notifications/test-telegram', async (req, res) => {
+    try {
+      const { testTelegram } = await import('./shared/utils/telegram-notifier.js');
+      const { botToken, chatId } = req.body || {};
+      let cfg = { botToken, chatId };
+      if (!botToken || !chatId) {
+        const planCfg = await Planifier.getConfig();
+        cfg = planCfg.notifications?.telegram || {};
+      }
+      const r = await testTelegram(cfg);
+      res.json(r);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/planifier/notifications/fetch-chatid', async (req, res) => {
+    try {
+      const { fetchChatId } = await import('./shared/utils/telegram-notifier.js');
+      const { botToken } = req.body || {};
+      const token = botToken || (await Planifier.getConfig())?.notifications?.telegram?.botToken;
+      const r = await fetchChatId(token);
+      res.json(r);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // UI state — saves per-tab filter preferences server-side so they
+  // survive across browser sessions and across machines (if data/ is shared)
+  app.get('/api/planifier/ui-state', async (req, res) => {
+    try {
+      const { loadUiState } = await import('./modules/planifier/plan-storage.js');
+      res.json(await loadUiState());
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/planifier/ui-state', async (req, res) => {
+    try {
+      const { patchUiState } = await import('./modules/planifier/plan-storage.js');
+      const updated = await patchUiState(req.body || {});
+      res.json({ ok: true, state: updated });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Validate one recipe on demand (refresh validation badge) + persist to sheet
+  app.post('/api/planifier/validate-recipe', async (req, res) => {
+    try {
+      const { site, rowIndex, draftUrl } = req.body || {};
+      if (!site || !rowIndex || !draftUrl) {
+        return res.status(400).json({ error: 'site, rowIndex, draftUrl required' });
+      }
+      const v = await validateRecipe({ site, rowIndex, draftUrl });
+      try { await writeValidationToSheet(site, Number(rowIndex), v); } catch (e) {
+        Logger.warn(`[validate-recipe] sheet write failed: ${e.message}`);
+      }
+      res.json({ ok: true, validation: v });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Clear validation cache (force re-fetch on next pin pool view)
+  app.delete('/api/planifier/validation-cache', (req, res) => {
+    clearValidationCache();
+    res.json({ ok: true });
+  });
+
+  // Clear the validation result for ONE recipe (sheet col X) — useful to revert
+  // an accidental validation or to mark for re-validation.
+  app.delete('/api/planifier/validate-recipe/:site/:rowIndex', async (req, res) => {
+    try {
+      const { site, rowIndex } = req.params;
+      await writeValidationToSheet(site, Number(rowIndex), null);  // null clears
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
   });
 

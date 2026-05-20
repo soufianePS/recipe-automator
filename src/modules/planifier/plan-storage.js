@@ -128,3 +128,35 @@ export async function appendHistory(entry) {
 export async function clearHistory() {
   await writeFile(HISTORY_PATH, JSON.stringify({ version: 1, items: [] }, null, 2), 'utf8');
 }
+
+// ── UI state (per-dashboard preferences, filters, etc.) ─────────
+
+const UI_STATE_PATH = join(PLANIFIER_DIR, 'ui-state.json');
+
+export async function loadUiState() {
+  await ensureDirs();
+  if (!existsSync(UI_STATE_PATH)) {
+    return { version: 1 };
+  }
+  try {
+    return JSON.parse(await readFile(UI_STATE_PATH, 'utf8'));
+  } catch {
+    return { version: 1 };
+  }
+}
+
+export async function saveUiState(state) {
+  await ensureDirs();
+  await writeFile(UI_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+}
+
+/**
+ * Merge a partial UI state update into the existing one and persist.
+ * Each top-level key is replaced wholesale (no deep merge).
+ */
+export async function patchUiState(patch) {
+  const current = await loadUiState();
+  const updated = { ...current, ...patch };
+  await saveUiState(updated);
+  return updated;
+}

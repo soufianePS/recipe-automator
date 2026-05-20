@@ -22,10 +22,17 @@ import { simulateSession } from './browse-simulator.js';
 import { pickNextEligiblePin, markPinPosted, readSitePool } from './pin-pool.js';
 import { DolphinAnty } from '../../shared/utils/dolphin-anty.js';
 import { PinterestPage } from '../../shared/pages/pinterest.js';
-import { StateManager } from '../../shared/utils/state-manager.js';
+import { StateManager, STATES } from '../../shared/utils/state-manager.js';
+import { SheetsAPI } from '../../shared/utils/sheets-api.js';
 import { VerifiedGeneratorOrchestrator } from '../verified-generator/orchestrator.js';
 import { FlowAccountManager } from '../../shared/utils/flow-account-manager.js';
 import { chromium } from 'playwright';
+import { sendTelegram } from '../../shared/utils/telegram-notifier.js';
+
+/** Escape special chars for Telegram HTML parse_mode. */
+function escapeHtmlForTelegram(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -86,10 +93,12 @@ async function runPinterestSession(item, config) {
 
   // Pick pin first (cheap), so we don't open browser just to find nothing to post
   let pickedPin = null;
+  let postFallbackReason = null;
   if (item.willPost) {
     pickedPin = await pickNextEligiblePin(config, item.site, item.accountId);
     if (!pickedPin) {
-      Logger.warn(`[Executor] No eligible pin for ${item.site}/${item.accountId} — running browse-only instead`);
+      postFallbackReason = 'no-eligible-pin';
+      Logger.warn(`[Executor] No eligible pin for ${item.site}/${item.accountId} — running browse-only instead. Check: pool source tab, account assignment (Strat A hash), validation, pinSpreadDays eligibility.`);
     }
   }
 
@@ -139,7 +148,13 @@ async function runPinterestSession(item, config) {
       return { ok: true, posted: true, pinUrl: result.pinUrl, recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex };
     }
 
-    return { ok: true, posted: false, browseEvents: plan.events.length };
+    return {
+      ok: true,
+      posted: false,
+      browseEvents: plan.events.length,
+      wantedToPost: !!item.willPost,
+      reason: postFallbackReason,    // 'no-eligible-pin' or null if browse-only by design
+    };
   } finally {
     await cleanup();
   }
@@ -243,7 +258,62 @@ async function runCreateRecipe(item, config, serverCtx) {
     switched = true;
     Logger.info(`[Executor] Switched active site: ${currentActive} → ${item.site}`);
   }
+
+  // Apply the planifier's per-site sheetTab override to the site's settings
+  // for the duration of the run — so VerifiedGeneratorOrchestrator reads
+  // from the same tab the Planifier sees in Recipes/Pin Pool. Restore after.
+  const sheetTabOverride = config.sites?.[item.site]?.sheetTab;
+  let originalSheetTab = null;
+  let didOverride = false;
+  if (sheetTabOverride && sheetTabOverride.trim()) {
+    try {
+      const settings = await StateManager.getSettings();
+      originalSheetTab = settings.sheetTabName;
+      if (originalSheetTab !== sheetTabOverride.trim()) {
+        settings.sheetTabName = sheetTabOverride.trim();
+        await StateManager.saveSettings(settings);
+        didOverride = true;
+        Logger.info(`[Executor] Temporarily set sheetTabName: ${originalSheetTab} → ${sheetTabOverride.trim()} for ${item.site}`);
+      }
+    } catch (e) {
+      Logger.warn(`[Executor] sheetTab override failed: ${e.message}`);
+    }
+  }
+
   try {
+    // ── Force "1 recipe per slot" ────────────────────────────────
+    // Without this guard, the VG orchestrator runs in continuous mode and
+    // chains every pending row in the sheet back-to-back (40 pending = 20h
+    // straight). The Planifier promise is one slot = one recipe — so we
+    // pre-pick the next pending row and set up a 1-item batchMode queue,
+    // which makes the orchestrator stop after that single recipe.
+    const liveSettings = await StateManager.getSettings();
+    const vgSheetSettings = {
+      ...liveSettings,
+      sheetTabName: liveSettings.verifiedGenSheetTab || liveSettings.generatorSheetTab || liveSettings.sheetTabName || 'single post',
+      topicColumn: liveSettings.verifiedGenTopicColumn || liveSettings.generatorTopicColumn || liveSettings.topicColumn || 'A',
+      statusColumn: liveSettings.verifiedGenStatusColumn || liveSettings.generatorStatusColumn || liveSettings.statusColumn || 'B',
+      startRow: liveSettings.verifiedGenStartRow || liveSettings.generatorStartRow || liveSettings.startRow || 2,
+    };
+    const pending = await SheetsAPI.findPendingRow(vgSheetSettings);
+    if (!pending) {
+      Logger.info(`[Executor] No pending recipe in ${vgSheetSettings.sheetTabName} — nothing to do`);
+      return { ok: true, processedCount: 0, reason: 'no-pending-row' };
+    }
+    Logger.info(`[Executor] Will process ONE recipe: "${pending.topic}" (row ${pending.rowIndex})`);
+
+    // Seed batchMode state with a single item — the orchestrator's COMPLETED
+    // handler checks batchQueue and stops when batchCurrentIndex >= length.
+    await StateManager.resetState();
+    await StateManager.updateState({
+      status: STATES.LOADING_JOB,
+      batchMode: true,
+      batchQueue: [{ topic: pending.topic, rowIndex: pending.rowIndex }],
+      batchCurrentIndex: 0,
+      batchResults: [],
+      batchStartedAt: Date.now(),
+    });
+
     // Launch the browser with FlowAccount profile if rotation is enabled
     let profileOverride = null;
     try {
@@ -256,9 +326,39 @@ async function runCreateRecipe(item, config, serverCtx) {
     const orchestrator = new VerifiedGeneratorOrchestrator(null, serverCtx.browserContext, serverCtx);
     serverCtx.orchestrator = orchestrator;
     await orchestrator.start();
-    return { ok: true };
+
+    // Inspect the batch results to know if the recipe ACTUALLY completed —
+    // the orchestrator's batch loop swallows step-level errors (Flow crash,
+    // WP upload fail, etc.) and returns OK regardless. Check state.batchResults
+    // to surface the real status to the Planifier.
+    const finalState = await StateManager.getState();
+    const batchResults = finalState.batchResults || [];
+    const item0 = batchResults[0] || null;
+    if (item0 && item0.status === 'error') {
+      const errMsg = item0.error || 'Unknown orchestrator error';
+      throw new Error(`Recipe "${pending.topic}" generation failed: ${errMsg}`);
+    }
+    return {
+      ok: true,
+      processedCount: 1,
+      recipe: pending.topic,
+      rowIndex: pending.rowIndex,
+      draftUrl: item0?.draftUrl || null,
+      orchestratorStatus: item0?.status || 'unknown',
+    };
   } finally {
     try { await serverCtx.cleanupBrowser(); } catch {}
+    // Restore the original sheetTabName so we don't permanently mutate site settings
+    if (didOverride) {
+      try {
+        const settings = await StateManager.getSettings();
+        settings.sheetTabName = originalSheetTab;
+        await StateManager.saveSettings(settings);
+        Logger.info(`[Executor] Restored sheetTabName: ${originalSheetTab}`);
+      } catch (e) {
+        Logger.warn(`[Executor] failed to restore sheetTabName: ${e.message}`);
+      }
+    }
     if (switched && currentActive) {
       StateManager.setActiveSite(currentActive);
       Logger.info(`[Executor] Restored active site: ${currentActive}`);
@@ -340,6 +440,27 @@ export async function runPlanItem(date, itemId, serverCtx, options = {}) {
       error: error?.message || null,
       manuallyTriggered: !!options.manual,
     });
+
+    // ── Telegram notification ────────────────────────────────────
+    try {
+      const tg = config.notifications?.telegram;
+      if (tg?.enabled && tg?.botToken && tg?.chatId) {
+        const shouldNotify = (error && tg.notifyOnError) || (!error && tg.notifyOnSuccess);
+        if (shouldNotify) {
+          const icon = error ? '❌' : '✅';
+          const label = item.type === 'create-recipe' ? 'Recipe creation' : 'Pinterest session';
+          const target = item.site + (item.accountId ? '/' + item.accountId : '');
+          const recipe = result?.recipe ? `\n<b>Recipe:</b> ${result.recipe}` : '';
+          const pin = result?.posted && result?.pinUrl ? `\n<b>Pin URL:</b> ${result.pinUrl}` : '';
+          const draft = result?.draftUrl ? `\n<b>Draft:</b> ${result.draftUrl}` : '';
+          const errLine = error ? `\n<b>Error:</b> <code>${escapeHtmlForTelegram(error.message.slice(0, 300))}</code>` : '';
+          const msg = `${icon} <b>${label} ${error ? 'FAILED' : 'OK'}</b>\n${target}${recipe}${pin}${draft}\n<i>Duration: ${durationSec}s · ${new Date().toLocaleTimeString()}</i>${errLine}`;
+          sendTelegram(tg, msg).catch(e => Logger.warn('[Telegram] async send failed: ' + e.message));
+        }
+      }
+    } catch (e) {
+      Logger.warn(`[Executor] Telegram notification skipped: ${e.message}`);
+    }
   }
   if (error) throw error;
   return { ok: true, result, durationSec: Math.round((Date.now() - startedAt) / 1000) };

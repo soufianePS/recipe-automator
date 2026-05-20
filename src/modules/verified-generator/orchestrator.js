@@ -623,6 +623,22 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       recipe = data.recipe;
       rawVisualPlan = data.visual_plan;
       rawPins = data.pinterest_pins || [];
+      // Gemini frequently splits the recipe across top-level + recipe.{}.
+      // It puts article_title, meta_description, intro, category, etc. AT TOP
+      // LEVEL while keeping cooking-specific fields (ingredients, steps) in
+      // recipe.{}. We HOIST every top-level field that isn't a known wrapper
+      // (recipe / visual_plan / pinterest_pins) into recipe.{} so downstream
+      // code finds everything in one place. recipe.{} wins on conflict.
+      const WRAPPER_KEYS = new Set(['recipe', 'visual_plan', 'pinterest_pins', 'visualPlan', 'pinterestPins']);
+      const hoisted = [];
+      for (const [k, v] of Object.entries(data)) {
+        if (WRAPPER_KEYS.has(k)) continue;
+        if (recipe[k] == null && v != null) {
+          recipe[k] = v;
+          hoisted.push(k);
+        }
+      }
+      if (hoisted.length) Logger.info(`[VerifiedGen] Hoisted ${hoisted.length} top-level field(s) into recipe: ${hoisted.join(', ')}`);
       Logger.info('[VerifiedGen] Parsed clean structure: recipe + visual_plan + pinterest_pins');
     } else if (data.visual_plan) {
       // Flat structure: recipe fields at top level + visual_plan key
@@ -637,14 +653,31 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     }
 
     recipe = sanitizeRecipeJSON(recipe);
-    if (!recipe.post_title && recipe.title) recipe.post_title = recipe.title;
-    if (!recipe.steps && recipe.instructions) recipe.steps = recipe.instructions;
+    // ── Schema normalization for AI free-form field naming ──────
+    // Gemini (especially) is inconsistent — it variates between post_title /
+    // title / article_title / article. Same for steps / instructions /
+    // recipeInstructions. Normalize all known variations to the canonical
+    // names expected by the rest of the pipeline.
+    if (!recipe.post_title) {
+      recipe.post_title = recipe.title || recipe.article_title || recipe.article || recipe.recipe_title || recipe.name;
+    }
+    if (!recipe.steps || !Array.isArray(recipe.steps) || recipe.steps.length === 0) {
+      const stepsCandidate = recipe.instructions || recipe.recipeInstructions || recipe.directions || recipe.method;
+      if (Array.isArray(stepsCandidate) && stepsCandidate.length > 0) recipe.steps = stepsCandidate;
+    }
+    if (!recipe.ingredients || !Array.isArray(recipe.ingredients) || recipe.ingredients.length === 0) {
+      const ingCandidate = recipe.recipeIngredient || recipe.ingredients_list;
+      if (Array.isArray(ingCandidate) && ingCandidate.length > 0) recipe.ingredients = ingCandidate;
+    }
     if (!recipe.pro_tips && recipe.tips) recipe.pro_tips = recipe.tips;
     if (!recipe.storage_notes && recipe.storage) recipe.storage_notes = recipe.storage;
+
     if (!recipe.steps || !Array.isArray(recipe.steps)) {
-      Logger.error('ChatGPT returned keys:', Object.keys(recipe).join(', '));
+      Logger.error('AI returned keys:', Object.keys(recipe).join(', '));
+      Logger.error('Tried fallbacks: instructions, recipeInstructions, directions, method — none worked.');
       throw new Error('Invalid recipe JSON: missing steps array.');
     }
+    Logger.info(`[VerifiedGen] Normalized: post_title="${(recipe.post_title || '').slice(0, 60)}" · ${recipe.steps.length} steps · ${(recipe.ingredients || []).length} ingredients`);
 
     // ── Title Case fix ──
     if (recipe.post_title) {

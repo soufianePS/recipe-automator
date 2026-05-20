@@ -16,7 +16,17 @@
     dolphinProfiles: [],        // [{id, name, proxy, ...}]
     dolphinWarnings: [],
     activeTab: 'overview',
+    uiState: {},                // server-side persisted UI state (filters etc.)
   };
+
+  // Debounce helper — coalesces rapid updates into a single fetch
+  function debounce(fn, ms = 400) {
+    let t;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), ms);
+    };
+  }
 
   // ── Utilities ────────────────────────────────────────────────
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -32,6 +42,25 @@
     if (!iso) return '--:--';
     const d = new Date(iso);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function fmtTimeFull(iso) {
+    if (!iso) return '--:--:--';
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  /** Returns a human-readable relative time: "in 2h 15m", "5 min ago", "now". */
+  function fmtRelative(iso) {
+    if (!iso) return '';
+    const diff = new Date(iso).getTime() - Date.now();
+    const absMin = Math.abs(Math.round(diff / 60000));
+    const future = diff > 0;
+    if (absMin < 1) return future ? 'now' : 'just now';
+    if (absMin < 60) return future ? `in ${absMin}m` : `${absMin}m ago`;
+    const h = Math.floor(absMin / 60);
+    const m = absMin % 60;
+    return future ? `in ${h}h ${m}m` : `${h}h ${m}m ago`;
   }
 
   function fmtDate(dateStr) {
@@ -105,6 +134,7 @@
       if (state.activeTab === 'config') await plfRenderConfigPanel();
       if (state.activeTab === 'rules') plfRenderRulesPanel();
       if (state.activeTab === 'plan') await plfLoadUpcoming(7);
+      if (state.activeTab === 'recipes') await plfLoadRecipes();
       if (state.activeTab === 'pool') await plfLoadPool();
       if (state.activeTab === 'history') await plfLoadHistory();
     } catch (e) {
@@ -117,12 +147,14 @@
     if (state.initialized) return;
     state.initialized = true;
     try {
-      const [config, meta] = await Promise.all([
+      const [config, meta, uiState] = await Promise.all([
         api('GET', '/api/planifier/config'),
         api('GET', '/api/planifier/meta'),
+        api('GET', '/api/planifier/ui-state').catch(() => ({})),
       ]);
       state.config = config;
       state.meta = meta;
+      state.uiState = uiState || {};
 
       // Master switch
       $('#plfEnabledToggle').checked = !!config.enabled;
@@ -183,6 +215,13 @@
         }
       }
       if (!silent) showToast(`Loaded ${state.dolphinProfiles.length} Dolphin profile(s)`, 'success');
+      // Re-render the site config cards so their account dropdowns pick up
+      // the newly loaded profiles. Without this, dropdowns stay stuck on
+      // "— none —" if profiles weren't available at first render.
+      if (state.activeTab === 'config' && state.dolphinProfiles.length > 0 && document.getElementById('plfSitesConfig')) {
+        plfReadFormIntoConfig();   // preserve in-flight edits
+        plfRenderSitesConfig();
+      }
     } catch (e) {
       if (target) target.innerHTML = '<div style="padding:8px;color:#ff6b6b;">Failed: ' + escapeHtml(e.message) + '</div>';
       if (!silent) showToast('Dolphin load failed: ' + e.message, 'error');
@@ -282,7 +321,16 @@
       box.innerHTML = `<div class="plf-timeline-empty">No actions scheduled for today${plan.globalSkip ? ' (global skip day)' : ''}.</div>`;
       return;
     }
-    box.innerHTML = '<div class="plf-timeline">' + plan.items.map(item => {
+    // Find the next pending slot for the countdown header
+    const nextPending = plan.items.find(i => i.status === 'pending');
+    const headerCountdown = nextPending
+      ? `<div style="padding:10px 14px;background:rgba(110,168,254,0.06);border:1px solid rgba(110,168,254,0.18);border-radius:8px;margin-bottom:12px;font-size:12px;color:#9a9ab8;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+           <span>⏱ <strong style="color:#6ea8fe;">Next slot:</strong> ${escapeHtml(fmtTimeFull(nextPending.scheduledAt))} <span style="color:#6a6a8e;">(${escapeHtml(fmtRelative(nextPending.scheduledAt))})</span></span>
+           <span style="color:#6a6a8e;">Now: ${new Date().toLocaleTimeString()} · TZ: ${Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
+         </div>`
+      : `<div style="padding:10px 14px;background:rgba(120,120,150,0.06);border:1px solid rgba(120,120,150,0.18);border-radius:8px;margin-bottom:12px;font-size:12px;color:#9a9ab8;">No more pending slots today · Now: ${new Date().toLocaleTimeString()}</div>`;
+
+    box.innerHTML = headerCountdown + '<div class="plf-timeline">' + plan.items.map(item => {
       const typeIcon = item.type === 'create-recipe'
         ? '<div class="plf-timeline-icon recipe">R</div>'
         : (item.willPost
@@ -304,9 +352,13 @@
       const runBtn = isRunning
         ? '<span class="plf-quick-run" style="background:rgba(33,150,243,0.12);color:#6ea8fe;border:1px solid rgba(33,150,243,0.3);">⏳ Running</span>'
         : `<button class="plf-quick-run" data-date="${escapeHtml(plan.date)}" data-id="${escapeHtml(item.id)}" data-force="${isDone || isError ? '1' : '0'}" style="${runBg}" title="${runLabel}">${runIcon} ${runLabel}</button>`;
+      const rel = item.status === 'pending' ? fmtRelative(item.scheduledAt) : '';
       return `
         <div class="plf-timeline-item ${item.locked ? 'locked' : ''}" data-date="${escapeHtml(plan.date)}" data-id="${escapeHtml(item.id)}">
-          <div class="plf-timeline-time">${fmtTime(item.scheduledAt)}</div>
+          <div class="plf-timeline-time" title="${escapeHtml(fmtTimeFull(item.scheduledAt))} · ${escapeHtml(item.scheduledAt)}">
+            ${fmtTime(item.scheduledAt)}
+            ${rel ? `<div style="font-size:10px;color:#6a6a8e;font-weight:500;margin-top:1px;font-family:inherit;">${escapeHtml(rel)}</div>` : ''}
+          </div>
           ${typeIcon}
           <div class="plf-timeline-meta">${meta}${item.locked ? ' <span style="color:#ffb347;font-size:10px;">🔒 locked</span>' : ''}</div>
           <span class="plf-timeline-badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
@@ -368,8 +420,74 @@
     if (state.dolphinProfiles.length === 0) await plfLoadDolphinProfiles({ silent: true });
     plfRenderSitesConfig();
     plfRenderRulesPanel();   // also populate rules tab fields
+    plfRenderWhatsAppConfig();
     renderDiagnostics();
   }
+
+  function plfRenderWhatsAppConfig() {
+    // Renamed conceptually to Telegram — kept the function name to avoid touching the call site
+    const tg = state.config?.notifications?.telegram || {};
+    if ($('#plfTgToken')) {
+      const t = tg.botToken || '';
+      if (t) $('#plfTgToken').placeholder = t.slice(0, 12) + '...' + t.slice(-4);
+    }
+    if ($('#plfTgChatId')) $('#plfTgChatId').value = tg.chatId || '';
+    if ($('#plfTgEnabled')) $('#plfTgEnabled').checked = !!tg.enabled;
+    if ($('#plfTgNotifyError')) $('#plfTgNotifyError').checked = tg.notifyOnError !== false;
+    if ($('#plfTgNotifySuccess')) $('#plfTgNotifySuccess').checked = !!tg.notifyOnSuccess;
+  }
+
+  window.plfFetchChatId = async function () {
+    const statusEl = $('#plfTgStatus');
+    if (statusEl) { statusEl.textContent = 'Fetching…'; statusEl.style.color = '#9a9ab8'; }
+    const botToken = $('#plfTgToken').value.trim();
+    if (!botToken) {
+      statusEl.textContent = '✗ Paste bot token first';
+      statusEl.style.color = '#ff8585';
+      return;
+    }
+    try {
+      const r = await api('POST', '/api/planifier/notifications/fetch-chatid', { botToken });
+      if (r.ok) {
+        $('#plfTgChatId').value = r.chatId;
+        statusEl.textContent = `✓ Found chat: ${r.chatName} (id ${r.chatId})`;
+        statusEl.style.color = '#00d68f';
+      } else {
+        statusEl.textContent = '✗ ' + (r.error || 'failed');
+        statusEl.style.color = '#ffb347';
+      }
+    } catch (e) {
+      statusEl.textContent = '✗ ' + e.message;
+      statusEl.style.color = '#ff8585';
+    }
+  };
+
+  window.plfTestTelegram = async function () {
+    const statusEl = $('#plfTgStatus');
+    if (statusEl) { statusEl.textContent = 'Sending…'; statusEl.style.color = '#9a9ab8'; }
+    const botToken = $('#plfTgToken').value.trim();
+    const chatId = $('#plfTgChatId').value.trim();
+    if (!botToken || !chatId) {
+      statusEl.textContent = '✗ Token + chat ID required';
+      statusEl.style.color = '#ff8585';
+      return;
+    }
+    try {
+      const r = await api('POST', '/api/planifier/notifications/test-telegram', { botToken, chatId });
+      if (r.ok) {
+        statusEl.textContent = '✓ Sent! Check your Telegram.';
+        statusEl.style.color = '#00d68f';
+        plfReadFormIntoConfig();
+        await api('POST', '/api/planifier/config', state.config);
+      } else {
+        statusEl.textContent = '✗ ' + (r.error || 'Failed');
+        statusEl.style.color = '#ff8585';
+      }
+    } catch (e) {
+      statusEl.textContent = '✗ ' + e.message;
+      statusEl.style.color = '#ff8585';
+    }
+  };
 
   // ── Dolphin connection card ──────────────────────────────────
   async function plfLoadDolphinConnection() {
@@ -533,6 +651,16 @@
         <div class="plf-site-body">
           <div class="plf-site-row">
             <div class="plf-rule-field">
+              <label>Sheet tab <small style="color:#6a6a8e;font-weight:400;text-transform:none;">— which Google Sheet tab to read for this site</small></label>
+              <select class="plf-site-sheetTab" data-current="${escapeHtml(site.sheetTab || '')}"><option value="">(loading…)</option></select>
+            </div>
+            <div class="plf-rule-field">
+              <label>Pin distribution</label>
+              <select class="plf-site-strategy">${strategyOptions.replace(`value="${site.pinDistribution || 'strategy_A'}"`, `value="${site.pinDistribution || 'strategy_A'}" selected`)}</select>
+            </div>
+          </div>
+          <div class="plf-site-row">
+            <div class="plf-rule-field">
               <label>Recipes / day (min)</label>
               <input type="number" class="plf-site-rmin" min="0" value="${Number(site.recipesPerDayMin) || 0}" />
             </div>
@@ -540,10 +668,7 @@
               <label>Recipes / day (max)</label>
               <input type="number" class="plf-site-rmax" min="0" value="${Number(site.recipesPerDayMax) || 0}" />
             </div>
-            <div class="plf-rule-field">
-              <label>Pin distribution</label>
-              <select class="plf-site-strategy">${strategyOptions.replace(`value="${site.pinDistribution || 'strategy_A'}"`, `value="${site.pinDistribution || 'strategy_A'}" selected`)}</select>
-            </div>
+            <div></div>
           </div>
 
           <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -557,6 +682,28 @@
         </div>
       </div>
     `).join('');
+
+    // Lazy-populate sheet tab dropdowns from each site's settings.json
+    sites.forEach(([siteName]) => {
+      const sel = container.querySelector(`.plf-site-card[data-site="${siteName}"] .plf-site-sheetTab`);
+      if (!sel) return;
+      const current = sel.dataset.current || '';
+      api('GET', `/api/planifier/sheet-tabs/${encodeURIComponent(siteName)}`)
+        .then(r => {
+          const opts = [
+            `<option value="">(default: ${escapeHtml(r.defaultTab || '—')})</option>`,
+            ...(r.tabs || []).map(t => `<option value="${escapeHtml(t)}"${t === current ? ' selected' : ''}>${escapeHtml(t)}</option>`),
+          ];
+          // If current is set but not in the list, add it as a custom entry so we don't lose it
+          if (current && !(r.tabs || []).includes(current)) {
+            opts.push(`<option value="${escapeHtml(current)}" selected>${escapeHtml(current)} (custom)</option>`);
+          }
+          sel.innerHTML = opts.join('');
+        })
+        .catch(e => {
+          sel.innerHTML = `<option value="">(error: ${escapeHtml(e.message)})</option>`;
+        });
+    });
   }
 
   function renderAccountCard(siteName, acc, idx, dolphinOptions, statusOptions) {
@@ -640,6 +787,8 @@
       site.recipesPerDayMin = Number($('.plf-site-rmin', card).value) || 0;
       site.recipesPerDayMax = Number($('.plf-site-rmax', card).value) || 0;
       site.pinDistribution = $('.plf-site-strategy', card).value;
+      const tabSel = $('.plf-site-sheetTab', card);
+      if (tabSel) site.sheetTab = tabSel.value || '';
       site.pinterestAccounts = $$('.plf-account-card', card).map(ac => ({
         id: $('.plf-acc-id', ac).value.trim() || 'acc',
         dolphinProfileId: $('.plf-acc-dolphin', ac).value || null,
@@ -702,6 +851,18 @@
 
     // Per-site keywords
     plfReadKeywordsIntoConfig();
+
+    // Telegram notifications
+    if (!state.config.notifications) state.config.notifications = {};
+    if (!state.config.notifications.telegram) state.config.notifications.telegram = {};
+    const tg = state.config.notifications.telegram;
+    const newToken = $('#plfTgToken')?.value.trim();
+    const chatId = $('#plfTgChatId')?.value.trim();
+    if (newToken) tg.botToken = newToken;     // only update if user typed something
+    if (chatId !== undefined) tg.chatId = chatId;
+    if ($('#plfTgEnabled')) tg.enabled = $('#plfTgEnabled').checked;
+    if ($('#plfTgNotifyError')) tg.notifyOnError = $('#plfTgNotifyError').checked;
+    if ($('#plfTgNotifySuccess')) tg.notifyOnSuccess = $('#plfTgNotifySuccess').checked;
   }
 
   function plfRenderRulesPanel() {
@@ -957,7 +1118,7 @@
     const typeLabel = item.type === 'create-recipe'
       ? `Recipe creation`
       : `Pinterest session ${item.willPost ? '(post)' : '(browse only)'}`;
-    const subLabel = `${item.site}${item.accountId ? ' / ' + item.accountId : ''} — ${fmtDate(date)}`;
+    const subLabel = `${item.site}${item.accountId ? ' / ' + item.accountId : ''} — ${fmtDate(date)} · ${fmtTimeFull(item.scheduledAt)} (${fmtRelative(item.scheduledAt)})`;
     const d = new Date(item.scheduledAt);
     const timeValue = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
     const statusBadge = `<span class="plf-timeline-badge ${escapeHtml(item.status)}" style="margin-left:8px;font-size:10px;">${escapeHtml(item.status)}</span>`;
@@ -977,6 +1138,17 @@
             <label>Time (HH:MM)</label>
             <input type="time" id="plfModalTime" value="${timeValue}" />
           </div>
+          ${(isDone || isError) ? `
+          <div class="plf-rule-field">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:10px 12px;background:rgba(0,214,143,0.06);border:1px solid rgba(0,214,143,0.2);border-radius:8px;">
+              <input type="checkbox" id="plfModalResetPending" style="width:auto;margin-top:2px;" />
+              <span>
+                <strong style="color:#00d68f;">Reset to pending</strong>
+                <br/><span style="font-size:11px;color:#9a9ab8;">This slot is currently <em>${escapeHtml(item.status)}</em>. Check to reset its status to pending so it fires again at the new scheduled time (instead of staying done/error).</span>
+              </span>
+            </label>
+          </div>
+          ` : ''}
           <div class="plf-rule-field">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
               <input type="checkbox" id="plfModalLock" ${item.locked ? 'checked' : ''} style="width:auto;" />
@@ -1160,6 +1332,17 @@
             statusBox.style.borderColor = 'rgba(0,214,143,0.25)';
             statusBox.style.color = '#00d68f';
             statusBox.textContent = `✓ Done — ${elapsedSec}s`;
+            // Check history for fallback reason
+            try {
+              const h = await api('GET', '/api/planifier/history?range=today&limit=10');
+              const last = (h.items || []).find(it => it.itemId === itemId && it.status === 'done');
+              if (last?.result?.wantedToPost && !last.result.posted && last.result.reason === 'no-eligible-pin') {
+                statusBox.style.background = 'rgba(255,179,71,0.08)';
+                statusBox.style.borderColor = 'rgba(255,179,71,0.25)';
+                statusBox.style.color = '#ffb347';
+                statusBox.innerHTML = `⚠ Done in ${elapsedSec}s — but <strong>no pin was posted</strong> (no eligible pin found for this account). Check: sheet tab, validation, pinSpreadDays. Browsed only.`;
+              }
+            } catch {}
           } else if (item.status === 'error') {
             statusBox.style.background = 'rgba(244,67,54,0.08)';
             statusBox.style.borderColor = 'rgba(244,67,54,0.2)';
@@ -1185,15 +1368,17 @@
       const time = $('#plfModalTime').value;
       const locked = $('#plfModalLock').checked;
       const willPostEl = $('#plfModalWillPost');
+      const resetEl = $('#plfModalResetPending');
       // Build new scheduledAt — same date, new time
       const [y, m, d] = date.split('-').map(Number);
       const [hh, mm] = time.split(':').map(Number);
       const newDate = new Date(y, m - 1, d, hh, mm, 0);
       const patch = { scheduledAt: newDate.toISOString(), locked };
       if (willPostEl) patch.willPost = willPostEl.checked;
+      if (resetEl && resetEl.checked) patch.status = 'pending';
       await api('PUT', `/api/planifier/plan/${date}/items/${itemId}`, patch);
       $('.plf-modal-backdrop').remove();
-      showToast('Slot updated', 'success');
+      showToast(resetEl?.checked ? 'Slot updated + reset to pending' : 'Slot updated', 'success');
       plfLoadActiveTab();
     } catch (e) {
       showToast('Save failed: ' + e.message, 'error');
@@ -1306,18 +1491,35 @@
 
   // ── Pin Pool ─────────────────────────────────────────────────
   let _poolCache = null;
-  async function plfLoadPool() {
+  async function plfLoadPool(opts = {}) {
     const box = $('#plfPoolTable');
     if (!box) return;
-    box.innerHTML = '<div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading pin pool from Google Sheet…</div>';
+    const url = opts.validate ? '/api/planifier/pin-pool?validate=1' : '/api/planifier/pin-pool';
+    const loadMsg = opts.validate
+      ? 'Validating recipes — fetching each WP post to check ingredients vs steps. Takes a few seconds…'
+      : 'Loading pin pool from Google Sheet…';
+    box.innerHTML = `<div style="padding:18px;color:#6a6a8e;font-size:13px;">${loadMsg}</div>`;
     try {
-      const r = await api('GET', '/api/planifier/pin-pool');
+      const r = await api('GET', url);
       _poolCache = r;
       // Stats
       $('#plfPoolRecipes').textContent = r.summary.totalRecipes;
       $('#plfPoolPosted').textContent = r.summary.pinsPosted;
       $('#plfPoolPending').textContent = r.summary.pinsPending;
       $('#plfPoolEligible').textContent = r.summary.pinsEligibleNow;
+      // Validation line under "Recipes" stat
+      const validLine = $('#plfPoolValidLine');
+      if (validLine) {
+        if (r.summary.recipesValid != null) {
+          const v = r.summary.recipesValid;
+          const i = r.summary.recipesInvalid;
+          const total = v + i;
+          const pct = total > 0 ? Math.round(v/total*100) : 0;
+          validLine.innerHTML = `<span style="color:#00d68f;">${v} ✓ valid</span> · <span style="color:#ffb347;">${i} ⚠ invalid</span> (${pct}%)`;
+        } else {
+          validLine.innerHTML = '<span style="color:#6a6a8e;">Click "Validate All" to check quality</span>';
+        }
+      }
       // Populate filter
       const sites = [...new Set(r.pool.map(p => p.site))].sort();
       const sel = $('#plfPoolFilterSite');
@@ -1328,6 +1530,9 @@
       // Render
       plfRenderPool();
       renderPoolByAccount(r.summary.byAccount);
+      if (opts.validate) {
+        showToast(`Validated ${r.summary.totalRecipes} recipes — ${r.summary.recipesInvalid || 0} invalid`, r.summary.recipesInvalid ? 'warning' : 'success');
+      }
     } catch (e) {
       box.innerHTML = `<div class="plf-pool-empty" style="color:#ff6b6b;">Failed: ${escapeHtml(e.message)}</div>`;
     }
@@ -1368,11 +1573,21 @@
       const accountLabel = r.assignedAccountId
         ? `<span class="plf-status-pill plf-status-active" style="font-size:10px;">${escapeHtml(r.assignedAccountId)}</span>`
         : '<span style="color:#ffb347;font-size:11px;">unassigned</span>';
+      // Validation badge (only when ?validate=1 was used)
+      let validationBadge = '';
+      if (r.validation) {
+        if (r.validation.valid) {
+          validationBadge = '<span class="plf-validation-badge valid" title="Recipe passed validator">✓</span>';
+        } else {
+          const issuesText = (r.validation.issues || []).map(i => `${i.kind}: ${i.msg}`).join(' • ');
+          validationBadge = `<span class="plf-validation-badge invalid" title="${escapeHtml(issuesText)}">⚠</span>`;
+        }
+      }
       return `
-        <div class="plf-pool-row">
+        <div class="plf-pool-row${r.validation && !r.validation.valid ? ' invalid-recipe' : ''}">
           <div class="plf-pool-rownum">${r.rowIndex}</div>
           <div class="topic">
-            ${escapeHtml(r.topic || '—')}
+            ${escapeHtml(r.topic || '—')} ${validationBadge}
             <small><a href="${escapeHtml(r.draftUrl || '#')}" target="_blank" rel="noopener" style="color:#6a6a8e;">${escapeHtml(r.site)}</a></small>
           </div>
           <div class="date">${escapeHtml(r.publishedAt || '—')}</div>
@@ -1440,6 +1655,521 @@
       `;
     }).join('') + '</div>';
   }
+
+  // ── Recipes tab ──────────────────────────────────────────────
+  let _recipesCache = null;
+
+  // Persist filter changes server-side (debounced 400ms)
+  const _saveRecipesFilters = debounce(async () => {
+    const filters = {
+      search: $('#plfRecSearch')?.value || '',
+      site: $('#plfRecFilterSite')?.value || '',
+      status: $('#plfRecFilterStatus')?.value || '',
+      validation: $('#plfRecFilterValid')?.value || '',
+    };
+    state.uiState.recipesFilters = filters;
+    try {
+      await api('POST', '/api/planifier/ui-state', { recipesFilters: filters });
+    } catch (e) {
+      console.warn('[Planifier] save filters failed:', e.message);
+    }
+  }, 400);
+
+  function _wireRecipesFilterListeners() {
+    ['plfRecSearch', 'plfRecFilterSite', 'plfRecFilterStatus', 'plfRecFilterValid'].forEach(id => {
+      const el = $('#' + id);
+      if (!el) return;
+      const handler = () => { plfRenderRecipes(); _saveRecipesFilters(); };
+      // Replace existing handler if already wired
+      if (el.dataset.plfWired) return;
+      el.dataset.plfWired = '1';
+      el.addEventListener('input', handler);
+      el.addEventListener('change', handler);
+    });
+  }
+
+  function _restoreRecipesFilters() {
+    const saved = state.uiState?.recipesFilters || {};
+    if ($('#plfRecSearch')) $('#plfRecSearch').value = saved.search || '';
+    if ($('#plfRecFilterSite')) $('#plfRecFilterSite').value = saved.site || '';
+    if ($('#plfRecFilterStatus')) $('#plfRecFilterStatus').value = saved.status || '';
+    if ($('#plfRecFilterValid')) $('#plfRecFilterValid').value = saved.validation || '';
+  }
+
+  async function plfLoadRecipes() {
+    const box = $('#plfRecipesTable');
+    if (!box) return;
+    box.innerHTML = '<div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading all recipes from sheet…</div>';
+    try {
+      // Refresh UI state from server in case another tab/session changed it
+      try { state.uiState = await api('GET', '/api/planifier/ui-state'); } catch {}
+      const r = await api('GET', '/api/planifier/recipes');
+      _recipesCache = r;
+      // Stat cards
+      $('#plfRecStatTotal').textContent = r.summary.total;
+      $('#plfRecStatPublished').textContent = (r.summary.byWpStatus?.published) || 0;
+      $('#plfRecStatPending').textContent = (r.summary.byStatus?.pending) || 0;
+      $('#plfRecStatValid').textContent = r.summary.validationStats?.valid || 0;
+      // Populate site filter
+      const sites = Object.keys(r.summary.bySite || {}).sort();
+      const sel = $('#plfRecFilterSite');
+      const prevDom = sel.value;
+      sel.innerHTML = '<option value="">All sites</option>' +
+        sites.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)} (${r.summary.bySite[s]})</option>`).join('');
+      // Restore saved filters (overrides DOM defaults)
+      _restoreRecipesFilters();
+      _wireRecipesFilterListeners();
+      // Render with applied filters
+      plfRenderRecipes();
+    } catch (e) {
+      box.innerHTML = `<div class="plf-rec-empty" style="color:#ff6b6b;">Failed: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function plfRenderRecipes() {
+    if (!_recipesCache) return;
+    const box = $('#plfRecipesTable');
+    if (!box) return;
+
+    const search = ($('#plfRecSearch')?.value || '').toLowerCase().trim();
+    const filterSite = $('#plfRecFilterSite')?.value || '';
+    const filterStatus = $('#plfRecFilterStatus')?.value || '';
+    const filterValid = $('#plfRecFilterValid')?.value || '';
+
+    let list = _recipesCache.recipes;
+    if (search) list = list.filter(r => (r.topic || '').toLowerCase().includes(search));
+    if (filterSite) list = list.filter(r => r.site === filterSite);
+    if (filterStatus) list = list.filter(r => (r.status || '') === filterStatus);
+    if (filterValid) {
+      if (filterValid === 'valid') list = list.filter(r => r.validation?.valid === true);
+      else if (filterValid === 'invalid') list = list.filter(r => r.validation?.valid === false);
+      else if (filterValid === 'none') list = list.filter(r => !r.validation);
+    }
+
+    if (list.length === 0) {
+      box.innerHTML = '<div class="plf-rec-empty">No recipes match the current filters.</div>';
+      return;
+    }
+
+    const header = `
+      <div class="plf-rec-header">
+        <div>Row</div>
+        <div>Recipe</div>
+        <div>Status</div>
+        <div>WP</div>
+        <div>Validation</div>
+        <div>Pins</div>
+        <div style="text-align:right;">Actions</div>
+      </div>
+    `;
+    const rowsHtml = list.map(r => {
+      const status = r.status || '';
+      const statusClass = status ? `plf-rec-status-${status}` : 'plf-rec-status-pending';
+      const wpStatus = r.wpStatus || '—';
+      let validationHtml = '<span style="color:#6a6a8e;font-size:11px;">— not yet</span>';
+      if (r.validation?.valid === true) {
+        validationHtml = `<span class="plf-validation-badge valid" title="Recipe valid">✓</span> <span style="color:#00d68f;font-size:11px;">valid</span> <button class="plf-validation-clear" onclick="event.stopPropagation();plfClearValidation('${escapeHtml(r.site)}', ${r.rowIndex})" title="Clear validation (revert col X)">×</button>`;
+      } else if (r.validation?.valid === false) {
+        const tip = (r.validation.issues || []).map(i => i.msg || i.kind).join(' / ');
+        validationHtml = `<span class="plf-validation-badge invalid" title="${escapeHtml(tip)}">⚠</span> <span style="color:#ffb347;font-size:11px;">invalid</span> <button class="plf-validation-clear" onclick="event.stopPropagation();plfClearValidation('${escapeHtml(r.site)}', ${r.rowIndex})" title="Clear validation (revert col X)">×</button>`;
+      }
+      const pinsHtml = r.pins.map((p, idx) => {
+        if (!p.imageUrl) return `<div class="plf-rec-pin-thumb empty" title="Pin #${idx+1} — no image">${idx+1}</div>`;
+        const postedCls = p.postedAt ? ' posted' : '';
+        return `<a href="${escapeHtml(p.imageUrl)}" target="_blank" rel="noopener" class="plf-rec-pin-thumb${postedCls}" title="Pin #${idx+1}${p.postedAt ? ' — posted ' + p.postedAt.slice(0,10) : ''}"><img src="${escapeHtml(p.imageUrl)}" loading="lazy" /></a>`;
+      }).join('');
+      const draftUrl = r.draftUrl || '';
+      const isOrphan = status === 'done' && !draftUrl;
+      const rowCls = (r.validation?.valid === false ? 'invalid ' : '') + (isOrphan ? 'orphan ' : '');
+
+      // Action buttons depend on state
+      let actionsHtml = '';
+      if (isOrphan) {
+        // Orphan: done in sheet but no URL written. Offer to reset.
+        actionsHtml = `
+          <span class="plf-rec-orphan-badge" title="Marked 'done' in col B but no draftUrl in col C — the orchestrator likely crashed between WP create and sheet write. Click Reset to re-process.">⚠ no URL</span>
+          <button class="reset" onclick="plfResetRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(r.topic||'')}')" title="Reset status to 'pending' so the orchestrator reprocesses it">↻ Reset</button>
+          <button class="delete" onclick="plfDeleteRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(r.topic||'')}')" title="HARD DELETE: WP post + media + reset sheet row to pending">Delete</button>
+        `;
+      } else {
+        actionsHtml = `
+          <button onclick="plfValidateOneRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(draftUrl)}')" title="Re-validate via WP REST" ${draftUrl ? '' : 'disabled style="opacity:0.4;cursor:not-allowed;"'}>Validate</button>
+          ${draftUrl ? `<a href="${escapeHtml(draftUrl)}" target="_blank" rel="noopener" title="Open in WP admin">Edit</a>` : ''}
+          <button class="delete" onclick="plfDeleteRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(r.topic||'')}')" title="HARD DELETE: WP post + media + reset sheet row to pending (topic kept)">Delete</button>
+        `;
+      }
+
+      return `
+        <div class="plf-rec-row ${rowCls}" data-rec-key="${escapeHtml(r.site)}-${r.rowIndex}" onclick="plfToggleRecipeDetail('${escapeHtml(r.site)}-${r.rowIndex}', event)">
+          <div class="rownum">${r.rowIndex}</div>
+          <div class="topic">
+            ${escapeHtml(r.topic || '(empty)')}
+            <span class="site-tag">${escapeHtml(r.site)}${r.publishedAt ? ' · ' + escapeHtml(r.publishedAt) : ''}</span>
+          </div>
+          <div><span class="plf-rec-status-badge ${statusClass}">${escapeHtml(status || '—')}</span></div>
+          <div style="font-size:11px;color:#9a9ab8;">${escapeHtml(wpStatus)}</div>
+          <div>${validationHtml}</div>
+          <div class="plf-rec-pins" onclick="event.stopPropagation()">${pinsHtml}</div>
+          <div class="plf-rec-actions" onclick="event.stopPropagation()">
+            ${actionsHtml}
+          </div>
+        </div>
+        <div class="plf-rec-detail" id="plfRecDetail-${escapeHtml(r.site)}-${r.rowIndex}">
+          ${renderRecipeDetail(r)}
+        </div>
+      `;
+    }).join('');
+
+    box.innerHTML = header + rowsHtml;
+  }
+
+  function renderRecipeDetail(r) {
+    const validationBlock = r.validation
+      ? `<div class="validation-box ${r.validation.valid ? 'valid' : ''}" style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between;">
+           <div style="flex:1;">
+             ${r.validation.valid ? '✓ Recipe valid' : '⚠ Recipe invalid'} · <span style="opacity:0.7;font-size:11px;">source: ${escapeHtml(r.validation.source || 'unknown')}</span>
+             ${!r.validation.valid ? '<br/>' + (r.validation.issues || []).map(i => '• ' + escapeHtml(i.msg || i.kind)).join('<br/>') : ''}
+           </div>
+           <button onclick="event.stopPropagation();plfClearValidation('${escapeHtml(r.site)}', ${r.rowIndex})" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#c8c8e8;padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit;flex-shrink:0;" title="Clear validation (sheet col X)">× Clear</button>
+         </div>`
+      : `<div class="validation-box" style="background:rgba(120,120,150,0.05);border-color:rgba(120,120,150,0.2);color:#9a9ab8;">Not yet validated — click <strong>Validate</strong> to check.</div>`;
+
+    const linksHtml = `
+      <div class="links-row">
+        ${r.draftUrl ? `<a href="${escapeHtml(r.draftUrl)}" target="_blank" rel="noopener">Open in WP admin</a>` : ''}
+        ${r.draftUrl ? `<a href="${escapeHtml(_publicUrlFromDraft(r.draftUrl))}" target="_blank" rel="noopener">View public post</a>` : ''}
+      </div>
+    `;
+
+    const pinsHtml = r.pins.map((p, idx) => {
+      const isPosted = !!p.postedAt;
+      const cols = ['U', 'V', 'W'];
+      const toggleBtn = p.imageUrl
+        ? `<button class="pin-toggle ${isPosted ? 'posted' : ''}"
+            onclick="plfTogglePinPostedFromRecipes('${escapeHtml(r.site)}', ${r.rowIndex}, ${idx}, ${isPosted})"
+            title="Sheet col ${cols[idx]} row ${r.rowIndex}">
+            ${isPosted ? '↺ Unmark posted' : '✓ Mark as posted'}
+          </button>`
+        : '';
+      const regenBtn = `<button class="pin-regen"
+          onclick="plfOpenRegenModal('${escapeHtml(r.site)}', ${r.rowIndex}, ${idx}, '${escapeHtml(r.topic||'')}', '${escapeHtml(p.imageUrl||'')}')"
+          title="Regenerate this pin image">
+          🔄 Regenerate
+        </button>`;
+      return `
+        <div class="pin-card">
+          <div class="pin-img">
+            ${p.imageUrl
+              ? `<a href="${escapeHtml(p.imageUrl)}" target="_blank" rel="noopener"><img src="${escapeHtml(p.imageUrl)}" loading="lazy" /></a>`
+              : '<div class="empty">No image</div>'}
+          </div>
+          <div class="title">Pin #${idx+1}: ${escapeHtml(p.title || '—')}</div>
+          <div class="desc">${escapeHtml((p.description || '').slice(0,160))}${(p.description||'').length>160 ? '…' : ''}</div>
+          ${isPosted ? `<span class="posted-tag">✓ posted ${escapeHtml(p.postedAt.slice(0,10))}</span>` : ''}
+          ${toggleBtn}
+          ${regenBtn}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      ${validationBlock}
+      ${linksHtml}
+      <div class="pin-detail-grid">${pinsHtml}</div>
+    `;
+  }
+
+  function _publicUrlFromDraft(draftUrl) {
+    try {
+      const u = new URL(draftUrl);
+      const postId = u.searchParams.get('post');
+      if (postId) return `${u.origin}/?p=${postId}`;
+    } catch {}
+    return draftUrl;
+  }
+
+  window.plfToggleRecipeDetail = function (key, event) {
+    if (event?.target?.tagName === 'BUTTON' || event?.target?.tagName === 'A') return;
+    const el = document.getElementById(`plfRecDetail-${key}`);
+    const row = document.querySelector(`.plf-rec-row[data-rec-key="${key}"]`);
+    if (!el) return;
+    el.classList.toggle('show');
+    if (row) row.classList.toggle('expanded', el.classList.contains('show'));
+  };
+
+  window.plfClearValidation = async function (site, rowIndex) {
+    if (!confirm(`Clear validation for row ${rowIndex}? (Erases col X in the sheet — recipe goes back to "not yet validated")`)) return;
+    try {
+      await api('DELETE', `/api/planifier/validate-recipe/${encodeURIComponent(site)}/${rowIndex}`);
+      showToast('Validation cleared', 'success');
+      plfLoadRecipes();
+    } catch (e) {
+      showToast('Clear failed: ' + e.message, 'error');
+    }
+  };
+
+  window.plfValidateOneRecipe = async function (site, rowIndex, draftUrl) {
+    if (!draftUrl) {
+      showToast('No draftUrl — recipe not yet published', 'error');
+      return;
+    }
+    showToast('Validating…', 'info');
+    try {
+      await api('POST', '/api/planifier/validate-recipe', { site, rowIndex, draftUrl });
+      showToast('Validation updated in sheet', 'success');
+      plfLoadRecipes();
+    } catch (e) {
+      showToast('Validation failed: ' + e.message, 'error');
+    }
+  };
+
+  window.plfTogglePinPostedFromRecipes = async function (site, rowIndex, pinIndex, currentlyPosted) {
+    const cols = ['U', 'V', 'W'];
+    const msg = currentlyPosted
+      ? `Unmark pin #${pinIndex + 1} of row ${rowIndex} (clears col ${cols[pinIndex]} — the planifier will re-post it)?`
+      : `Mark pin #${pinIndex + 1} of row ${rowIndex} as POSTED (writes today's date to col ${cols[pinIndex]})?`;
+    if (!confirm(msg)) return;
+    try {
+      const endpoint = currentlyPosted ? 'unmark-posted' : 'mark-posted';
+      await api('POST', `/api/planifier/pin-pool/${endpoint}`, { site, rowIndex, pinIndex });
+      showToast(currentlyPosted ? 'Unmarked' : 'Marked as posted', 'success');
+      plfLoadRecipes();
+    } catch (e) {
+      showToast('Update failed: ' + e.message, 'error');
+    }
+  };
+
+  window.plfResetRecipe = async function (site, rowIndex, topic) {
+    if (!confirm(`Reset "${topic}" (row ${rowIndex}) to 'pending'? The orchestrator will reprocess this recipe on its next batch run.`)) return;
+    try {
+      await api('PUT', `/api/planifier/recipes/${encodeURIComponent(site)}/${rowIndex}/reset`);
+      showToast('Recipe reset to pending', 'success');
+      plfLoadRecipes();
+    } catch (e) {
+      showToast('Reset failed: ' + e.message, 'error');
+    }
+  };
+
+  // ── Pin regeneration ─────────────────────────────────────────
+  window.plfOpenRegenModal = async function (site, rowIndex, pinIndex, topic, currentImageUrl) {
+    const existing = $('.plf-modal-backdrop');
+    if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.className = 'plf-modal-backdrop';
+    modal.innerHTML = `
+      <div class="plf-modal" style="width:min(820px, 96vw);max-height:90vh;overflow-y:auto;" onclick="event.stopPropagation()">
+        <div class="plf-modal-title">🔄 Regenerate Pin #${pinIndex + 1}</div>
+        <div class="plf-modal-sub">${escapeHtml(topic)} · row ${rowIndex} · ${escapeHtml(site)}</div>
+
+        ${currentImageUrl ? `
+        <div style="margin-bottom:14px;padding:12px;background:rgba(255,179,71,0.06);border:1px solid rgba(255,179,71,0.2);border-radius:8px;display:flex;gap:14px;align-items:center;">
+          <img src="${escapeHtml(currentImageUrl)}" style="width:70px;height:70px;object-fit:cover;border-radius:6px;" />
+          <div style="flex:1;font-size:12.5px;color:#ffd99b;">Current pin will be <strong>REPLACED</strong>. The old WP media will be deleted, sheet row updated.</div>
+        </div>
+        ` : ''}
+
+        <!-- Hero info: auto-fetched from recipe's WP featured image -->
+        <div style="margin-bottom:18px;padding:12px;background:rgba(0,214,143,0.05);border:1px solid rgba(0,214,143,0.2);border-radius:8px;display:flex;gap:14px;align-items:center;">
+          <div style="width:42px;height:42px;border-radius:8px;background:rgba(0,214,143,0.15);display:flex;align-items:center;justify-content:center;font-size:20px;">🍽</div>
+          <div style="flex:1;font-size:12.5px;color:#c8c8e8;">
+            <div style="color:#00d68f;font-weight:700;">Hero = recipe's existing hero photo (from WP)</div>
+            <div style="color:#9a9ab8;font-size:11.5px;margin-top:2px;">Auto-fetched at generation time — same logic as the Verified Generator (no need to choose).</div>
+          </div>
+        </div>
+
+        <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Choose pin template</div>
+        <div id="plfRegenTemplates" style="margin-bottom:18px;">
+          <div style="color:#6a6a8e;font-size:12px;">Loading…</div>
+        </div>
+
+        <div id="plfRegenStatus" style="display:none;padding:10px 14px;background:rgba(33,150,243,0.08);border:1px solid rgba(33,150,243,0.2);border-radius:8px;margin-bottom:14px;font-size:12px;color:#6ea8fe;"></div>
+
+        <div class="plf-modal-actions">
+          <span style="font-size:11px;color:#6a6a8e;">Flow may take 1–4 min — watch progress below</span>
+          <div class="plf-modal-actions-right">
+            <button class="btn btn-outline-secondary" onclick="document.querySelector('.plf-modal-backdrop').remove()">Cancel</button>
+            <button class="btn btn-save" id="plfRegenSubmitBtn" onclick="plfRegenSubmit('${escapeHtml(site)}', ${rowIndex}, ${pinIndex})" style="padding:9px 22px;font-size:12.5px;" disabled>✓ Validate &amp; Regenerate</button>
+          </div>
+        </div>
+      </div>
+    `;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+
+    // Load templates only — hero is auto-fetched server-side
+    try {
+      const r = await api('GET', `/api/planifier/regen-assets/${encodeURIComponent(site)}`);
+      _renderRegenGallery($('#plfRegenTemplates'), r.templatesGenerator.length ? r.templatesGenerator : r.templatesScraper, 'template');
+      _updateRegenSubmitState();
+    } catch (e) {
+      $('#plfRegenTemplates').innerHTML = `<div style="color:#ff6b6b;font-size:12px;">Failed: ${escapeHtml(e.message)}</div>`;
+    }
+  };
+
+  function _renderRegenGallery(box, items, kind) {
+    if (!box) return;
+    if (!items || items.length === 0) {
+      box.innerHTML = `<div style="color:#ffb347;font-size:12px;padding:10px;background:rgba(255,179,71,0.06);border:1px solid rgba(255,179,71,0.2);border-radius:8px;">⚠ No ${kind} images found in backgrounds.json. Add some via Settings → Images.</div>`;
+      return;
+    }
+    box.innerHTML = `
+      <div class="plf-regen-gallery">
+        ${items.map(it => `
+          <div class="plf-regen-thumb" data-kind="${kind}" data-idx="${it.idx}" onclick="plfRegenPick(this)">
+            <img src="${escapeHtml(it.thumbDataUrl)}" alt="${escapeHtml(it.name)}" />
+            <div class="caption">${escapeHtml(it.name)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  window.plfRegenPick = function (el) {
+    const kind = el.dataset.kind;
+    // Deselect siblings of the same kind
+    document.querySelectorAll(`.plf-regen-thumb[data-kind="${kind}"]`).forEach(t => t.classList.remove('selected'));
+    el.classList.add('selected');
+    _updateRegenSubmitState();
+  };
+
+  function _updateRegenSubmitState() {
+    const tmpl = document.querySelector('.plf-regen-thumb[data-kind="template"].selected');
+    const btn = $('#plfRegenSubmitBtn');
+    if (btn) btn.disabled = !tmpl;
+  }
+
+  window.plfRegenSubmit = async function (site, rowIndex, pinIndex) {
+    const tmplEl = document.querySelector('.plf-regen-thumb[data-kind="template"].selected');
+    if (!tmplEl) return;
+    const templateIdx = Number(tmplEl.dataset.idx);
+    const statusEl = $('#plfRegenStatus');
+    const btn = $('#plfRegenSubmitBtn');
+    if (btn) btn.disabled = true;
+    if (statusEl) {
+      statusEl.style.display = '';
+      statusEl.textContent = '⏳ Starting regeneration… fetching recipe hero from WP + launching Flow…';
+    }
+    try {
+      const r = await api('POST', '/api/planifier/regenerate-pin', {
+        site, rowIndex, pinIndex, templateIdx,
+      });
+      statusEl.textContent = `🚀 Job ${r.job.id.slice(0,8)} queued — polling status…`;
+      pollRegenJob(r.job.id, statusEl);
+    } catch (e) {
+      if (statusEl) {
+        statusEl.style.background = 'rgba(244,67,54,0.08)';
+        statusEl.style.borderColor = 'rgba(244,67,54,0.2)';
+        statusEl.style.color = '#ff8585';
+        statusEl.textContent = '✗ ' + e.message;
+      }
+      if (btn) btn.disabled = false;
+    }
+  };
+
+  async function pollRegenJob(jobId, statusEl) {
+    const start = Date.now();
+    const tick = async () => {
+      try {
+        const job = await api('GET', `/api/planifier/regen-job/${jobId}`);
+        const elapsed = Math.round((Date.now() - start) / 1000);
+        const lastMsg = (job.log || []).slice(-1)[0]?.msg || '';
+        if (statusEl) {
+          if (job.status === 'queued' || job.status === 'in_progress') {
+            statusEl.textContent = `⚙ ${job.status} · ${elapsed}s elapsed · ${lastMsg}`;
+          } else if (job.status === 'done') {
+            statusEl.style.background = 'rgba(0,214,143,0.08)';
+            statusEl.style.borderColor = 'rgba(0,214,143,0.25)';
+            statusEl.style.color = '#00d68f';
+            statusEl.innerHTML = `✓ Done in ${elapsed}s · <a href="${escapeHtml(job.newPinUrl)}" target="_blank" style="color:#00d68f;text-decoration:underline;">View new pin</a> · Sheet updated.`;
+            setTimeout(() => { plfLoadRecipes(); }, 1000);
+            return;
+          } else if (job.status === 'error') {
+            statusEl.style.background = 'rgba(244,67,54,0.08)';
+            statusEl.style.borderColor = 'rgba(244,67,54,0.2)';
+            statusEl.style.color = '#ff8585';
+            statusEl.textContent = `✗ Error after ${elapsed}s: ${job.error}`;
+            return;
+          }
+        }
+        if (job.status === 'queued' || job.status === 'in_progress') {
+          setTimeout(tick, 3000);
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'Poll error: ' + e.message;
+        setTimeout(tick, 6000);
+      }
+    };
+    setTimeout(tick, 2000);
+  }
+
+  window.plfDeleteRecipe = async function (site, rowIndex, topic) {
+    const msg = `Hard-delete "${topic}" (row ${rowIndex})?\n\nThis will:\n  • DELETE the WordPress post + all its media (irreversible)\n  • Reset sheet row to status=pending\n  • Clear all fields (draftUrl, pins, posted_at, validation…)\n  • KEEP only the topic name (col A)\n\nThe orchestrator will then re-process this recipe from scratch.\n\nContinue?`;
+    if (!confirm(msg)) return;
+    try {
+      const r = await api('DELETE', `/api/planifier/recipes/${encodeURIComponent(site)}/${rowIndex}`);
+      const detail = r.wpDeleted
+        ? `WP post deleted (${r.mediaDeleted} media removed) · sheet reset`
+        : (r.wpError ? `WP delete failed: ${r.wpError} · sheet reset` : 'Sheet reset (no WP post linked)');
+      showToast(detail, 'success');
+      plfLoadRecipes();
+    } catch (e) {
+      showToast('Delete failed: ' + e.message, 'error');
+    }
+  };
+
+  window.plfOpenAddRecipeModal = function () {
+    if (!state.config) return showToast('Config not loaded', 'error');
+    const sites = Object.keys(state.config.sites || {}).filter(n => !n.startsWith('_'));
+    if (sites.length === 0) return showToast('No sites configured', 'error');
+    const existing = $('.plf-modal-backdrop');
+    if (existing) existing.remove();
+    const siteOptions = sites.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    const modal = document.createElement('div');
+    modal.className = 'plf-modal-backdrop';
+    modal.innerHTML = `
+      <div class="plf-modal" onclick="event.stopPropagation()">
+        <div class="plf-modal-title">+ Add Recipe</div>
+        <div class="plf-modal-sub">Writes a new row to the site's Google Sheet with status=pending. The orchestrator picks it up on next run.</div>
+        <div class="plf-modal-fields">
+          <div class="plf-rule-field">
+            <label>Site</label>
+            <select id="plfNewRecSite">${siteOptions}</select>
+          </div>
+          <div class="plf-rule-field">
+            <label>Topic / Title</label>
+            <input type="text" id="plfNewRecTopic" placeholder="e.g. Easy One-Pot Chicken Pasta" autofocus />
+          </div>
+        </div>
+        <div class="plf-modal-actions">
+          <span></span>
+          <div class="plf-modal-actions-right">
+            <button class="btn btn-outline-secondary" onclick="document.querySelector('.plf-modal-backdrop').remove()">Cancel</button>
+            <button class="btn btn-save" onclick="plfCreateRecipe()" style="padding:9px 22px;font-size:12.5px;">Add to sheet</button>
+          </div>
+        </div>
+      </div>
+    `;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+    setTimeout(() => $('#plfNewRecTopic')?.focus(), 100);
+  };
+
+  window.plfCreateRecipe = async function () {
+    const site = $('#plfNewRecSite').value;
+    const topic = $('#plfNewRecTopic').value.trim();
+    if (!topic) { showToast('Topic required', 'error'); return; }
+    try {
+      const r = await api('POST', '/api/planifier/recipes', { site, topic });
+      $('.plf-modal-backdrop')?.remove();
+      showToast(`Added "${topic}" at row ${r.rowIndex}`, 'success');
+      plfLoadRecipes();
+    } catch (e) {
+      showToast('Add failed: ' + e.message, 'error');
+    }
+  };
+
+  window.plfLoadRecipes = plfLoadRecipes;
+  window.plfRenderRecipes = plfRenderRecipes;
 
   window.plfCopyAppsScript = function () {
     const snippet = `function doPost(e) {

@@ -1515,6 +1515,7 @@
           <button class="plf-tab" data-plftab="config">Configuration</button>
           <button class="plf-tab" data-plftab="rules">Rules</button>
           <button class="plf-tab" data-plftab="plan">Plan 7j</button>
+          <button class="plf-tab" data-plftab="recipes">Recipes</button>
           <button class="plf-tab" data-plftab="pool">Pin Pool</button>
           <button class="plf-tab" data-plftab="history">History</button>
         </div>
@@ -1631,6 +1632,60 @@
             </div>
             <div class="card-body">
               <div id="plfDolphinList" style="font-size:12px;color:#9a9ab8;">Loading Dolphin profiles…</div>
+            </div>
+          </div>
+
+          <!-- ── Telegram notifications ── -->
+          <div class="card" style="border:1px solid rgba(38,156,219,0.25);">
+            <div class="card-header" style="background:linear-gradient(135deg,rgba(38,156,219,0.06),transparent);">
+              ✈ Telegram Notifications
+              <span style="font-size:10px;color:#6a6a8e;text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px;">Get alerted on Planifier slot failures</span>
+            </div>
+            <div class="card-body">
+              <div style="padding:11px 14px;background:rgba(110,168,254,0.06);border:1px solid rgba(110,168,254,0.2);border-radius:8px;margin-bottom:14px;font-size:11.5px;color:#9a9ab8;line-height:1.6;">
+                <strong style="color:#6ea8fe;">Setup (2 min):</strong><br/>
+                1. Open Telegram, search <code>@BotFather</code> and start chat<br/>
+                2. Send <code>/newbot</code> · choose a name · choose a username ending with <code>bot</code><br/>
+                3. BotFather replies with a <strong>token</strong> like <code>1234567890:AAEx...</code> — paste below<br/>
+                4. <strong>Open your new bot in Telegram</strong> (link in BotFather's reply) and send <code>/start</code><br/>
+                5. Click <strong>Fetch chat ID</strong> below → ID auto-filled<br/>
+                6. Click <strong>Send test message</strong> to verify, then Save.
+              </div>
+
+              <div class="plf-rule-row" style="grid-template-columns:2fr 1.5fr 1fr;">
+                <div class="plf-rule-field">
+                  <label>Bot token (from @BotFather)</label>
+                  <input type="password" id="plfTgToken" placeholder="e.g. 1234567890:AAExxx..." />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Chat ID <small style="color:#6a6a8e;font-weight:400;text-transform:none;">— click Fetch after /start</small></label>
+                  <input type="text" id="plfTgChatId" placeholder="auto-filled" />
+                </div>
+                <div class="plf-rule-field" style="display:flex;align-items:center;gap:10px;">
+                  <label class="plf-switch" style="width:46px;height:26px;">
+                    <input type="checkbox" id="plfTgEnabled" />
+                    <span class="plf-switch-slider"></span>
+                  </label>
+                  <span style="font-size:12px;color:#c8c8e8;">Enabled</span>
+                </div>
+              </div>
+
+              <div class="plf-rule-row" style="grid-template-columns:1fr 1fr;margin-top:10px;">
+                <div class="plf-rule-field" style="display:flex;align-items:center;gap:8px;">
+                  <input type="checkbox" id="plfTgNotifyError" style="width:auto;" checked />
+                  <label style="font-size:12px;color:#c8c8e8;margin:0;">❌ Notify on errors</label>
+                </div>
+                <div class="plf-rule-field" style="display:flex;align-items:center;gap:8px;">
+                  <input type="checkbox" id="plfTgNotifySuccess" style="width:auto;" />
+                  <label style="font-size:12px;color:#c8c8e8;margin:0;">✅ Notify on success (verbose)</label>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" onclick="plfFetchChatId()" style="background:linear-gradient(135deg,#4285f4,#6ea8fe);padding:8px 16px;font-size:12px;">🔍 Fetch chat ID</button>
+                <button class="btn btn-resume" onclick="plfTestTelegram()" style="padding:9px 18px;font-size:12.5px;">📤 Send test message</button>
+                <span id="plfTgStatus" style="font-size:12px;color:#888;align-self:center;"></span>
+              </div>
             </div>
           </div>
 
@@ -1858,6 +1913,63 @@
 
         </div><!-- /panel plan -->
 
+        <!-- ═══ TAB: RECIPES ═══ -->
+        <div class="plf-panel" data-plfpanel="recipes" style="display:none;">
+
+          <!-- Recipes stats -->
+          <div class="stat-grid" style="margin-bottom:16px;">
+            <div class="stat-card blue">
+              <div class="stat-label">Total recipes</div>
+              <div class="stat-value" id="plfRecStatTotal">--</div>
+            </div>
+            <div class="stat-card green">
+              <div class="stat-label">Published</div>
+              <div class="stat-value" id="plfRecStatPublished">--</div>
+            </div>
+            <div class="stat-card orange">
+              <div class="stat-label">Pending</div>
+              <div class="stat-value" id="plfRecStatPending">--</div>
+            </div>
+            <div class="stat-card purple">
+              <div class="stat-label">Valid</div>
+              <div class="stat-value" id="plfRecStatValid">--</div>
+            </div>
+          </div>
+
+          <!-- Filters + Add -->
+          <div class="card">
+            <div class="card-header">
+              All Recipes
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="text" id="plfRecSearch" placeholder="🔍 Search topic…" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;min-width:160px;" />
+                <select id="plfRecFilterSite" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;">
+                  <option value="">All sites</option>
+                </select>
+                <select id="plfRecFilterStatus" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;">
+                  <option value="">All statuses</option>
+                  <option value="done">Done</option>
+                  <option value="pending">Pending</option>
+                  <option value="processing">Processing</option>
+                  <option value="error">Error</option>
+                  <option value="deleted">Deleted</option>
+                </select>
+                <select id="plfRecFilterValid" style="background:#0e0e22;border:1px solid rgba(255,255,255,0.1);color:#e0e4f0;padding:6px 12px;border-radius:8px;font-size:12px;">
+                  <option value="">All quality</option>
+                  <option value="valid">✓ Valid</option>
+                  <option value="invalid">⚠ Invalid</option>
+                  <option value="none">? Not validated</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="plfLoadRecipes()">Refresh</button>
+                <button class="btn btn-secondary btn-sm" onclick="plfOpenAddRecipeModal()" style="background:linear-gradient(135deg,#00c853,#00d68f);color:#003300;">+ Add Recipe</button>
+              </div>
+            </div>
+            <div class="card-body" id="plfRecipesTable" style="padding:0;">
+              <div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading recipes…</div>
+            </div>
+          </div>
+
+        </div><!-- /panel recipes -->
+
         <!-- ═══ TAB: PIN POOL ═══ -->
         <div class="plf-panel" data-plfpanel="pool" style="display:none;">
 
@@ -1866,6 +1978,7 @@
             <div class="stat-card blue">
               <div class="stat-label">Recipes</div>
               <div class="stat-value" id="plfPoolRecipes">--</div>
+              <div style="font-size:10.5px;color:#9a9ab8;margin-top:4px;" id="plfPoolValidLine"></div>
             </div>
             <div class="stat-card green">
               <div class="stat-label">Pins Posted</div>
@@ -1895,6 +2008,7 @@
                   <option value="posted">Posted only</option>
                   <option value="eligible">Eligible now</option>
                 </select>
+                <button class="btn btn-secondary btn-sm" onclick="plfLoadPool({validate:true})" title="Fetches each WP post and runs the recipe quality validator (slower, ~200ms/recipe first time)" style="background:linear-gradient(135deg,#7c4dff,#b8a4ff);">🔍 Validate All</button>
                 <button class="btn btn-secondary btn-sm" onclick="plfLoadPool()">Refresh</button>
               </div>
             </div>

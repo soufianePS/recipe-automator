@@ -8,6 +8,7 @@
 
 import { Logger } from '../utils/logger.js';
 import { Parser } from '../utils/parser.js';
+import { attachGeminiListener } from '../utils/gemini-network-listener.js';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -36,7 +37,13 @@ export class GeminiChatPage {
   }
 
   /**
-   * Open a fresh Gemini chat page.
+   * Open a FRESH Gemini chat page.
+   *
+   * gemini.google.com/app loads the most recent conversation by default,
+   * which means Gemini's responses are influenced by previous chat history
+   * (e.g., past recipes that used different schema field names). To get
+   * clean schema-compliant outputs, we always click "New chat" to start a
+   * fresh, history-free conversation.
    */
   async init() {
     // Close existing Gemini page if any
@@ -54,8 +61,51 @@ export class GeminiChatPage {
     try {
       await this.page.waitForSelector(SEL.promptInput, { timeout: 15000 });
     } catch {
-      // Try clicking "New chat" or dismissing welcome screen
       await this._dismissWelcome();
+    }
+
+    // ── ALWAYS start a fresh conversation ───────────────────────
+    // Click the "New chat" button so we don't inherit history from a
+    // previous run. Without this, Gemini will mimic the schema/format of
+    // the last conversation (e.g. write "article_title" instead of
+    // "post_title" because that's what an older session used).
+    try {
+      const clicked = await this.page.evaluate(() => {
+        const candidates = [
+          'button[data-test-id="new-chat-button"]',
+          'button[aria-label="New chat"]',
+          'button[aria-label*="Nouveau chat" i]',
+          'button[aria-label*="nouvelle conversation" i]',
+          'button[aria-label*="new chat" i]',
+          'a[href*="/chat/"][aria-label*="new" i]',
+        ];
+        for (const sel of candidates) {
+          const el = document.querySelector(sel);
+          if (el) { el.click(); return sel; }
+        }
+        // Fallback: scan all buttons for text match
+        const btns = Array.from(document.querySelectorAll('button, a[role="button"]'));
+        for (const b of btns) {
+          const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+          const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+          if (txt === 'new chat' || txt === 'nouveau chat' || txt === 'nouvelle conversation' ||
+              lbl.includes('new chat') || lbl.includes('nouveau chat') || lbl.includes('nouvelle conversation')) {
+            b.click();
+            return 'text:' + (txt || lbl);
+          }
+        }
+        return null;
+      });
+      if (clicked) {
+        Logger.info(`[Gemini] Started fresh conversation via: ${clicked}`);
+        await this.page.waitForTimeout(2000);
+        // Re-wait for the (now fresh) prompt input
+        await this.page.waitForSelector(SEL.promptInput, { timeout: 10000 }).catch(() => {});
+      } else {
+        Logger.warn('[Gemini] New chat button not found — proceeding (response may be polluted by old conversation history)');
+      }
+    } catch (e) {
+      Logger.warn(`[Gemini] Failed to start fresh chat: ${e.message}`);
     }
 
     Logger.info('Gemini chat page ready');
@@ -225,32 +275,56 @@ export class GeminiChatPage {
 
   /**
    * Send a prompt and get the full response.
-   * Same interface as ChatGPTPage.sendPromptAndGetResponse()
+   *
+   * Uses the network sniffer (attachGeminiListener) to capture Gemini's raw
+   * API response from the /StreamGenerate endpoint instead of scraping the
+   * DOM. This is dramatically more reliable for long JSON outputs:
+   *   - No markdown corruption (the DOM HTML-encodes special chars + adds
+   *     copy buttons + wraps in <code> tags that pollute text extraction)
+   *   - Catches the FULL streamed response (DOM only shows what's currently
+   *     visible — long responses can be truncated when the textarea scrolls)
+   *   - No race condition between "stream still streaming" and "we copied"
+   *
+   * The DOM extraction path is kept as a fallback for the rare case the
+   * sniffer doesn't catch a body (e.g. Gemini routes through a different
+   * endpoint we don't recognize).
    */
   async sendPromptAndGetResponse(prompt, expectJSON = false) {
     Logger.step('Gemini', 'Sending prompt...');
     await this.screenshot('before-prompt');
 
-    // Defensive cleanup: if a previous attachFiles failed, a CDK overlay backdrop
-    // may still be intercepting clicks. Clear it before trying to interact with the composer.
     await this._dismissOverlays();
 
-    // Wait for input
     const input = await this.page.waitForSelector(SEL.promptInput, { timeout: 15000 });
     await input.click();
     await this.page.waitForTimeout(300);
 
-    // Clear and type the prompt
-    await this._pastePrompt(prompt);
-    await this.page.waitForTimeout(500);
+    // Attach the network sniffer BEFORE typing/sending so we don't miss
+    // the very first stream chunk.
+    const listener = attachGeminiListener(this.page);
+    Logger.info('[Gemini] Network sniffer attached');
 
-    // Click send
-    await this._clickSend();
-    Logger.debug('Gemini send clicked');
-    await this.screenshot('after-send');
+    let responseText;
+    try {
+      await this._pastePrompt(prompt);
+      await this.page.waitForTimeout(500);
+      await this._clickSend();
+      Logger.debug('Gemini send clicked');
+      await this.screenshot('after-send');
 
-    // Wait for response to complete
-    const responseText = await this._waitForResponse();
+      // Use sniffer first — way cleaner than DOM scraping
+      try {
+        const snap = await listener.waitForResponse({ timeout: 600000, quietMs: 4000, minTextLen: 50 });
+        responseText = snap.text || '';
+        Logger.success(`[Gemini] Sniffed ${responseText.length} chars (chunks: ${snap.rawChunks}, bodies: ${snap.bodiesSeen})`);
+      } catch (snifferError) {
+        Logger.warn(`[Gemini] Sniffer failed (${snifferError.message.split('\n')[0]}) — falling back to DOM extraction`);
+        responseText = await this._waitForResponse();
+      }
+    } finally {
+      try { listener.dispose(); } catch {}
+    }
+
     Logger.success('Response received:', responseText.substring(0, 100) + '...');
     await this.screenshot('response-complete');
 
