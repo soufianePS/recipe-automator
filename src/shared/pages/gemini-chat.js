@@ -72,6 +72,15 @@ export class GeminiChatPage {
     try {
       const clicked = await this.page.evaluate(() => {
         const candidates = [
+          // Current Gemini UI (verified 2026-05-25): the "new chat" control is
+          // an <a> sparkle button, and the sidebar id moved to a <gem-nav-list-item>.
+          // The French label is "Nouvelle discussion" (NOT "nouveau chat").
+          'a[data-test-id="side-nav-sparkle-button"]',
+          '[data-test-id="side-nav-sparkle-button"]',
+          '[data-test-id="new-chat-button"]',
+          '[aria-label="Nouvelle discussion"]',
+          '[aria-label*="nouvelle discussion" i]',
+          // Older / English UI fallbacks:
           'button[data-test-id="new-chat-button"]',
           'button[aria-label="New chat"]',
           'button[aria-label*="Nouveau chat" i]',
@@ -83,13 +92,14 @@ export class GeminiChatPage {
           const el = document.querySelector(sel);
           if (el) { el.click(); return sel; }
         }
-        // Fallback: scan all buttons for text match
-        const btns = Array.from(document.querySelectorAll('button, a[role="button"]'));
+        // Fallback: scan buttons AND links (the sparkle button is an <a>) for a
+        // text/label match. Include "nouvelle discussion" (current FR label).
+        const btns = Array.from(document.querySelectorAll('button, a[role="button"], a[data-test-id], [role="link"]'));
         for (const b of btns) {
           const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
           const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-          if (txt === 'new chat' || txt === 'nouveau chat' || txt === 'nouvelle conversation' ||
-              lbl.includes('new chat') || lbl.includes('nouveau chat') || lbl.includes('nouvelle conversation')) {
+          if (txt === 'new chat' || txt === 'nouveau chat' || txt === 'nouvelle conversation' || txt === 'nouvelle discussion' ||
+              lbl.includes('new chat') || lbl.includes('nouveau chat') || lbl.includes('nouvelle conversation') || lbl.includes('nouvelle discussion')) {
             b.click();
             return 'text:' + (txt || lbl);
           }
@@ -154,17 +164,26 @@ export class GeminiChatPage {
     if (refs.length === 0) return { ok: true, attached: 0 };
     Logger.info(`[Gemini] attaching ${refs.length} reference image(s)`);
 
-    // Step 1: open the "+" attach menu
+    // Step 1: open the "+" attach menu.
+    // Current Gemini (2026-05): the attach control is "Importation et outils"
+    // (icon "plus"). NB "importation" does NOT contain "importer", so the old
+    // selectors missed it entirely. Match by label + the plus/add icon, keeping
+    // older-UI labels as fallback.
     const opened = await this.page.evaluate(() => {
+      const iconOf = (b) => {
+        const i = b.querySelector('mat-icon, [data-mat-icon-name], i.google-symbols');
+        return i ? (i.getAttribute('data-mat-icon-name') || i.textContent || '').trim().toLowerCase() : '';
+      };
       const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
       for (const b of btns) {
         if (b.offsetWidth === 0) continue;
         const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-        if (lbl.includes('importer un fichier') || lbl.includes('importer une image') ||
+        const ic = iconOf(b);
+        if (lbl.includes('importation') || lbl.includes('importer') || lbl.includes('outils') ||
             lbl.includes('upload') || lbl.includes('add file') || lbl.includes('add image') ||
-            lbl.includes('attach')) {
+            lbl.includes('attach') || ic === 'plus' || ic === 'add' || ic === 'add_circle') {
           b.click();
-          return lbl;
+          return lbl || ('icon:' + ic);
         }
       }
       return null;
@@ -177,11 +196,14 @@ export class GeminiChatPage {
     //         instead of using a static <input type="file">.
     const clickMenuItem = async () => {
       await this.page.evaluate(() => {
-        const items = Array.from(document.querySelectorAll('[role="menuitem"], button'));
+        const items = Array.from(document.querySelectorAll('[role="menuitem"], .cdk-overlay-container button, [role="menu"] button, [role="menu"] [role="menuitem"], button'));
         for (const it of items) {
           const txt = (it.innerText || it.textContent || '').trim().toLowerCase();
           const tid = (it.getAttribute('data-testid') || '').toLowerCase();
-          if (txt.includes('importer des fichiers') || txt.includes('upload files') ||
+          // Current Gemini: the upload-from-device item is just "Fichiers"/"Files"
+          // (NOT "Drive"/"Notebooks"). Older UIs used "Importer des fichiers".
+          if (txt === 'fichiers' || txt === 'files' ||
+              txt.includes('importer des fichiers') || txt.includes('upload files') ||
               tid === 'local-images-files-uploader-button') {
             it.click();
             return true;
@@ -312,9 +334,12 @@ export class GeminiChatPage {
       Logger.debug('Gemini send clicked');
       await this.screenshot('after-send');
 
-      // Use sniffer first — way cleaner than DOM scraping
+      // Use sniffer first — when it captures, it's cleaner than DOM scraping.
+      // Cap at 120s (not 600s): if it hasn't captured by then, the response is
+      // already done and the DOM-stability path below extracts it reliably —
+      // no point hanging 10 minutes (that was the old silent-failure mode).
       try {
-        const snap = await listener.waitForResponse({ timeout: 600000, quietMs: 4000, minTextLen: 50 });
+        const snap = await listener.waitForResponse({ timeout: 120000, quietMs: 4000, minTextLen: 50 });
         responseText = snap.text || '';
         Logger.success(`[Gemini] Sniffed ${responseText.length} chars (chunks: ${snap.rawChunks}, bodies: ${snap.bodiesSeen})`);
       } catch (snifferError) {
@@ -384,51 +409,42 @@ export class GeminiChatPage {
   async _clickSend() {
     await this.page.waitForTimeout(500);
 
-    // Try direct selectors
-    const selectors = [
-      SEL.sendButton,
-      'button[aria-label="Send message"]',
-      'button[aria-label="Envoyer le message"]',
-      'button.send-button',
-    ];
-
-    for (const sel of selectors) {
-      const btn = await this.page.$(sel);
-      if (btn) {
-        const visible = await btn.isVisible().catch(() => false);
-        if (visible) {
-          await btn.click();
-          Logger.debug(`Gemini send clicked via: ${sel}`);
-          return;
-        }
-      }
-    }
-
-    // Search by icon/SVG
+    // Find the composer's send button. CRITICAL: do NOT match on
+    // aria-label*="send"/"envoyer" loosely — Gemini's sidebar "more options"
+    // (⋮, icon=more_vert) buttons embed the conversation's text in their
+    // aria-label, so a past chat containing the word "send" (e.g. an image-gen
+    // session: "I will send each prompt…") falsely matches and gets clicked
+    // FIRST in DOM order, opening a menu instead of sending. Target by icon
+    // (arrow_upward/send) + exact label, and explicitly skip more_vert.
     const clicked = await this.page.evaluate(() => {
-      const btns = document.querySelectorAll('button');
-      for (const btn of btns) {
-        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        const matIcon = btn.querySelector('mat-icon, [data-mat-icon-name]');
-        const iconName = matIcon?.getAttribute('data-mat-icon-name') || matIcon?.textContent?.trim() || '';
-
-        if (ariaLabel.includes('send') || ariaLabel.includes('envoyer') ||
-            iconName === 'send' || iconName === 'arrow_upward') {
-          if (btn.offsetWidth > 0 && !btn.disabled) {
-            btn.click();
-            return true;
-          }
-        }
-      }
-      return false;
+      const btns = Array.from(document.querySelectorAll('button'));
+      const iconOf = (b) => {
+        const i = b.querySelector('mat-icon, [data-mat-icon-name]');
+        return (i?.getAttribute('data-mat-icon-name') || i?.textContent?.trim() || '').toLowerCase();
+      };
+      const usable = (b) => b.offsetWidth > 0 && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
+      // 1. Exact send labels (composer button), excluding menu buttons.
+      const exact = btns.find(b => {
+        const lbl = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+        return iconOf(b) !== 'more_vert' && usable(b) &&
+          (lbl === 'envoyer un message' || lbl === 'send message' || lbl === 'envoyer le message' || lbl === 'envoyer');
+      });
+      if (exact) { exact.click(); return 'exact-label'; }
+      // 2. By send icon, skipping the ⋮ menu buttons.
+      const byIcon = btns.find(b => {
+        const ic = iconOf(b);
+        return (ic === 'send' || ic === 'arrow_upward') && ic !== 'more_vert' && usable(b);
+      });
+      if (byIcon) { byIcon.click(); return 'icon:' + iconOf(byIcon); }
+      return null;
     });
 
     if (clicked) {
-      Logger.debug('Gemini send clicked via evaluate');
+      Logger.debug(`Gemini send clicked via ${clicked}`);
       return;
     }
 
-    // Last fallback: Enter key
+    // Last fallback: keyboard. Gemini sends on Enter (Shift+Enter = newline).
     Logger.debug('No send button found, trying Enter...');
     await this.page.keyboard.press('Enter');
   }
@@ -484,7 +500,28 @@ export class GeminiChatPage {
       Logger.warn('[Gemini] Response timeout — extracting what we have');
     }
 
-    await this.page.waitForTimeout(1500);
+    // FINAL GATE: the avatar/stop "done" signals can flip mid-stream, which
+    // made extraction grab a TRUNCATED response (the recipe JSON cut off at
+    // line 272). The reliable completion signal is text-length STABILITY —
+    // wait until the largest response/code-block stops growing for 3 polls.
+    // (Verified 2026-05-25: this captures the full clean JSON; without it the
+    // DOM gives a partial blob that fails to parse.)
+    let lastLen = -1, stableCount = 0;
+    const stabilityCap = Date.now() + 60000; // never block here more than 60s
+    while (Date.now() < stabilityCap) {
+      await this.page.waitForTimeout(1500);
+      const len = await this.page.evaluate(() => {
+        let max = 0;
+        for (const el of document.querySelectorAll('code-block, pre code, .model-response-text, message-content .markdown')) {
+          const n = (el.textContent || '').length;
+          if (n > max) max = n;
+        }
+        return max;
+      });
+      if (len > 0 && len === lastLen) { if (++stableCount >= 3) break; } else stableCount = 0;
+      lastLen = len;
+    }
+    Logger.debug(`[Gemini] Response text stable at ${lastLen} chars — extracting`);
     return await this._extractResponse();
   }
 

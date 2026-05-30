@@ -142,6 +142,23 @@ function defaultSettings() {
     pinterestAspectRatio: 'PORTRAIT',
     pinterestPromptPrefix: 'Recreate the EXACT same layout, style, text placement, and design from the first uploaded reference image (the Pinterest template). Use the food from the other uploaded reference images (hero and step photos). Recipe: "@title". Website: @website. Ingredients list as text: @ingredients. If the template shows ingredients text, use this list. If the template shows a website name, use "@website". ',
     pinterestPromptSuffix: ' Pinterest pin style, vertical format, eye-catching, high quality food photography, text overlay matching the template style.',
+    // ── Pin generator routing (Flow OR ChatGPT) ────────────────
+    // pinGenerator = 'flow' (default, existing behavior) | 'chatgpt' (new, uses ChatGPT image gen)
+    pinGenerator: 'flow',
+    chatgptPin: {
+      profilePath: '',                // dedicated Chrome profile path for ChatGPT pin gen (empty = data/chatgpt-pin-profile)
+      // Default: REGULAR chat (not temporary) — temporary-chat mode in
+      // ChatGPT does NOT support image generation tools, only text replies.
+      // We rely on deleteAfterGenerate=true to clean up history instead.
+      gptUrl: 'https://chatgpt.com/',
+      promptTemplate: 'Recipe: "@title". Use the EXACT layout, fonts, text placement, and design style from the first uploaded reference image (the Pinterest template). Replace the food in the template with the food from the second reference image (the hero photo of the actual dish). Website overlay: @website. Pinterest pin title overlay: "@pin_title". Photorealistic food photography style, eye-catching, high quality.',
+      timeoutSeconds: 300,            // max wait for image generation (5 min)
+      deleteAfterGenerate: true,      // auto-delete the chat from history after image saved
+      aspectRatio: '9:16',            // ratio for pin generation — values in ChatGPT picker
+                                       // (1:1, 3:4, 9:16, 4:3, 16:9, auto) get clicked in the UI;
+                                       // others (2:3, 1:2, 4:7, etc.) skip the picker and inject
+                                       // into the prompt so ChatGPT respects the ratio natively.
+    },
     listStyle: 'default'
   };
 }

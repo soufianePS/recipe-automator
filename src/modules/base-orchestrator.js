@@ -12,6 +12,7 @@
  */
 
 import { StateManager, STATES } from '../shared/utils/state-manager.js';
+import { PinHistory } from '../shared/utils/pin-history.js';
 import { SheetsAPI } from '../shared/utils/sheets-api.js';
 import { WordPressAPI } from '../shared/utils/wordpress-api.js';
 import { Logger } from '../shared/utils/logger.js';
@@ -116,6 +117,118 @@ export class BaseOrchestrator {
     const multiAccount = await FlowAccountManager.isEnabled();
     if (!multiAccount) return;
     await FlowAccountManager.incrementCount();
+  }
+
+  /**
+   * Generate a pin image via ChatGPT (alternative to Flow).
+   *
+   * Uses a dedicated Chrome profile (settings.chatgptPin.profilePath) so it
+   * doesn't conflict with the Flow browser/Pinterest profiles. Each call
+   * launches its own browser, runs the gen, closes — clean lifecycle.
+   *
+   * Returns true on success, false on failure (caller throws).
+   */
+  async _generatePinViaChatGPT({ prompt, templatePath, contextPaths, outputPath, settings, pinVars = {} }) {
+    const cfg = settings.chatgptPin || {};
+    // Default to a project-local profile folder when not configured — keeps UX simple
+    const profilePath = (cfg.profilePath || '').trim()
+      || join(__dirname, '..', '..', 'data', 'chatgpt-pin-profile');
+    const { chromium } = await import('playwright');
+    const { ChatGPTPage } = await import('../shared/pages/chatgpt.js');
+    try {
+      // ── REUSE OPTIMIZATION ───────────────────────────────────────
+      // For a recipe pipeline (3 pins), we open the Chrome profile ONCE
+      // and reuse the same context for each pin (each gets a fresh page +
+      // chat via ChatGPTPage.init()). The context is closed in the
+      // COMPLETED state handler. Saves ~10s × 2 = 20s per recipe.
+      if (!this._chatgptPinCtx) {
+        Logger.info(`[PinGen-ChatGPT] launching Chrome profile (reusable for this recipe): ${profilePath}`);
+        this._chatgptPinCtx = await chromium.launchPersistentContext(profilePath, {
+          headless: false,
+          viewport: null,
+          args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
+          ignoreDefaultArgs: ['--enable-automation'],
+        });
+      } else {
+        Logger.info(`[PinGen-ChatGPT] reusing already-open Chrome profile`);
+      }
+      const context = this._chatgptPinCtx;
+      const browser = context.browser();
+      const chatgpt = new ChatGPTPage(browser, context);
+      // init() closes any existing chatgpt.com tab and opens a fresh new one
+      // → each pin gets a clean conversation (no carryover from previous pin)
+      await chatgpt.init(cfg.gptUrl || null);
+
+      // Resolve aspect ratio source: picker preset (clickable in UI) vs custom (prompt-only).
+      // PICKER_OPTIONS = what ChatGPT's UI dropdown actually exposes.
+      // If user picked a value outside this list (2:3, 1:2, 4:7…) we skip the UI click
+      // and inject the ratio into the prompt text so ChatGPT respects it via the model.
+      const aspectRatio = (cfg.aspectRatio || '9:16').trim();
+      const PICKER_OPTIONS = ['auto', '1:1', '3:4', '9:16', '4:3', '16:9'];
+      const isPickerSelectable = PICKER_OPTIONS.includes(aspectRatio.toLowerCase());
+
+      // Build the ChatGPT prompt — combines the user-configured template with the pin-specific prompt.
+      const promptTemplate = cfg.promptTemplate || prompt;
+      let fullPrompt = promptTemplate.includes('@prompt')
+        ? promptTemplate.replace(/@prompt/g, prompt)
+        : `${promptTemplate}\n\n--- PIN-SPECIFIC INSTRUCTIONS ---\n${prompt}`;
+      // Resolve user-template placeholders (@title, @website, @pin_title, etc.).
+      // The inner prompt was already resolved by the caller; here we also resolve
+      // the wrapper template so chatgptPin.promptTemplate gets actual values.
+      const allVars = { '@aspectRatio': aspectRatio, ...pinVars };
+      for (const [key, value] of Object.entries(allVars)) {
+        if (value == null) continue;
+        const re = new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        fullPrompt = fullPrompt.replace(re, String(value));
+      }
+      // Inject ratio at top, ONLY using the user's literal setting value.
+      // No "vertical", "portrait", "taller than wide" — the user controls everything
+      // via the aspectRatio setting (e.g. "9:16" or "1500x3000" or "1:2").
+      if (aspectRatio && aspectRatio !== 'auto') {
+        fullPrompt = `Output image format: ${aspectRatio}\n\n` + fullPrompt;
+      }
+
+      // Build ref list: template first (style/layout source), then context (food refs)
+      const refImages = [templatePath, ...(contextPaths || [])].filter(Boolean);
+
+      const result = await chatgpt.generatePinImage({
+        prompt: fullPrompt,
+        refImages,
+        outputPath,
+        timeoutSeconds: cfg.timeoutSeconds || 300,
+        deleteAfter: cfg.deleteAfterGenerate !== false,  // default true — chat deleted per pin
+        // Skip UI tool/picker only if user wants a custom ratio not in ChatGPT's dropdown.
+        // For picker-selectable ratios, we click the dropdown for max reliability.
+        skipToolSelect: !isPickerSelectable,
+        preferredRatio: isPickerSelectable ? aspectRatio : null,
+      });
+      if (!result.ok) {
+        Logger.error(`[PinGen-ChatGPT] failed: ${result.error}`);
+        return false;
+      }
+      Logger.success(`[PinGen-ChatGPT] image saved → ${outputPath}`);
+      return true;
+    } catch (e) {
+      Logger.error(`[PinGen-ChatGPT] exception: ${e.message}`);
+      return false;
+    }
+    // NOTE: context is NOT closed here — kept open for the next pin in the recipe.
+    // Closed by _closeChatGPTPinContext() in the COMPLETED state handler.
+  }
+
+  /**
+   * Close the cached ChatGPT pin Chrome context (called once all pins done).
+   * Safe to call multiple times.
+   */
+  async _closeChatGPTPinContext() {
+    if (!this._chatgptPinCtx) return;
+    try {
+      await this._chatgptPinCtx.close();
+      Logger.info('[PinGen-ChatGPT] closed reusable Chrome profile (recipe done)');
+    } catch (e) {
+      Logger.warn(`[PinGen-ChatGPT] close failed (non-fatal): ${e.message}`);
+    }
+    this._chatgptPinCtx = null;
   }
 
   /**
@@ -430,6 +543,8 @@ export class BaseOrchestrator {
         // 1. Close browser tabs
         try { await this.chatgpt.close(); } catch {}
         try { await this.flow.closeSession(); } catch {}
+        // 1b. Close the reusable ChatGPT pin profile (opened once per recipe for the 3 pins)
+        try { await this._closeChatGPTPinContext(); } catch {}
 
         // 2. Clean ALL tmp files (originals, html, images) — delete files but keep folders
         try {
@@ -554,6 +669,7 @@ export class BaseOrchestrator {
       [STATES.ERROR]: async () => {
         try { await this.chatgpt.close(); } catch {}
         try { await this.flow.closeSession(); } catch {}
+        try { await this._closeChatGPTPinContext(); } catch {}
         this._running = false;
       },
       [STATES.PAUSED]: () => { this._running = false; }
@@ -1250,20 +1366,42 @@ export class BaseOrchestrator {
     const pinFilename = `pin-${pendingIdx + 1}.jpg`;
     const outputPath = join(outputDir, pinFilename);
 
-    // Generate via Flow: template = background, hero + last step = context
-    // skipSimilarityCheck: Pinterest pins SHOULD look similar to the template — don't reject them
-    const ok = await this._generateWithRateLimitRetry(() =>
-      this.flow.generate(
+    // ── Pin generator routing: Flow (legacy) OR ChatGPT (new) ──
+    // settings.pinGenerator === 'chatgpt' → use ChatGPT image gen via
+    // a dedicated Chrome profile (so Flow profile + Pinterest profile
+    // stay isolated). Default = flow for backward compat.
+    const useChatGPT = (settings.pinGenerator || 'flow').toLowerCase() === 'chatgpt';
+    let ok;
+    if (useChatGPT) {
+      Logger.info(`[PinGen] Routing pin ${pendingIdx + 1} to ChatGPT image gen (settings.pinGenerator=chatgpt)`);
+      ok = await this._generatePinViaChatGPT({
         prompt,
         templatePath,
         contextPaths,
-        settings.pinterestAspectRatio || 'PORTRAIT',
         outputPath,
-        { skipSimilarityCheck: true }
-      )
-    );
+        settings,
+        pinVars,
+      });
+    } else {
+      // Generate via Flow: template = background, hero + last step = context
+      // skipSimilarityCheck: Pinterest pins SHOULD look similar to the template — don't reject them
+      ok = await this._generateWithRateLimitRetry(() =>
+        this.flow.generate(
+          prompt,
+          templatePath,
+          contextPaths,
+          settings.pinterestAspectRatio || 'PORTRAIT',
+          outputPath,
+          { skipSimilarityCheck: true }
+        )
+      );
+      await this._trackFlowGeneration();
+    }
     if (!ok) throw new Error(`Pinterest pin ${pendingIdx + 1} image generation failed`);
-    await this._trackFlowGeneration();
+
+    // NO post-crop normalization: keep the native generator output (e.g. ChatGPT
+    // 9:16 = 1080×1920) so Pinterest displays pins TALL like the legacy Flow
+    // pins. Cropping to 2:3 would make new pins visibly shorter than old ones.
 
     // Store image data
     const imgBuf = readFileSync(outputPath);
@@ -1336,6 +1474,28 @@ export class BaseOrchestrator {
       pinterestPins: updatedPins
     });
     Logger.success('All Pinterest pin images uploaded to WordPress');
+
+    // Audit log: one row per pin in the shared pin-history sheet. Best-effort
+    // — failures are logged and swallowed; never block the pipeline.
+    try {
+      const site = StateManager.getActiveSite?.() || '';
+      const recipeTopic = state.recipeJSON?.post_title || '';
+      const recipeUrl = state.draftUrl || '';
+      const entries = updatedPins
+        .filter(p => p.wpImageUrl)
+        .map((p, i) => ({
+          site,
+          type: 'initial',
+          recipe_topic: recipeTopic,
+          recipe_url: recipeUrl,
+          pin_slot: String(i + 1),
+          wp_image_url: p.wpImageUrl,
+          notes: p.title || '',
+        }));
+      if (entries.length > 0) await PinHistory.appendMany(entries);
+    } catch (e) {
+      Logger.warn(`[PinHistory] log failed (non-fatal): ${e.message}`);
+    }
   }
 
   // ═══════════════════════════════════════════════════════

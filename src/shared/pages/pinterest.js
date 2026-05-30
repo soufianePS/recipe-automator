@@ -117,6 +117,40 @@ async function humanType(page, selector, text, { fast = false } = {}) {
   }
 }
 
+// Last known cursor position — lets moves start from where we are so the
+// path is continuous (not teleporting), and lets idle "wander" stay local.
+let _lastMouse = { x: 480, y: 360 };
+
+/**
+ * Move the cursor to (x,y) along a curved, jittered path through 1-2
+ * intermediate waypoints — never a perfectly straight line. Updates _lastMouse.
+ */
+async function humanMouseMove(page, x, y) {
+  const start = _lastMouse;
+  const waypoints = 1 + Math.floor(Math.random() * 2);  // 1-2 mid points
+  for (let i = 1; i <= waypoints; i++) {
+    const frac = i / (waypoints + 1);
+    const wx = start.x + (x - start.x) * frac + (Math.random() - 0.5) * 120;
+    const wy = start.y + (y - start.y) * frac + (Math.random() - 0.5) * 120;
+    await page.mouse.move(wx, wy, { steps: Math.floor(rand(6, 16)) });
+    await page.waitForTimeout(rand(20, 90));
+  }
+  await page.mouse.move(x, y, { steps: Math.floor(rand(8, 20)) });
+  _lastMouse = { x, y };
+}
+
+/** Small, aimless cursor drift — used during idle/reading to look alive. */
+async function humanMouseWander(page) {
+  const moves = 1 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < moves; i++) {
+    const x = Math.max(5, _lastMouse.x + (Math.random() - 0.5) * 220);
+    const y = Math.max(5, _lastMouse.y + (Math.random() - 0.5) * 220);
+    await page.mouse.move(x, y, { steps: Math.floor(rand(5, 14)) });
+    _lastMouse = { x, y };
+    await page.waitForTimeout(rand(150, 600));
+  }
+}
+
 async function humanClick(page, target) {
   // target can be a selector string or an ElementHandle / Locator
   let handle;
@@ -134,12 +168,12 @@ async function humanClick(page, target) {
   }
   const targetX = box.x + box.width * (0.3 + Math.random() * 0.4);
   const targetY = box.y + box.height * (0.3 + Math.random() * 0.4);
-  const steps = Math.floor(rand(12, 28));
-  await page.mouse.move(targetX, targetY, { steps });
+  await humanMouseMove(page, targetX, targetY);
   await page.waitForTimeout(rand(80, 240));
   await page.mouse.click(targetX, targetY);
 }
 
+/** Distance-based scroll (kept for createPin warmup callers). */
 async function humanScroll(page, totalDistance = 1200) {
   let scrolled = 0;
   while (scrolled < totalDistance) {
@@ -147,6 +181,28 @@ async function humanScroll(page, totalDistance = 1200) {
     await page.mouse.wheel(0, step);
     scrolled += step;
     await page.waitForTimeout(rand(400, 1100));
+  }
+}
+
+/**
+ * Scroll for a DURATION with irregular speed: bursts of 1-4 wheel ticks of
+ * varying size, uneven reading pauses between bursts, and the occasional
+ * micro up-scroll (re-reading something that scrolled past).
+ */
+async function humanScrollFor(page, seconds, { irregular = true } = {}) {
+  const end = Date.now() + Math.max(0, seconds) * 1000;
+  while (Date.now() < end) {
+    const burst = 1 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < burst && Date.now() < end; i++) {
+      const step = irregular ? rand(120, 680) : rand(180, 480);
+      await page.mouse.wheel(0, step);
+      await page.waitForTimeout(rand(120, 520));
+    }
+    await page.waitForTimeout(rand(500, 2600));            // reading pause between bursts
+    if (irregular && Math.random() < 0.15) {               // occasional re-look up
+      await page.mouse.wheel(0, -rand(80, 280));
+      await page.waitForTimeout(rand(300, 900));
+    }
   }
 }
 
@@ -168,14 +224,45 @@ export class PinterestPage {
   }
 
   async ensureLoggedIn() {
-    const state = await this.page.evaluate(() => ({
-      hasLogin: !!document.querySelector('input[type="email"], input[name="email"]'),
-      hasAvatar: !!document.querySelector('[data-test-id="header-profile"], div[data-test-id="user-avatar"], [data-test-id="header-avatar"]'),
-    }));
-    if (state.hasLogin || !state.hasAvatar) {
-      throw new Error('Pinterest is not logged in for this profile. Open the Dolphin profile manually, log in to Pinterest, then re-run.');
+    // Robust detection: Pinterest changes data-test-id values often, so we
+    // check MULTIPLE signals and only throw if the LOGIN form is clearly
+    // visible (positive signal of "not logged in") rather than requiring
+    // a specific avatar selector to match. URL-based heuristic too.
+    const state = await this.page.evaluate(() => {
+      // Login form: visible email/password input prompting to sign in
+      const loginInputs = document.querySelectorAll(
+        'input[type="email"]:not([style*="display:none"]), ' +
+        'input[name="email"], ' +
+        'input[id="email"]'
+      );
+      const hasVisibleLoginInput = Array.from(loginInputs).some(i => i.offsetWidth > 0 && i.offsetHeight > 0);
+      // Login URL paths
+      const path = location.pathname.toLowerCase();
+      const onLoginPage = path === '/login' || path === '/login/' || path.startsWith('/signup');
+      // Multiple logged-in indicators (any one = logged in)
+      const loggedInSignals = [
+        '[data-test-id="header-profile"]',
+        '[data-test-id="user-avatar"]',
+        '[data-test-id="header-avatar"]',
+        '[data-test-id="header-create-button"]',
+        '[data-test-id="header-create"]',
+        'button[aria-label*="Create" i]',
+        'button[aria-label*="Créer" i]',
+        'a[href="/pin-builder/"]',
+        'a[href*="/business/hub"]',
+        '[data-test-id="profileMenuButton"]',
+        'header [aria-label*="profile" i]',
+        'header [aria-label*="profil" i]',
+      ];
+      const loggedInHits = loggedInSignals.filter(s => document.querySelector(s)).length;
+      return { hasVisibleLoginInput, onLoginPage, loggedInHits, url: location.href };
+    });
+    // Throw ONLY if positive evidence of not-logged-in (login form visible OR on /login path).
+    // Avatar check is now optional (Pinterest renames testids without notice).
+    if (state.hasVisibleLoginInput || state.onLoginPage) {
+      throw new Error(`Pinterest is not logged in for this profile (login form visible at ${state.url}). Open the Dolphin profile manually, log in to Pinterest, then re-run.`);
     }
-    Logger.info('[Pinterest] Logged in');
+    Logger.info(`[Pinterest] Logged in (${state.loggedInHits} signals matched)`);
   }
 
   /**
@@ -223,7 +310,7 @@ export class PinterestPage {
    * @param {Array<string>} [opts.boards] - candidate board names for save
    * @param {number} [opts.maxWaitSeconds=10] - cap per-step wait
    */
-  async humanBrowseSession({ events, boards = [], maxWaitSeconds = 10 }) {
+  async humanBrowseSession({ events, boards = [], maxWaitSeconds = 90 }) {
     Logger.info(`[Pinterest] humanBrowseSession starting (${events?.length || 0} events)`);
     if (!events || events.length === 0) return { executed: 0 };
 
@@ -231,21 +318,17 @@ export class PinterestPage {
     // land on business.pinterest.com/hub/ which has no pin feed to browse.
     await this._ensureOnHomeFeed();
 
-    let lastT = events[0]?.t || 0;
     let executed = 0;
     const fails = [];
+    const startedAt = Date.now();
 
-    for (let i = 0; i < events.length; i++) {
-      const e = events[i];
-      // Sleep proportional to time-delta from previous event (max maxWaitSeconds)
-      if (i > 0) {
-        const delta = Math.min(maxWaitSeconds, Math.max(0, e.t - lastT));
-        if (delta > 0) await this.page.waitForTimeout(delta * 1000);
-      }
-      lastT = e.t;
-
+    for (const e of events) {
+      // Each event carries its own dwell time (durSec) — the executor honors
+      // it (capped at maxWaitSeconds) so sessions actually last the planned
+      // 3-20 min. Legacy events without durSec fall back to a 1s pause.
+      const dur = Math.min(maxWaitSeconds, Math.max(0, Number(e.durSec ?? 1)));
       try {
-        await this._executeBrowseAction(e, { boards });
+        await this._executeBrowseAction(e, { boards, durSec: dur });
         executed++;
       } catch (err) {
         Logger.warn(`[Pinterest] event "${e.action}" failed: ${err.message}`);
@@ -253,66 +336,99 @@ export class PinterestPage {
       }
     }
 
-    Logger.info(`[Pinterest] humanBrowseSession done — ${executed}/${events.length} executed, ${fails.length} skipped`);
+    const realMin = ((Date.now() - startedAt) / 60000).toFixed(1);
+    Logger.info(`[Pinterest] humanBrowseSession done — ${executed}/${events.length} executed, ${fails.length} skipped, ${realMin} min real`);
     return { executed, failed: fails.length, fails };
   }
 
   /**
    * Dispatch a single browse event to the appropriate Playwright action.
    */
-  async _executeBrowseAction(event, { boards }) {
+  async _executeBrowseAction(event, { boards, durSec = 1 }) {
     const { action, detail } = event;
+    const dwellMs = Math.max(0, durSec * 1000);
     switch (action) {
       case 'open':
+        await this.page.waitForTimeout(dwellMs);
+        return;
       case 'wait':
-        // Already on Pinterest; just a small humanizing pause
-        await humanWait(this.page, 400, 1200);
+        // Reading / settling pause — tiny cursor drift to look alive
+        if (event.reading) { try { await humanMouseWander(this.page); } catch {} }
+        await this.page.waitForTimeout(dwellMs);
         return;
-      case 'scroll': {
-        // Detail e.g. "Feed scroll (~88s, 30 wave(s))" — extract approximate seconds
-        const m = (detail || '').match(/~(\d+)s/);
-        const totalSec = m ? Number(m[1]) : rand(30, 60);
-        await humanScroll(this.page, totalSec * 200); // ~200px/sec averaged
+      case 'idle':
+        // Distracted — small aimless wander, then sit idle
+        try { await humanMouseWander(this.page); } catch {}
+        await this.page.waitForTimeout(dwellMs);
         return;
-      }
+      case 'scroll':
+        // Scroll for the planned DURATION with irregular speed + reading pauses
+        await humanScrollFor(this.page, durSec, { irregular: event.irregular !== false });
+        return;
+      case 'backtrack':
+        // Scroll back UP to re-look at something that passed
+        try { await this.page.mouse.wheel(0, -rand(200, 650)); } catch {}
+        await this.page.waitForTimeout(dwellMs);
+        return;
       case 'closeup': {
         const pin = await this._pickRandomVisiblePin();
         if (!pin) throw new Error('no visible pin in feed');
         await humanClick(this.page, pin);
-        await humanWait(this.page, 3000, 7000); // wait for detail to load
-        // Light scroll on the detail page (reading)
-        try { await humanScroll(this.page, rand(150, 400)); } catch {}
+        // Detail loads here; the long "read title/description" pause is the
+        // separate 'wait' event that follows in the plan.
+        await this.page.waitForTimeout(dwellMs);
+        return;
+      }
+      case 'zoom': {
+        // Examine the image up close — move over it (some pins hover-zoom),
+        // then dwell. Best-effort: never throws if the image isn't found.
+        try {
+          const img = await this.page.$('div[data-test-id="closeup-image"] img, [data-test-id="pin-closeup-image"] img, img[elementtiming]');
+          if (img) { const b = await img.boundingBox(); if (b) await humanMouseMove(this.page, b.x + b.width / 2, b.y + b.height / 2); }
+        } catch {}
+        try { await humanMouseWander(this.page); } catch {}
+        await this.page.waitForTimeout(Math.max(0, dwellMs - 800));
         return;
       }
       case 'save': {
-        if (boards.length === 0) return; // skip silently
-        const boardName = boards[Math.floor(Math.random() * boards.length)];
-        await this._tryClickSave(boardName);
+        // boardHint = the searched recipe's category (set by the simulator).
+        let boardName = event.boardHint;
+        if (!boardName) {
+          if (boards.length === 0) return; // skip silently
+          boardName = boards[Math.floor(Math.random() * boards.length)];
+        }
+        await this._tryClickSave(boardName);   // has its own internal waits
         return;
       }
       case 'search': {
-        // Detail e.g. 'Type search: "family dinner ideas"'
-        const m = (detail || '').match(/"([^"]+)"/);
-        const keyword = m ? m[1] : 'easy recipes';
-        await this._performSearch(keyword);
+        const keyword = event.keyword || (detail || '').match(/"([^"]+)"/)?.[1] || 'easy recipes';
+        await this._performSearch(keyword);    // has its own internal waits
         return;
       }
-      case 'video': {
-        // Just linger — the video plays automatically when in view
-        await this.page.waitForTimeout(rand(5000, 12000));
+      case 'video':
+        await this.page.waitForTimeout(dwellMs);  // video autoplays while in view
+        return;
+      case 'visit':
+        // Open the external blog in a new tab and LEAVE it idle (the following
+        // 'idle' event provides the dwell; tab is cleaned up at session end).
+        await this._tryClickVisit({ leaveOpen: true });
+        return;
+      case 'hesitate': {
+        // Move toward a pin, pause, then DON'T click (not every move engages)
+        try {
+          const pin = await this._pickRandomVisiblePin();
+          if (pin) { const b = await pin.boundingBox(); if (b) await humanMouseMove(this.page, b.x + b.width * 0.5, b.y + b.height * 0.4); }
+        } catch {}
+        await this.page.waitForTimeout(dwellMs);
         return;
       }
-      case 'visit': {
-        await this._tryClickVisit();
+      case 'profile':
+        await this._navigateToProfile();          // navigates + scrolls (~6s)
+        await this.page.waitForTimeout(Math.max(0, dwellMs - 6000));
         return;
-      }
-      case 'profile': {
-        await this._navigateToProfile();
-        return;
-      }
       case 'back':
         try { await this.page.goBack({ timeout: 8000 }); } catch {}
-        await humanWait(this.page, 1500, 3000);
+        await this.page.waitForTimeout(dwellMs);
         return;
       case 'close':
         // Caller will close browser; do nothing here
@@ -376,19 +492,53 @@ export class PinterestPage {
 
   /**
    * Pick a random pin element visible in the current viewport.
-   * Pinterest uses [data-test-id="pin"] for feed pins.
+   * Tries multiple selectors — Pinterest changes them across redesigns.
+   * Logs candidate counts if nothing matches (diagnostic for missing pins).
    */
   async _pickRandomVisiblePin() {
-    const candidates = await this.page.$$('[data-test-id="pin"], div[role="listitem"] a[href*="/pin/"]');
+    // Multiple selector fallbacks (Pinterest 2026 redesigns)
+    const selectors = [
+      '[data-test-id="pin"]',
+      '[data-test-id="pinrep"]',
+      'div[data-test-id="pinrep"]',
+      'div[role="listitem"] a[href*="/pin/"]',
+      'a[href*="/pin/"][role="link"]',
+      'div[data-grid-item="true"] a[href*="/pin/"]',
+      'div[data-test-pin-id]',
+    ];
+    let candidates = [];
+    let matchedSelector = '';
+    for (const sel of selectors) {
+      const found = await this.page.$$(sel).catch(() => []);
+      if (found.length > 0) {
+        candidates = found;
+        matchedSelector = sel;
+        break;
+      }
+    }
+    if (candidates.length === 0) {
+      // Diagnostic — log selector counts for visibility
+      const counts = await this.page.evaluate(sels => {
+        const out = {};
+        for (const s of sels) out[s] = document.querySelectorAll(s).length;
+        return out;
+      }, selectors).catch(() => ({}));
+      Logger.warn(`[Pinterest] no pins matched any selector. Counts: ${JSON.stringify(counts)}`);
+      return null;
+    }
+    Logger.debug(`[Pinterest] pin candidates: ${candidates.length} via "${matchedSelector}"`);
     const visible = [];
     for (const el of candidates) {
       const box = await el.boundingBox().catch(() => null);
       if (!box) continue;
-      if (box.y < 0 || box.y > 800) continue;       // skip off-screen
+      if (box.y < 0 || box.y > 1200) continue;       // skip off-screen (viewport up to ~1200px)
       if (box.width < 100 || box.height < 100) continue;
       visible.push(el);
     }
-    if (visible.length === 0) return null;
+    if (visible.length === 0) {
+      Logger.warn(`[Pinterest] found ${candidates.length} pin candidates but none visible in viewport (need to scroll first?)`);
+      return null;
+    }
     return visible[Math.floor(Math.random() * Math.min(visible.length, 6))];
   }
 
@@ -428,9 +578,9 @@ export class PinterestPage {
    * Type a query in the search bar, press Enter, scroll results briefly.
    */
   async _performSearch(keyword) {
-    const searchInput = await this.page.$('input[name="searchBoxInput"], input[placeholder*="Search" i], input[aria-label*="Search" i], input[type="search"]');
+    const searchInput = await this.page.$('input[name="searchBoxInput"], input[placeholder*="Search" i], input[placeholder*="Rechercher" i], input[aria-label*="Search" i], input[aria-label*="Rechercher" i], input[type="search"]');
     if (!searchInput) {
-      Logger.debug('[Pinterest] search input not found');
+      Logger.warn(`[Pinterest] search input not found for "${keyword}" — page may not have search bar visible. URL: ${this.page.url()}`);
       return;
     }
     await humanClick(this.page, searchInput);
@@ -451,7 +601,7 @@ export class PinterestPage {
   /**
    * On a pin detail page, click the "Visit" external link.
    */
-  async _tryClickVisit() {
+  async _tryClickVisit({ leaveOpen = false } = {}) {
     const btn = await this.page.$('a[data-test-id="pin-closeup-clickthrough"], a:has-text("Visit"), a:has-text("Visiter")');
     if (!btn) {
       Logger.debug('[Pinterest] visit button not found');
@@ -460,10 +610,12 @@ export class PinterestPage {
     const popupPromise = this.page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null);
     await humanClick(this.page, btn);
     const popup = await popupPromise;
-    if (popup) {
+    if (popup && !leaveOpen) {
       await popup.waitForTimeout(rand(5000, 12000));
       try { await popup.close(); } catch {}
     }
+    // leaveOpen: the blog tab stays open and idle (a natural "I'll read it
+    // later" signal); it's cleaned up when the browser closes at session end.
   }
 
   async _navigateToProfile() {
@@ -649,13 +801,93 @@ export class PinterestPage {
   }
 
   /**
+   * Add Pinterest interest tags to the current pin. Pinterest only accepts
+   * tags from its predefined catalog — typed text triggers a suggestion
+   * dropdown, and you must click an existing suggestion.
+   *
+   * Strategy per tag:
+   *   1. Focus the "Search for a tag" combobox
+   *   2. Clear any prior text + type the tag slowly
+   *   3. Wait 700-1100ms for suggestions to populate
+   *   4. Click the FIRST visible suggestion (closest match by Pinterest's ranking)
+   *   5. If no suggestion appears → press Escape, skip this tag, log it
+   *
+   * Returns { added, skipped, reason? }.
+   */
+  async addTags(tags) {
+    if (!tags || tags.length === 0) return { added: 0, skipped: 0 };
+    const tagInput = await this.page.$('input[role="combobox"][placeholder*="tag" i], input[placeholder*="Search for a tag" i], input[placeholder*="Rechercher un tag" i]');
+    if (!tagInput) {
+      Logger.warn('[Pinterest] tag combobox not found — skipping all tags');
+      return { added: 0, skipped: tags.length, reason: 'no-input' };
+    }
+    let added = 0, skipped = 0;
+    const addedList = [];
+    const skippedList = [];
+    for (const tagRaw of tags) {
+      const tag = String(tagRaw || '').trim();
+      if (!tag) continue;
+      try {
+        await humanClick(this.page, tagInput);
+        await humanWait(this.page, 200, 450);
+        // Clear any prior text
+        try {
+          await this.page.keyboard.press('Control+A');
+          await this.page.keyboard.press('Backspace');
+        } catch {}
+        // Type the tag with human-ish cadence
+        for (const ch of tag) {
+          await this.page.keyboard.type(ch);
+          await this.page.waitForTimeout(rand(40, 110));
+        }
+        // Wait for the suggestion dropdown to populate
+        await humanWait(this.page, 700, 1100);
+        // Click the first VISIBLE suggestion option
+        const clicked = await this.page.evaluate(() => {
+          const candidates = document.querySelectorAll('div[role="option"], li[role="option"], button[role="option"], div[data-test-id^="topic-suggestion"]');
+          for (const c of candidates) {
+            if (c.offsetWidth === 0 || c.offsetHeight === 0) continue;
+            const text = (c.textContent || '').trim();
+            if (!text || text.length > 80) continue;
+            c.click();
+            return text;
+          }
+          return null;
+        });
+        if (clicked) {
+          Logger.info(`[Pinterest] ✓ tag added: "${clicked}"`);
+          added++;
+          addedList.push(clicked);
+        } else {
+          Logger.info(`[Pinterest] ✗ tag skipped (no Pinterest suggestion): "${tag}"`);
+          try { await this.page.keyboard.press('Escape'); } catch {}
+          skipped++;
+          skippedList.push(tag);
+        }
+        await humanWait(this.page, 300, 600);
+      } catch (e) {
+        Logger.warn(`[Pinterest] tag error for "${tag}": ${e.message}`);
+        skipped++;
+        skippedList.push(tag);
+      }
+    }
+    Logger.info(`[Pinterest] Tags result: ${added} added (${addedList.join(', ')}) · ${skipped} skipped${skippedList.length ? ' (' + skippedList.join(', ') + ')' : ''}`);
+    return { added, skipped, addedList, skippedList };
+  }
+
+  /**
    * Full pipeline for one pin. Returns { ok: true, pinUrl } or throws.
    */
-  async createPin({ imagePath, title, description, link, boardName, altText, warmup = true }) {
+  async createPin({ imagePath, title, description, link, boardName, altText, tags, warmup = true }) {
     if (warmup) await this.warmup({ scrollSeconds: rand(20, 45) });
     await this.openCreatePin();
     await this.uploadImage(imagePath);
     await this.fillFields({ title, description, link, altText });
+    // Add tags BEFORE board selection (the tag combobox lives in the same
+    // form panel; selectBoard switches to a different modal/panel).
+    if (Array.isArray(tags) && tags.length > 0) {
+      await this.addTags(tags);
+    }
     await this.selectBoard(boardName);
     const pinUrl = await this.publish();
     return { ok: true, pinUrl };

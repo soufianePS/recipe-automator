@@ -82,6 +82,62 @@ async function loadSiteSettings(siteName) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
 
+// In-memory cache for live WP status (5 min TTL) — recipes list reloads
+// often (filters, refresh) and WP REST is the slow link.
+const _liveWpStatusCache = new Map();   // "{siteName}|{postId}" → { status, at }
+const LIVE_WP_STATUS_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Fetch live WordPress post status (publish/draft/future/private/pending/trash)
+ * using authenticated REST. Used by the recipes dashboard to show real status
+ * regardless of what's cached in sheet col R. Cached 5 min per (site, postId).
+ *
+ * Returns string status, or null if unfetchable (no draftUrl, no auth, etc.)
+ */
+export async function fetchLiveWpStatus(siteName, draftUrl) {
+  if (!draftUrl) return null;
+  let postId;
+  try {
+    const u = new URL(draftUrl);
+    postId = u.searchParams.get('post');
+  } catch { return null; }
+  if (!postId || !/^\d+$/.test(postId)) return null;
+
+  const cacheKey = `${siteName}|${postId}`;
+  const cached = _liveWpStatusCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < LIVE_WP_STATUS_TTL_MS) {
+    return cached.status;
+  }
+
+  let settings;
+  try {
+    settings = await loadSiteSettings(siteName);
+  } catch { return null; }
+  const { wpUrl, wpUsername, wpAppPassword } = settings;
+  if (!wpUrl || !wpUsername || !wpAppPassword) return null;
+
+  const auth = 'Basic ' + Buffer.from(`${wpUsername}:${wpAppPassword}`).toString('base64');
+  const restUrl = `${wpUrl.replace(/\/$/, '')}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=status`;
+  try {
+    const res = await fetch(restUrl, {
+      headers: { 'Authorization': auth },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) {
+      // 404 = trashed/deleted; 401/403 = auth wrong
+      const status = res.status === 404 ? 'trash' : `http-${res.status}`;
+      _liveWpStatusCache.set(cacheKey, { status, at: Date.now() });
+      return status;
+    }
+    const json = await res.json();
+    const status = json?.status || 'unknown';
+    _liveWpStatusCache.set(cacheKey, { status, at: Date.now() });
+    return status;
+  } catch (e) {
+    return null; // network error → don't cache, let next call retry
+  }
+}
+
 /**
  * Resolve which sheet tab to use for a site's Planifier reads/writes.
  *
@@ -263,7 +319,67 @@ export async function readSitePool(siteName, planifierConfig) {
       validation: sheetValidation,    // null if never validated
     });
   }
+  // Append "extra" pins from pin-history (campaign-generated, not in sheet F/J/N)
+  await _attachExtraPins(out, siteName);
   return out;
+}
+
+/**
+ * Augment the pool with "extra" pins from the pin-history sheet.
+ * Extras are pins generated via Calendar Create Pin campaigns (mode='extra'
+ * in pin-regenerator) — they don't overwrite the recipe's original 3 pins
+ * but become additional available pins to post.
+ *
+ * Read once, attach to matching recipes by draftUrl. Each extra appears as
+ * a pin with pinIndex >= 3 so it sorts after the original slots.
+ */
+async function _attachExtraPins(pool, siteName) {
+  try {
+    const { credentialsAvailable, readTabAsObjects } = await import('../../shared/utils/sheets-client.js');
+    if (!credentialsAvailable()) return;
+    const rows = await readTabAsObjects('pin-history').catch(() => []);
+    if (!rows || rows.length === 0) return;
+    // Filter: this site + type='extra' + has wp_image_url + NOT yet posted to pinterest
+    const extras = rows.filter(r =>
+      r.site === siteName &&
+      (r.type || '').toLowerCase() === 'extra' &&
+      r.wp_image_url &&
+      !r.pinterest_url
+    );
+    if (extras.length === 0) return;
+    // Group by recipe_url
+    const byUrl = new Map();
+    for (const e of extras) {
+      const url = (e.recipe_url || '').trim();
+      if (!url) continue;
+      if (!byUrl.has(url)) byUrl.set(url, []);
+      byUrl.get(url).push(e);
+    }
+    // Attach to matching recipes
+    let extraIdx = 3;
+    for (const recipe of pool) {
+      const arr = byUrl.get(recipe.draftUrl);
+      if (!arr || arr.length === 0) continue;
+      // Sort extras by timestamp ASC (oldest first → post first)
+      arr.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+      for (const ex of arr) {
+        recipe.pins.push({
+          pinIndex: extraIdx++,
+          imageUrl: ex.wp_image_url,
+          description: recipe.pins[0]?.description || '',  // borrow desc/title from slot 1
+          title: recipe.pins[0]?.title || recipe.topic || '',
+          tags: '',
+          postedAt: null,                  // never posted (filter guarantees)
+          eligibleAt: null,                // always eligible (no spread for extras)
+          isExtra: true,
+          historyTimestamp: ex.timestamp,  // used to patch pin-history on post
+        });
+      }
+    }
+  } catch (e) {
+    // best-effort — extras enhancement never blocks the main pool
+    if (typeof Logger !== 'undefined') Logger.warn(`[PinPool] extras enrichment failed: ${e.message}`);
+  }
 }
 
 /**

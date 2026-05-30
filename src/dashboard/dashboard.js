@@ -1119,6 +1119,34 @@
         document.getElementById('sPinterestEnabled').checked = settings.pinterestEnabled || false;
         document.getElementById('sPinterestAspectRatio').value = settings.pinterestAspectRatio || 'PORTRAIT';
         document.getElementById('sPinterestPinCount').value = settings.pinterestPinCount || 3;
+        // Pin generator routing (Flow vs ChatGPT)
+        const pinGen = (settings.pinGenerator || 'flow').toLowerCase();
+        const radio = document.querySelector(`input[name="sPinGenerator"][value="${pinGen}"]`);
+        if (radio) radio.checked = true;
+        const cgp = settings.chatgptPin || {};
+        if (document.getElementById('sChatgptPinProfilePath')) document.getElementById('sChatgptPinProfilePath').value = cgp.profilePath || '';
+        if (document.getElementById('sChatgptPinGptUrl')) document.getElementById('sChatgptPinGptUrl').value = cgp.gptUrl || '';
+        if (document.getElementById('sChatgptPinPromptTemplate')) document.getElementById('sChatgptPinPromptTemplate').value = cgp.promptTemplate || '';
+        if (document.getElementById('sChatgptPinTimeout')) document.getElementById('sChatgptPinTimeout').value = cgp.timeoutSeconds || 300;
+        if (document.getElementById('sChatgptPinDeleteAfter')) document.getElementById('sChatgptPinDeleteAfter').checked = cgp.deleteAfterGenerate !== false;
+        // Aspect ratio: try to match preset; if not in list, switch to Custom + fill text input
+        const aspectSel = document.getElementById('sChatgptPinAspectRatio');
+        const aspectCustom = document.getElementById('sChatgptPinAspectRatioCustom');
+        if (aspectSel) {
+          const stored = cgp.aspectRatio || '9:16';
+          const presets = Array.from(aspectSel.options).map(o => o.value);
+          if (presets.includes(stored)) {
+            aspectSel.value = stored;
+            if (aspectCustom) { aspectCustom.style.display = 'none'; aspectCustom.value = ''; }
+          } else {
+            aspectSel.value = '__custom__';
+            if (aspectCustom) { aspectCustom.style.display = 'block'; aspectCustom.value = stored; }
+          }
+          aspectSel.onchange = () => {
+            if (aspectCustom) aspectCustom.style.display = aspectSel.value === '__custom__' ? 'block' : 'none';
+          };
+        }
+        if (typeof window._applyPinGenVisibility === 'function') window._applyPinGenVisibility();
         document.getElementById('sPinterestPromptPrefix').value = settings.pinterestPromptPrefix || '';
         document.getElementById('sPinterestPromptSuffix').value = settings.pinterestPromptSuffix || '';
         // Legacy folder fallback (still supported by the orchestrator if
@@ -1402,6 +1430,22 @@
         pinterestEnabled: document.getElementById('sPinterestEnabled').checked,
         pinterestTemplateFolderGenerator: (document.getElementById('sPinterestTemplateFolderGenerator')?.value || '').trim(),
         pinterestTemplateFolderScraper: (document.getElementById('sPinterestTemplateFolderScraper')?.value || '').trim(),
+        // Pin generator routing (Flow vs ChatGPT)
+        pinGenerator: (document.querySelector('input[name="sPinGenerator"]:checked')?.value || 'flow'),
+        chatgptPin: {
+          profilePath: (document.getElementById('sChatgptPinProfilePath')?.value || '').trim(),
+          gptUrl: (document.getElementById('sChatgptPinGptUrl')?.value || '').trim(),
+          promptTemplate: (document.getElementById('sChatgptPinPromptTemplate')?.value || '').trim(),
+          timeoutSeconds: Number(document.getElementById('sChatgptPinTimeout')?.value) || 300,
+          deleteAfterGenerate: !!document.getElementById('sChatgptPinDeleteAfter')?.checked,
+          aspectRatio: (() => {
+            const sel = document.getElementById('sChatgptPinAspectRatio');
+            const cust = document.getElementById('sChatgptPinAspectRatioCustom');
+            if (!sel) return '9:16';
+            if (sel.value === '__custom__') return (cust?.value || '').trim() || '9:16';
+            return sel.value;
+          })(),
+        },
         pinterestAspectRatio: document.getElementById('sPinterestAspectRatio').value,
         pinterestPinCount: parseInt(document.getElementById('sPinterestPinCount').value) || 3,
         pinterestPromptPrefix: document.getElementById('sPinterestPromptPrefix').value,
@@ -3080,3 +3124,62 @@
     }
     window.copyListStyleCSS = copyListStyleCSS;
     window.previewListStyleCSS = previewListStyleCSS;
+
+    // ── Pin Generator UI (Flow vs ChatGPT card picker + conditional settings)
+    window._applyPinGenVisibility = function () {
+      const radio = document.querySelector('input[name="sPinGenerator"]:checked');
+      const value = radio?.value || 'flow';
+      // Highlight active card
+      document.querySelectorAll('[data-pin-gen-card]').forEach(card => {
+        const active = card.dataset.pinGenCard === value;
+        card.style.borderColor = active ? '#7c4dff' : 'rgba(255,255,255,0.08)';
+        card.style.background = active ? 'rgba(124,77,255,0.15)' : 'rgba(255,255,255,0.02)';
+      });
+      // Show/hide ChatGPT-specific settings
+      const box = document.getElementById('chatgptPinSettings');
+      if (box) box.style.display = value === 'chatgpt' ? '' : 'none';
+    };
+    document.addEventListener('change', (e) => {
+      if (e.target.name === 'sPinGenerator') window._applyPinGenVisibility();
+    });
+    document.addEventListener('click', (e) => {
+      const card = e.target.closest('[data-pin-gen-card]');
+      if (!card) return;
+      const radio = card.querySelector('input[type="radio"]');
+      if (radio) { radio.checked = true; window._applyPinGenVisibility(); }
+    });
+
+    // "Open ChatGPT profile + login" — launches Chrome with the configured
+    // profile path so user can log in once. Profile persists across runs.
+    document.addEventListener('click', async (e) => {
+      if (e.target.id !== 'btnOpenChatgptProfile') return;
+      e.preventDefault();
+      const path = document.getElementById('sChatgptPinProfilePath')?.value?.trim() || '';
+      // Path is optional — server defaults to data/chatgpt-pin-profile if empty
+      const status = document.getElementById('chatgptProfileStatus');
+      e.target.disabled = true;
+      const orig = e.target.textContent;
+      e.target.textContent = '⏳ Opening...';
+      if (status) status.textContent = '';
+      try {
+        const r = await fetch('/api/chatgpt-pin/open-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profilePath: path, gptUrl: document.getElementById('sChatgptPinGptUrl')?.value?.trim() || '' }),
+        }).then(r => r.json());
+        if (r.ok) {
+          const pathInfo = r.usedDefault ? ` <code>(${r.profilePath})</code>` : '';
+          if (status) status.innerHTML = `<span style="color:#00d68f;">✓ Profile opened${pathInfo}. Login ChatGPT in that window, then close it. Session persists.</span>`;
+          // Auto-fill the input with the resolved path so user sees what was used
+          const inp = document.getElementById('sChatgptPinProfilePath');
+          if (inp && !inp.value.trim() && r.profilePath) inp.value = r.profilePath;
+        } else {
+          if (status) status.innerHTML = `<span style="color:#f88;">✗ ${r.error || 'Failed'}</span>`;
+        }
+      } catch (err) {
+        if (status) status.innerHTML = `<span style="color:#f88;">✗ ${err.message}</span>`;
+      } finally {
+        e.target.disabled = false;
+        e.target.textContent = orig;
+      }
+    });

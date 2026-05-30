@@ -60,6 +60,7 @@ const ctx = {
   orchestrator: null,
   browserContext: null,
   automationRunning: false,
+  automationStartedAt: null,   // timestamp when automationRunning was set true
   loginBrowserContext: null,
   chromium,
   BROWSER_PROFILE,

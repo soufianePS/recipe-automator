@@ -36,7 +36,18 @@ export class DolphinAnty {
 
   async _req(base, path, opts = {}) {
     const url = base + path;
-    const res = await fetch(url, { headers: this._headers(), ...opts });
+    let res;
+    try {
+      res = await fetch(url, { headers: this._headers(), ...opts });
+    } catch (e) {
+      // `fetch failed` on the local API (port 3001) almost always means
+      // the Dolphin Anty desktop app isn't running. Rewrite to a human
+      // error so Telegram + dashboard logs say it clearly.
+      if (base === this.localBase && /fetch failed|ECONNREFUSED|connect/i.test(e.message)) {
+        throw new Error(`Dolphin Anty desktop app not running on ${this.localBase} — open the app and stay logged in (required for profile start/stop)`);
+      }
+      throw e;
+    }
     const text = await res.text();
     let body;
     try { body = JSON.parse(text); } catch { body = text; }
@@ -44,6 +55,25 @@ export class DolphinAnty {
       throw new Error(`Dolphin ${opts.method || 'GET'} ${path} → ${res.status}: ${typeof body === 'string' ? body.slice(0, 200) : JSON.stringify(body).slice(0, 200)}`);
     }
     return body;
+  }
+
+  /**
+   * Cheap connectivity probe — single GET on the local API root with no auth.
+   * Returns true if the app is reachable, false otherwise. Never throws.
+   */
+  async isLocalAppRunning() {
+    try {
+      const res = await fetch(this.localBase + '/v1.0/auth/login-with-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: this.token }),
+        signal: AbortSignal.timeout(2000),
+      });
+      // Any HTTP response (even 401) means the desktop app answered.
+      return res.status > 0;
+    } catch {
+      return false;
+    }
   }
 
   // ── Cloud API ────────────────────────────────────────────────
@@ -101,11 +131,34 @@ export class DolphinAnty {
   /**
    * Convenience: ensure local app is authenticated, then start the profile
    * and return the CDP endpoint Playwright should connect to.
-   * Falls back to inspecting common shapes the local API returns.
+   *
+   * Self-healing: if Dolphin reports the profile is already running
+   * (E_BROWSER_RUN_DUPLICATE — leftover from a crashed previous session),
+   * we stop it first then re-start. This recovers gracefully without
+   * requiring the user to manually clean up in the Dolphin Anty app.
    */
   async startAndGetCDP(profileId) {
     try { await this.loginLocal(); } catch (e) { Logger.warn(`[Dolphin] loginLocal failed (${e.message.split('\n')[0]}) — trying start anyway`); }
-    const r = await this.startProfile(profileId);
+
+    let r;
+    try {
+      r = await this.startProfile(profileId);
+    } catch (e) {
+      // Detect the "already running" error and self-heal by stopping first
+      const isDuplicate = /already running|E_BROWSER_RUN_DUPLICATE/i.test(e.message);
+      if (!isDuplicate) throw e;
+      Logger.warn(`[Dolphin] Profile ${profileId} reported as already running — stopping leftover session first...`);
+      try {
+        await this.stopProfile(profileId);
+        // Give Dolphin a moment to release the lock
+        await new Promise(res => setTimeout(res, 2000));
+      } catch (stopErr) {
+        Logger.warn(`[Dolphin] stop attempt failed (continuing): ${stopErr.message}`);
+      }
+      Logger.info(`[Dolphin] Retrying start for profile ${profileId}...`);
+      r = await this.startProfile(profileId);
+    }
+
     const port = r?.automation?.port || r?.port || r?.data?.port;
     const wsEndpoint = r?.automation?.wsEndpoint || r?.wsEndpoint || r?.data?.wsEndpoint;
     if (!port && !wsEndpoint) {

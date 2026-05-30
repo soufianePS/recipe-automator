@@ -134,7 +134,9 @@ export const PLANIFIER_DEFAULTS = {
         {
           id: 'acc1',
           dolphinProfileId: null,
-          status: 'active',           // 'active' | 'warmup_week_1' | 'warmup_week_2' | 'disabled'
+          status: 'active',           // 'active' | 'warmup_week_1' | 'warmup_week_2' | 'warmup_week_3' | 'disabled'
+          createdAt: null,            // ISO date — when this account was added to the system. Drives auto-progression.
+          autoProgress: true,         // if true, daily tick promotes W1→W2→W3→active based on age
           pinsPerDayMin: 2,
           pinsPerDayMax: 3,
           boards: [],                 // string[] of board names (Pinterest picks first matching)
@@ -143,6 +145,8 @@ export const PLANIFIER_DEFAULTS = {
           id: 'acc2',
           dolphinProfileId: null,
           status: 'disabled',
+          createdAt: null,
+          autoProgress: false,
           pinsPerDayMin: 0,
           pinsPerDayMax: 0,
           boards: [],
@@ -152,11 +156,39 @@ export const PLANIFIER_DEFAULTS = {
   },
 };
 
+/**
+ * Account status tiers — drive what the planifier allows the account to do.
+ *
+ * Aligned with 2026 Pinterest warmup consensus (multiple sources, see brainstorm):
+ *   W1 (days 0-7):   browse only, 0 pins. Build human-like activity baseline.
+ *   W2 (days 7-14):  1 pin/day max (0.3 multiplier on 2-3 baseline ≈ 1).
+ *   W3 (days 14-28): 2 pins/day (0.6 multiplier ≈ 2).
+ *   Active (28+):    full rate (multiplier 1.0 = 2-3 pins/day).
+ *
+ * Auto-progression by daily tick when account.autoProgress === true.
+ */
 export const ACCOUNT_STATUSES = {
   disabled:        { label: 'Disabled',     canPost: false, browseOnly: false, pinMultiplier: 0 },
   warmup_week_1:   { label: 'Warmup W1',    canPost: false, browseOnly: true,  pinMultiplier: 0 },
-  warmup_week_2:   { label: 'Warmup W2',    canPost: true,  browseOnly: false, pinMultiplier: 0.4 },
+  warmup_week_2:   { label: 'Warmup W2',    canPost: true,  browseOnly: false, pinMultiplier: 0.3 },
+  warmup_week_3:   { label: 'Warmup W3',    canPost: true,  browseOnly: false, pinMultiplier: 0.6 },
   active:          { label: 'Active',       canPost: true,  browseOnly: false, pinMultiplier: 1.0 },
+};
+
+/**
+ * Days-since-creation thresholds for auto-progression. An account at status X
+ * is promoted when daysSince(createdAt) >= NEXT_TIER_AT_DAYS[X].
+ */
+export const PROGRESSION_THRESHOLDS_DAYS = {
+  warmup_week_1: 7,    // W1 → W2 at day 7
+  warmup_week_2: 14,   // W2 → W3 at day 14
+  warmup_week_3: 28,   // W3 → active at day 28
+};
+
+export const NEXT_STATUS = {
+  warmup_week_1: 'warmup_week_2',
+  warmup_week_2: 'warmup_week_3',
+  warmup_week_3: 'active',
 };
 
 export const PIN_DISTRIBUTION_STRATEGIES = {
@@ -168,6 +200,7 @@ export const PIN_DISTRIBUTION_STRATEGIES = {
 export const ACTION_TYPES = {
   CREATE_RECIPE: 'create-recipe',
   PINTEREST_SESSION: 'pinterest-session',
+  WARMING_SESSION: 'warming-session',
 };
 
 export const ITEM_STATUSES = {

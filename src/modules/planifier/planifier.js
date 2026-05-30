@@ -23,10 +23,12 @@ import { Logger } from '../../shared/utils/logger.js';
 
 let _weeklyTickTimer = null;
 let _executorTickTimer = null;
+let _agingTickTimer = null;
 let _serverCtx = null;
 let _executorRunning = false;   // re-entrancy guard for the executor tick itself
 const WEEKLY_TICK_INTERVAL_MS = 30 * 60 * 1000;  // check twice per hour
 const EXECUTOR_TICK_INTERVAL_MS = 60 * 1000;     // check every minute
+const AGING_TICK_INTERVAL_MS = 6 * 60 * 60 * 1000;  // every 6h — auto-progress Pinterest accounts through warmup tiers
 
 /**
  * ISO week key — "YYYY-Wnn". Two timestamps in the same ISO week share this
@@ -56,10 +58,26 @@ function addDays(dateStr, n) {
 }
 
 /**
- * Discover sites by reading data/sites/* directories.
- * Returns array of site names.
+ * Discover sites. Reads the sites-config tab in the shared Google Sheet
+ * (if google-credentials.json is present), falling back to local filesystem
+ * (data/sites/* directories) when credentials are unavailable.
+ *
+ * Returns array of site_id strings. Only sites with active === TRUE in the
+ * sheet are included; the filesystem path returns every directory (legacy
+ * behavior, since the FS has no "active" concept).
  */
 async function discoverSites() {
+  // Try sheet first — single source of truth across all users of the app.
+  try {
+    const { SitesConfig } = await import('../../shared/utils/sites-config.js');
+    const sheetSites = await SitesConfig.listActive();
+    if (sheetSites.length > 0) {
+      return sheetSites.map(s => s.site_id);
+    }
+  } catch (e) {
+    // Credentials missing or sheet read failed — fall through to FS.
+  }
+  // Filesystem fallback
   if (!existsSync(SITES_DIR)) return [];
   const entries = await readdir(SITES_DIR, { withFileTypes: true });
   return entries.filter(e => e.isDirectory() && !e.name.startsWith('_')).map(e => e.name);
@@ -130,6 +148,14 @@ async function executorTick() {
         .finally(() => { _executorRunning = false; });
       return;
     }
+
+    // No local plan items due — try campaign slots (from pin-campaigns sheet)
+    try {
+      const { campaignsTick } = await import('./campaigns-executor.js');
+      await campaignsTick(_serverCtx, config);
+    } catch (e) {
+      Logger.warn(`[Planifier] campaigns tick error: ${e.message}`);
+    }
   } catch (e) {
     Logger.warn(`[Planifier] executorTick error: ${e.message}`);
     _executorRunning = false;
@@ -170,6 +196,123 @@ async function weeklyTick() {
   }
 }
 
+/**
+ * Daily-ish tick: promote Pinterest accounts through W1 → W2 → W3 → active
+ * based on age. Runs every 6h so even if the server boots mid-day the user
+ * sees promotions within a few hours of the threshold being crossed.
+ */
+async function agingTick() {
+  try {
+    const config = await loadConfig();
+    if (!config.enabled) return;
+    const { applyAging, notifyPromotions } = await import('./account-aging.js');
+    const promotions = await applyAging(config);
+    if (promotions.length === 0) return;
+    await saveConfig(config);
+    for (const p of promotions) {
+      await appendHistory({
+        type: 'account-aging', site: p.site, accountId: p.accountId,
+        status: 'promoted',
+        message: `${p.from} → ${p.to} (account is ${p.daysOld}d old)`,
+      });
+    }
+    await notifyPromotions(config, promotions);
+    Logger.info(`[Planifier] aging tick: ${promotions.length} account(s) promoted`);
+  } catch (e) {
+    Logger.warn(`[Planifier] agingTick error: ${e.message}`);
+  }
+}
+
+/**
+ * Boot health-check: if there's a Pinterest slot scheduled in the next
+ * ~90 minutes and the Dolphin Anty desktop app isn't reachable, warn
+ * loudly (server log + Telegram if configured). We don't fail or block
+ * — just nudge the user to open the app before the slot fires.
+ */
+async function checkDolphinHealth() {
+  try {
+    const config = await loadConfig();
+    if (!config.enabled) return;
+    // Look for the next Pinterest slot in today + tomorrow's plans
+    const today = todayKey();
+    const dates = [today, addDays(today, 1)];
+    const now = Date.now();
+    const lookAheadMs = 90 * 60 * 1000;
+    let upcomingPinterest = null;
+    for (const date of dates) {
+      const plan = await loadPlan(date);
+      if (!plan) continue;
+      for (const item of plan.items) {
+        if (item.type !== 'pinterest-session' || item.status !== 'pending') continue;
+        const dueAt = new Date(item.scheduledAt).getTime();
+        if (dueAt - now <= lookAheadMs && dueAt - now >= -5 * 60 * 1000) {
+          if (!upcomingPinterest || dueAt < new Date(upcomingPinterest.scheduledAt).getTime()) {
+            upcomingPinterest = item;
+          }
+        }
+      }
+    }
+    if (!upcomingPinterest) return;
+    if (!config.dolphinAnty?.apiToken) {
+      Logger.warn(`[Planifier] Pinterest slot at ${upcomingPinterest.scheduledAt} but Dolphin token not configured`);
+      return;
+    }
+    const { DolphinAnty } = await import('../../shared/utils/dolphin-anty.js');
+    const dolphin = new DolphinAnty(config);
+    const reachable = await dolphin.isLocalAppRunning();
+    if (!reachable) {
+      const minutes = Math.round((new Date(upcomingPinterest.scheduledAt).getTime() - now) / 60000);
+      const warnMsg = `Dolphin Anty desktop app NOT RUNNING — Pinterest slot due in ${minutes} min (${upcomingPinterest.site}/${upcomingPinterest.accountId}). OPEN THE APP or the slot will fail with fetch error.`;
+      Logger.warn(`[Planifier] ${warnMsg}`);
+      const tg = config.notifications?.telegram;
+      if (tg?.enabled && tg?.botToken && tg?.chatId && tg?.notifyOnError) {
+        try {
+          const { sendTelegram } = await import('../../shared/utils/telegram-notifier.js');
+          await sendTelegram(tg, `⚠️ <b>Dolphin not running</b>\n${warnMsg}`);
+        } catch (e) { Logger.warn(`[Planifier] health-check Telegram send failed: ${e.message}`); }
+      }
+    } else {
+      Logger.info('[Planifier] Dolphin health-check: app is reachable');
+    }
+  } catch (e) {
+    Logger.warn(`[Planifier] dolphin health-check error: ${e.message}`);
+  }
+}
+
+/**
+ * Crash recovery: scan recent plans for items stuck in `in_progress`.
+ * Such items are orphaned by definition — we just booted, so nothing is
+ * actually running them. Reset them to `pending` so the executor tick can
+ * decide (fire if still within missedSlotDropAfterMinutes window, else mark
+ * as `missed`). Logs each recovery to history for auditability.
+ */
+async function recoverOrphanedItems() {
+  try {
+    const today = todayKey();
+    const dates = [addDays(today, -2), addDays(today, -1), today];
+    let recovered = 0;
+    for (const date of dates) {
+      const plan = await loadPlan(date);
+      if (!plan) continue;
+      const stuck = plan.items.filter(i => i.status === 'in_progress');
+      for (const item of stuck) {
+        item.status = 'pending';
+        recovered++;
+        Logger.warn(`[Planifier] crash-recovery: ${item.id} (${item.type} ${item.site}${item.accountId ? '/'+item.accountId : ''}, was due ${item.scheduledAt}) reset in_progress → pending`);
+        await appendHistory({
+          type: item.type, site: item.site, accountId: item.accountId,
+          itemId: item.id, date, status: 'crash-recovered',
+          message: 'Reset from in_progress to pending after server restart (orphaned by previous crash/shutdown)',
+        });
+      }
+      if (stuck.length > 0) await savePlan(date, plan);
+    }
+    if (recovered > 0) Logger.info(`[Planifier] crash-recovery: ${recovered} orphaned item(s) reset to pending`);
+  } catch (e) {
+    Logger.warn(`[Planifier] crash-recovery error: ${e.message}`);
+  }
+}
+
 export const Planifier = {
   /**
    * Start background timers. Call once at server bootstrap.
@@ -179,6 +322,12 @@ export const Planifier = {
    */
   init(serverCtx) {
     if (serverCtx) _serverCtx = serverCtx;
+    // Crash recovery FIRST — before any tick fires — so orphaned in_progress
+    // items are healed before the executor tick decides what to run.
+    recoverOrphanedItems().catch(() => {});
+    // Dolphin health check — warn early if a Pinterest slot is imminent
+    // and the desktop app isn't running (most common cause of "fetch failed").
+    checkDolphinHealth().catch(() => {});
     if (!_weeklyTickTimer) {
       _weeklyTickTimer = setInterval(() => weeklyTick().catch(() => {}), WEEKLY_TICK_INTERVAL_MS);
       Logger.info('[Planifier] weekly auto-regen tick armed (every 30 min)');
@@ -188,17 +337,28 @@ export const Planifier = {
       _executorTickTimer = setInterval(() => executorTick().catch(() => {}), EXECUTOR_TICK_INTERVAL_MS);
       Logger.info('[Planifier] executor tick armed (every 60s, fires due slots when master switch ON)');
     }
+    if (!_agingTickTimer) {
+      _agingTickTimer = setInterval(() => agingTick().catch(() => {}), AGING_TICK_INTERVAL_MS);
+      Logger.info('[Planifier] aging tick armed (every 6h, auto-progresses accounts through warmup tiers)');
+      // Fire once at boot so a promotion that crossed the threshold while
+      // the server was off applies immediately.
+      agingTick().catch(() => {});
+    }
   },
 
   stop() {
     if (_weeklyTickTimer) { clearInterval(_weeklyTickTimer); _weeklyTickTimer = null; }
     if (_executorTickTimer) { clearInterval(_executorTickTimer); _executorTickTimer = null; }
+    if (_agingTickTimer) { clearInterval(_agingTickTimer); _agingTickTimer = null; }
   },
 
   // ── Config ──────────────────────────────────────────────────
 
   /**
-   * Get the full config, auto-seeding entries for any newly-discovered site.
+   * Get the full config, auto-seeding entries for any newly-discovered site
+   * and overlaying sites-config (sheet) flags onto each site entry. Sheet
+   * flags supported: warming_enabled, active. Local config wins for any
+   * field NOT in the sheet (Pinterest accounts, browse rules, etc).
    */
   async getConfig() {
     const config = await loadConfig();
@@ -211,6 +371,20 @@ export const Planifier = {
       }
     }
     if (mutated) await saveConfig(config);
+
+    // Overlay sites-config sheet flags (read-mostly, cached 30s)
+    try {
+      const { SitesConfig } = await import('../../shared/utils/sites-config.js');
+      const sheetSites = await SitesConfig.list();
+      for (const sheetSite of sheetSites) {
+        const local = config.sites[sheetSite.site_id];
+        if (!local) continue;
+        local.warming_enabled = !!sheetSite.warming_enabled;
+        local.active_in_sheet = !!sheetSite.active;
+      }
+    } catch (e) {
+      // Sheet unavailable — local-only config, no overlay
+    }
     return config;
   },
 

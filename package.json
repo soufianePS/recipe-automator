@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "debug": "DEBUG=1 node src/server.js"
+    "debug": "DEBUG=1 node src/server.js",
+    "check-triggers": "node scripts/check-triggers.mjs"
   },
   "dependencies": {
     "@pilio/gemini-watermark-remover": "^1.0.10",
     "ai-text-detector": "^1.0.8",
     "express": "^4.21.0",
+    "googleapis": "^172.0.0",
     "lighthouse": "^13.1.0",
     "playwright": "^1.49.0",
     "playwright-extra": "^4.3.6",

@@ -32,14 +32,42 @@ function rollCount(min, max) {
 /**
  * Roll a random time inside [activeHourStart, activeHourEnd) for a date.
  * Returns an ISO string. Minute is jittered off "round" values (:00,:15,:30).
+ *
+ * IMPORTANT: when the target date is TODAY, the effective lower bound is
+ * `max(activeHourStart, currentHour + 5min)` — otherwise a regen at 21:00
+ * would create items scheduled for 8:00-21:00 (all in the past), which the
+ * executor tick would immediately mark as `missed` (drop-after-30min rule).
+ * Returns null if today is already past activeHourEnd (no future slots left).
  */
 function rollTime(dateStr, rules) {
   const [year, month, day] = dateStr.split('-').map(Number);
-  const hourFloat = rules.activeHourStart + Math.random() * (rules.activeHourEnd - rules.activeHourStart);
-  const hour = Math.floor(hourFloat);
+  const now = new Date();
+  const isToday = now.getFullYear() === year && (now.getMonth() + 1) === month && now.getDate() === day;
+
+  let lowerHour = rules.activeHourStart;
+  let lowerMinute = 0;
+  if (isToday) {
+    // Use current local time + 5min buffer as the floor
+    const futureFloor = new Date(now.getTime() + 5 * 60000);
+    const fH = futureFloor.getHours();
+    const fM = futureFloor.getMinutes();
+    if (fH >= rules.activeHourEnd) return null;  // no active hours left today
+    if (fH > lowerHour || (fH === lowerHour && fM > lowerMinute)) {
+      lowerHour = fH;
+      lowerMinute = fM;
+    }
+  }
+
+  // Range in MINUTES from lowerHour:lowerMinute to activeHourEnd:00
+  const lowerMin = lowerHour * 60 + lowerMinute;
+  const upperMin = rules.activeHourEnd * 60;
+  if (upperMin <= lowerMin) return null;
+  const pickedMin = lowerMin + Math.floor(Math.random() * (upperMin - lowerMin));
+  const hour = Math.floor(pickedMin / 60);
+  let minute = pickedMin % 60;
   // Bias minutes away from round numbers
-  let minute = randInt(3, 57);
   if ([0, 15, 30, 45].includes(minute)) minute += randInt(2, 8);
+  if (minute >= 60) minute = 59;
   const seconds = randInt(0, 59);
   const d = new Date(year, month - 1, day, hour, minute, seconds);
   return d.toISOString();
@@ -82,6 +110,7 @@ function passesGaps(candidateIso, candidate, items, rules) {
 function findSlot(dateStr, rules, candidate, items, maxAttempts = 30) {
   for (let i = 0; i < maxAttempts; i++) {
     const iso = rollTime(dateStr, rules);
+    if (!iso) return null;  // today already past activeHourEnd — no slot possible
     if (passesGaps(iso, candidate, items, rules)) return iso;
   }
   return null;
@@ -144,12 +173,34 @@ export function buildDayPlan(dateStr, config, options = {}) {
         )
       );
 
+      // Detect warming mode for this site. When sites-config has
+      // warming_enabled === TRUE for this site, we emit warming-session items
+      // instead of pinterest-session ones. Warming sites still create recipes
+      // normally; the difference is only in the Pinterest action behavior.
+      const warmingEnabled = !!(siteCfg.warming_enabled || siteCfg.warmingEnabled);
+
       for (let i = 0; i < sessionTarget; i++) {
         const candidate = { site: siteName, accountId: account.id };
         const slot = findSlot(dateStr, rules, candidate, items);
         if (!slot) break;
 
-        // Decide if this session actually posts or just browses
+        if (warmingEnabled) {
+          // Warming session: extended browse + saves to "I Like It" + 1
+          // warming pin (no outbound link). No willPost concept — the warming
+          // pin is the only thing posted (from warming-pin-list).
+          items.push({
+            id: randomUUID(),
+            type: ACTION_TYPES.WARMING_SESSION,
+            site: siteName,
+            accountId: account.id,
+            dolphinProfileId: account.dolphinProfileId || null,
+            scheduledAt: slot,
+            status: ITEM_STATUSES.PENDING,
+          });
+          continue;
+        }
+
+        // Normal pinterest-session
         const willPost = statusCfg.canPost
           && (Math.random() * 100) >= (rules.sessionsWithoutPostPct || 0);
 

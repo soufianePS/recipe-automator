@@ -239,7 +239,7 @@ async function _downloadImageToDisk(url, prefix = 'img') {
  *
  * Returns the job object immediately. Caller can poll status via getJob().
  */
-export async function enqueueRegen({ site, rowIndex, pinIndex, templateName, templateBase64 }) {
+export async function enqueueRegen({ site, rowIndex, pinIndex, templateName, templateBase64, mode = 'replace', slotLabel = null, fullTitle = null, recipeCategory = null }) {
   if (!site || rowIndex == null || pinIndex == null) {
     throw new Error('site, rowIndex, pinIndex required');
   }
@@ -252,10 +252,17 @@ export async function enqueueRegen({ site, rowIndex, pinIndex, templateName, tem
     site, rowIndex, pinIndex,
     templateName: templateName || null,
     templateBase64Length: templateBase64?.length || 0,
+    // mode='replace': legacy behavior — overwrite recipe sheet col F/J/N
+    // mode='extra':   new behavior — write to pin-history only, no overwrite
+    mode: mode === 'extra' ? 'extra' : 'replace',
+    slotLabel: slotLabel || null,   // optional label for extra pins ("1"/"2"/"3"/"extra")
+    fullTitle: fullTitle || null,    // optional [prefix + recipe title] — ChatGPT path uses this for desc prompt
+    recipeCategory: recipeCategory || null,
     status: 'queued',
     createdAt: new Date().toISOString(),
     error: null,
     newPinUrl: null,
+    generatedDescription: null,      // populated by ChatGPT 2-prompt flow
     log: [],
   };
   job._templatePath = await _writeBase64ToDisk(templateBase64, templateName || 'template.jpg');
@@ -291,6 +298,7 @@ export async function processJob(jobId, serverCtx, planifierConfig) {
   if (job.status === 'done') throw new Error('Job already done');
 
   serverCtx.automationRunning = true;
+  serverCtx.automationStartedAt = Date.now();
   await _updateJob(jobId, { status: 'in_progress', startedAt: new Date().toISOString() });
   const log = (msg) => { Logger.info(`[Regen ${jobId.slice(0,8)}] ${msg}`); job.log.push({ t: Date.now(), msg }); };
 
@@ -312,51 +320,165 @@ export async function processJob(jobId, serverCtx, planifierConfig) {
     await _updateJob(jobId, { _heroPath: heroPath, log: job.log });
     log(`Assets ready: hero=${heroPath.split(/[\\/]/).pop()} template=${job._templatePath.split(/[\\/]/).pop()}`);
 
-    // Launch Flow browser
-    log('Launching browser…');
-    let profileDir = serverCtx.BROWSER_PROFILE;
-    try {
-      if (await FlowAccountManager.isEnabled()) {
-        const account = await FlowAccountManager.getActiveAccount();
-        if (account) profileDir = FlowAccountManager.getProfileDir(account);
-      }
-    } catch {}
-    context = await chromium.launchPersistentContext(profileDir, {
-      headless: false,
-      viewport: null,
-      args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
-      ignoreDefaultArgs: ['--enable-automation'],
-    });
-    browser = context.browser();
-    serverCtx.browserContext = context;
-
-    // Lazy import to avoid loading Playwright until needed
-    const { FlowPage } = await import('../../shared/pages/flow.js');
-    flow = new FlowPage(browser, context);
-
-    // Build prompt
+    // Build prompt (needed for both paths)
     const websiteDomain = (recipe.settings.wpUrl || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
     const prompt = _buildPinPrompt(recipe.topic, pinTitle, pinDescription, websiteDomain, recipe.settings);
     log(`Prompt built (${prompt.length} chars)`);
 
-    // Run Flow
-    log('Closing any active Flow session…');
-    try { await flow.closeSession(); } catch {}
+    // ── Pin generator routing: Flow (legacy) OR ChatGPT (new) ──
+    // IMPORTANT: only launch the browser path we actually need. When
+    // pinGenerator=chatgpt we DON'T want to open the Flow profile at all.
+    const useChatGPT = (recipe.settings.pinGenerator || 'flow').toLowerCase() === 'chatgpt';
+
+    if (!useChatGPT) {
+      // Launch Flow browser ONLY for the Flow path
+      log('Launching Flow browser…');
+      let profileDir = serverCtx.BROWSER_PROFILE;
+      try {
+        if (await FlowAccountManager.isEnabled()) {
+          const account = await FlowAccountManager.getActiveAccount();
+          if (account) profileDir = FlowAccountManager.getProfileDir(account);
+        }
+      } catch {}
+      context = await chromium.launchPersistentContext(profileDir, {
+        headless: false,
+        viewport: null,
+        args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
+        ignoreDefaultArgs: ['--enable-automation'],
+      });
+      browser = context.browser();
+      serverCtx.browserContext = context;
+      const { FlowPage } = await import('../../shared/pages/flow.js');
+      flow = new FlowPage(browser, context);
+    }
     const outputPath = join(TMP_DIR, `pin-out-${jobId}.jpg`);
-    log('Calling Flow.generate()… (this can take 1-4 min)');
     const aspectRatio = recipe.settings.pinterestAspectRatio || 'PORTRAIT';
-    const result = await flow.generate(
-      prompt,
-      job._templatePath,    // background = template
-      [job._heroPath],      // context = hero only (same as base orchestrator)
-      aspectRatio,
-      outputPath,
-      {}
-    );
+    let result;
+    if (useChatGPT) {
+      log('Routing to ChatGPT image gen (settings.pinGenerator=chatgpt)…');
+      const cfg = recipe.settings.chatgptPin || {};
+      // Default to a project-local profile folder when not configured
+      const profilePath = (cfg.profilePath || '').trim()
+        || join(PROJECT_ROOT, 'data', 'chatgpt-pin-profile');
+      const { ChatGPTPage } = await import('../../shared/pages/chatgpt.js');
+      log(`Launching ChatGPT Chrome profile: ${profilePath}`);
+      let chatgptContext;
+      try {
+        chatgptContext = await chromium.launchPersistentContext(profilePath, {
+          headless: false,
+          viewport: null,
+          args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
+          ignoreDefaultArgs: ['--enable-automation'],
+        });
+        const chatgpt = new ChatGPTPage(chatgptContext.browser(), chatgptContext);
+        await chatgpt.init(cfg.gptUrl || null);
+
+        // ── PROMPT 1: ask ChatGPT for a fresh pin description ────────
+        // Only do this if we have a fullTitle (campaign provided prefix + title).
+        // Same chat session as the image gen — ChatGPT keeps context.
+        if (job.fullTitle) {
+          const titleForDesc = job.fullTitle;
+          const catLine = job.recipeCategory ? `\n- Category: ${job.recipeCategory}` : '';
+          const descPrompt = `Write a Pinterest pin description for this recipe:
+
+- Title: "${titleForDesc}"${catLine}
+
+REQUIREMENTS (strict):
+- Exactly 200-250 characters total
+- Plain text only — NO emojis, NO icons, NO markdown, NO quotes around the text
+- Compelling hook in the first 50 characters
+- Include 1-2 natural keywords related to the recipe
+- End with a clear call-to-action (e.g. "Save", "Click", "Try", "Tap")
+- Sound natural, conversational, human-written
+- Do NOT include the title verbatim at the start
+- Do NOT use phrases like "Here is" or "Here's the description"
+
+Output ONLY the description text itself, no preamble, no labels, no quotes.`;
+          log('Prompt 1 → asking ChatGPT for description...');
+          try {
+            const descRaw = await chatgpt.sendPromptAndGetResponse(descPrompt, false);
+            // Clean: strip surrounding quotes, markdown, emojis, leading/trailing whitespace
+            let cleaned = String(descRaw || '').trim();
+            cleaned = cleaned.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '');
+            cleaned = cleaned.replace(/[\p{Emoji}\p{Extended_Pictographic}]/gu, '');
+            cleaned = cleaned.replace(/^(here['']?s the description[:\s]*|description[:\s]*)/i, '');
+            cleaned = cleaned.replace(/\s+/g, ' ').trim();
+            // Sanity truncate at 500 chars max
+            if (cleaned.length > 500) cleaned = cleaned.slice(0, 497) + '...';
+            job.generatedDescription = cleaned;
+            await _updateJob(jobId, { generatedDescription: cleaned, log: job.log });
+            log(`✓ description received (${cleaned.length} chars): "${cleaned.slice(0, 80)}..."`);
+          } catch (e) {
+            log(`description prompt failed (non-fatal): ${e.message}`);
+            // No description = fallback to template-based later in campaigns-executor
+          }
+        }
+
+        // ── PROMPT 2: generate the pin image ─────────────────────────
+        // Aspect ratio handling: presets clickable in ChatGPT UI go through the
+        // picker; custom values (2:3, 1:2, etc.) skip the picker and rely on
+        // explicit prompt-text instruction (test-confirmed reliable).
+        const aspectRatio = (cfg.aspectRatio || '9:16').trim();
+        const PICKER_OPTIONS = ['auto', '1:1', '3:4', '9:16', '4:3', '16:9'];
+        const isPickerSelectable = PICKER_OPTIONS.includes(aspectRatio.toLowerCase());
+
+        const promptTemplate = cfg.promptTemplate || prompt;
+        let fullPrompt = promptTemplate.includes('@prompt')
+          ? promptTemplate.replace(/@prompt/g, prompt)
+          : `${promptTemplate}\n\n--- PIN-SPECIFIC INSTRUCTIONS ---\n${prompt}`;
+        // Resolve wrapper placeholders so @title / @website / @pin_title are
+        // replaced with real values in the chatgptPin.promptTemplate too.
+        const wrapperVars = {
+          '@aspectRatio': aspectRatio,
+          '@title': recipe.topic || '',
+          '@pin_title': pinTitle || recipe.topic || '',
+          '@pin_description': pinDescription || '',
+          '@website': websiteDomain,
+        };
+        for (const [k, v] of Object.entries(wrapperVars)) {
+          if (v == null) continue;
+          fullPrompt = fullPrompt.replace(new RegExp(k, 'g'), String(v));
+        }
+        // Inject ONLY the user's literal aspectRatio setting — no extra wording.
+        if (aspectRatio && aspectRatio !== 'auto') {
+          fullPrompt = `Output image format: ${aspectRatio}\n\n` + fullPrompt;
+        }
+        log(`Prompt 2 → asking ChatGPT to generate the image (ratio ${aspectRatio}, picker=${isPickerSelectable})...`);
+        const cg = await chatgpt.generatePinImage({
+          prompt: fullPrompt,
+          refImages: [job._templatePath, job._heroPath].filter(Boolean),
+          outputPath,
+          timeoutSeconds: cfg.timeoutSeconds || 300,
+          deleteAfter: cfg.deleteAfterGenerate !== false,  // default true — deletes the whole chat (both prompts)
+          skipToolSelect: !isPickerSelectable,
+          preferredRatio: isPickerSelectable ? aspectRatio : null,
+        });
+        if (!cg.ok) throw new Error(`ChatGPT image gen failed: ${cg.error}`);
+        result = true;
+      } finally {
+        try { await chatgptContext?.close(); } catch {}
+      }
+    } else {
+      // Run Flow (legacy)
+      log('Closing any active Flow session…');
+      try { await flow.closeSession(); } catch {}
+      log('Calling Flow.generate()… (this can take 1-4 min)');
+      result = await flow.generate(
+        prompt,
+        job._templatePath,    // background = template
+        [job._heroPath],      // context = hero only (same as base orchestrator)
+        aspectRatio,
+        outputPath,
+        {}
+      );
+    }
     if (!result || !existsSync(outputPath)) {
-      throw new Error('Flow generation returned no image');
+      throw new Error('Pin image generation returned no image');
     }
     log(`Image generated at ${outputPath}`);
+
+    // NO post-crop — keep native generator ratio (9:16 from ChatGPT picker)
+    // so new pins display TALL on Pinterest like legacy Flow pins.
 
     // Upload to WP
     log('Uploading to WordPress…');
@@ -375,18 +497,36 @@ export async function processJob(jobId, serverCtx, planifierConfig) {
     if (!newPinUrl) throw new Error(`WP upload failed (no url in response: ${JSON.stringify(uploaded).slice(0,200)})`);
     log(`Uploaded: ${newPinUrl} (WP media id ${uploaded?.id})`);
 
-    // Update sheet col F/J/N + clear U/V/W
-    const imgCol = PIN_IMG_COLS[job.pinIndex];
-    const postedCol = PIN_POSTED_COLS[job.pinIndex];
-    log(`Writing new URL to sheet col ${imgCol}${job.rowIndex} + clearing col ${postedCol}…`);
     const settings = recipe.settings;
-    await SheetsAPI.writeRange(settings.sheetId, `${recipe.sheetTab}!${imgCol}${job.rowIndex}`, [[newPinUrl]], settings);
-    await SheetsAPI.writeRange(settings.sheetId, `${recipe.sheetTab}!${postedCol}${job.rowIndex}`, [['']], settings, { bgColor: '#ffffff' });
-
-    // Delete old WP media (best-effort)
-    if (oldUrl && oldUrl !== newPinUrl) {
-      log(`Deleting old WP media: ${oldUrl}`);
-      await _deleteWPMediaByUrl(settings, oldUrl);
+    if (job.mode === 'extra') {
+      // EXTRA mode: don't touch the recipe sheet. Just append to pin-history
+      // so the new pin is an additional asset, not a replacement. The
+      // Pinterest poster (pin-pool) reads pin-history and picks any "extra"
+      // pin where pinterest_url is empty.
+      log('mode=extra → appending to pin-history (no overwrite of recipe sheet)');
+      const { PinHistory } = await import('../../shared/utils/pin-history.js');
+      await PinHistory.append({
+        site: job.site,
+        type: 'extra',
+        recipe_topic: recipe.topic,
+        recipe_url: recipe.draftUrl,
+        pin_slot: job.slotLabel || `extra-${job.pinIndex + 1}`,
+        template: job.templateName || '',
+        wp_image_url: newPinUrl,
+        notes: `extra pin generated by campaign · template=${job.templateName || 'random'}`,
+      });
+    } else {
+      // REPLACE mode (legacy) — overwrite F/J/N and delete old WP media
+      const imgCol = PIN_IMG_COLS[job.pinIndex];
+      const postedCol = PIN_POSTED_COLS[job.pinIndex];
+      log(`mode=replace → writing new URL to sheet col ${imgCol}${job.rowIndex} + clearing col ${postedCol}…`);
+      await SheetsAPI.writeRange(settings.sheetId, `${recipe.sheetTab}!${imgCol}${job.rowIndex}`, [[newPinUrl]], settings);
+      await SheetsAPI.writeRange(settings.sheetId, `${recipe.sheetTab}!${postedCol}${job.rowIndex}`, [['']], settings, { bgColor: '#ffffff' });
+      // Delete old WP media (best-effort)
+      if (oldUrl && oldUrl !== newPinUrl) {
+        log(`Deleting old WP media: ${oldUrl}`);
+        await _deleteWPMediaByUrl(settings, oldUrl);
+      }
     }
 
     log('Done.');
@@ -410,5 +550,6 @@ export async function processJob(jobId, serverCtx, planifierConfig) {
     if (context) try { await context.close(); } catch {}
     serverCtx.browserContext = null;
     serverCtx.automationRunning = false;
+    serverCtx.automationStartedAt = null;
   }
 }

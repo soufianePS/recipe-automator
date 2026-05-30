@@ -28,6 +28,7 @@ import { VerifiedGeneratorOrchestrator } from '../verified-generator/orchestrato
 import { FlowAccountManager } from '../../shared/utils/flow-account-manager.js';
 import { chromium } from 'playwright';
 import { sendTelegram } from '../../shared/utils/telegram-notifier.js';
+import { PinHistory } from '../../shared/utils/pin-history.js';
 
 /** Escape special chars for Telegram HTML parse_mode. */
 function escapeHtmlForTelegram(s) {
@@ -102,17 +103,32 @@ async function runPinterestSession(item, config) {
     }
   }
 
-  // Get recipe titles for keyword pool
+  // Get recipe {title, category} pairs for the keyword pool. The category is
+  // what lets a recipe-search → save target the matching board (1-to-1).
   let recipeTitles = [];
+  let recipeObjs = [];
   if (site.useRecipeNamesAsKeywords) {
     try {
       const pool = await readSitePool(item.site, config);
-      recipeTitles = pool.map(r => r.topic).filter(Boolean);
+      recipeObjs = pool.filter(r => r.topic).map(r => ({ title: r.topic, category: r.category || '' }));
+      recipeTitles = recipeObjs.map(r => r.title);
     } catch (e) { Logger.warn(`[Executor] recipe titles unavailable: ${e.message}`); }
   }
 
+  // Load site's WP categories — used as primary search keywords with 1-to-1
+  // mapping to Pinterest board names (search "Dinner" → save to board "Dinner").
+  let categories = [];
+  try {
+    const sitePath = join(PROJECT_ROOT, 'data', 'sites', item.site, 'settings.json');
+    const ss = JSON.parse(await readFile(sitePath, 'utf8'));
+    categories = (ss.wpCategories || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (categories.length > 0) {
+      Logger.info(`[Executor] Site categories (search + board mapping): ${categories.join(', ')}`);
+    }
+  } catch (e) { Logger.warn(`[Executor] categories unavailable: ${e.message}`); }
+
   // Pre-roll the session (deterministic — what the user previewed)
-  const plan = simulateSession(config, item.site, {}, recipeTitles);
+  const plan = simulateSession(config, item.site, {}, recipeTitles, { categories, recipes: recipeObjs });
   Logger.info(`[Executor] Planned session: ${plan.durationMinutes}min, ${plan.events.length} events, summary=${JSON.stringify(plan.summary)}`);
 
   const { page, cleanup } = await _connectDolphin(Number(profileId));
@@ -121,14 +137,69 @@ async function runPinterestSession(item, config) {
     await pinterest.init();
     Logger.info(`[Executor] Pinterest ready — replaying ${plan.events.length} browse events`);
 
+    // Pre-flight: validate that Pinterest boards exist for the site's
+    // categories. Cached 24h. Best-effort — never blocks the session.
+    if (categories.length > 0) {
+      try {
+        const { ensureValidation } = await import('./boards-validator.js');
+        const val = await ensureValidation(page, item.site, item.accountId, categories);
+        if (val.missing.length > 0) {
+          Logger.warn(`[Executor] Missing Pinterest boards: ${val.missing.join(', ')} — those category saves will use default board`);
+        }
+      } catch (e) {
+        Logger.warn(`[Executor] board validation skipped: ${e.message}`);
+      }
+    }
+
     // Replay browse events (uses humanBrowseSession added to PinterestPage)
     const boards = account.boards || [];
     await pinterest.humanBrowseSession({ events: plan.events, boards });
 
     if (pickedPin) {
       Logger.info(`[Executor] Now posting pin: ${pickedPin.recipe.topic} / pin#${pickedPin.pin.pinIndex}`);
+      // HARD GUARD: recipe must be PUBLISH on WP — pinning to drafts/futures
+      // sends Pinterest traffic to a 404 or login wall, hurts domain trust.
+      const pubCheck = await _isRecipePublished(pickedPin.recipe.draftUrl);
+      if (!pubCheck.ok) {
+        Logger.warn(`[Executor] Skipping pin: ${pubCheck.reason}`);
+        return {
+          ok: true,
+          posted: false,
+          skipped: true,
+          recipe: pickedPin.recipe.topic,
+          pinIndex: pickedPin.pin.pinIndex,
+          reason: `recipe-not-published (${pubCheck.status})`,
+          browseEvents: plan.events.length,
+        };
+      }
+      Logger.info(`[Executor] Recipe status check: publish ✓`);
       const imagePath = await _resolveImagePath(pickedPin.pin.imageUrl, item.site);
-      const boardName = boards[Math.floor(Math.random() * boards.length)] || null;
+
+      // Board selection: use scraped Pinterest boards (preferred — found via
+      // validator cache from prior warming or live-scrape) OR account.boards
+      // fallback. Match category → board via substring.
+      const { getEffectiveBoards, findBoardForCategory } = await import('./boards-validator.js');
+      const { boards: effBoards, source: bSource } = await getEffectiveBoards(item.site, item.accountId, boards);
+      let boardName = null;
+      if (effBoards.length === 0) {
+        Logger.warn(`[Executor] ⚠ account ${item.accountId} has NO boards (no scraped cache, no manual config). Pinterest defaults to last-used board (e.g. "breakfast"). Run a warming session OR add boards manually.`);
+      } else if (pickedPin.recipe.category) {
+        const match = findBoardForCategory(effBoards, pickedPin.recipe.category);
+        boardName = match || effBoards[Math.floor(Math.random() * effBoards.length)];
+        Logger.info(`[Executor] Board: "${boardName}" (category="${pickedPin.recipe.category}", source=${bSource}, matched=${!!match})`);
+      } else {
+        boardName = effBoards[Math.floor(Math.random() * effBoards.length)];
+        Logger.info(`[Executor] Board: "${boardName}" (random — recipe has no category, source=${bSource})`);
+      }
+
+      // Tags: pull from sheet (pin column D = tags, comma-separated). Was missing
+      // entirely from this code path → no pin ever got tags via pinterest-session.
+      const tags = (pickedPin.pin.tags || '')
+        .split(',').map(t => t.trim()).filter(Boolean).slice(0, 10);
+      if (tags.length === 0) {
+        Logger.warn(`[Executor] ⚠ pin has no tags in sheet (col tags) — Pinterest pin will go up with zero tags`);
+      }
+
       // Convert the WP admin edit URL into a public-facing redirect URL.
       // Pinterest links go to `<site>/?p=<postId>` which WP auto-redirects to
       // the canonical permalink (e.g. /classic-cobb-salad/).
@@ -141,10 +212,28 @@ async function runPinterestSession(item, config) {
         link: publicLink,
         boardName,
         altText: pickedPin.pin.title || '',
+        tags,
         warmup: false, // we already warmed up via humanBrowseSession
       });
-      // Persist posted_at to the sheet
-      await markPinPosted(item.site, pickedPin.recipe.rowIndex, pickedPin.pin.pinIndex);
+      // Persist posted_at. For extras (campaign-generated, not in sheet F/J/N)
+      // we only patch pin-history. For regular pins (slot 0-2) we update the
+      // recipe sheet U/V/W cell as before.
+      if (pickedPin.pin.isExtra) {
+        Logger.info(`[Executor] Extra pin — skipping sheet U/V/W update (will patch pin-history instead)`);
+      } else {
+        await markPinPosted(item.site, pickedPin.recipe.rowIndex, pickedPin.pin.pinIndex);
+      }
+      // Audit: patch the pin-history row for this image with pinterest_url +
+      // posted_at + account_id. Best-effort — never blocks the return.
+      try {
+        await PinHistory.patchByImageUrl(pickedPin.pin.imageUrl, {
+          pinterest_url: result.pinUrl || '',
+          posted_at: new Date().toISOString(),
+          account_id: item.accountId || '',
+        });
+      } catch (e) {
+        Logger.warn(`[PinHistory] post-patch failed (non-fatal): ${e.message}`);
+      }
       return { ok: true, posted: true, pinUrl: result.pinUrl, recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex };
     }
 
@@ -163,6 +252,69 @@ async function runPinterestSession(item, config) {
 // Cache resolved permalinks per process so the same recipe doesn't hit
 // the WP REST API multiple times during a session.
 const _permalinkCache = new Map();
+// Cache recipe status check per process (5-minute TTL) so repeated checks of
+// the same post during a session don't hammer the WP REST API.
+const _recipeStatusCache = new Map();  // postId → { status, at }
+const RECIPE_STATUS_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Live-check WordPress to confirm the pin's underlying recipe is PUBLISHED.
+ * Pinterest rules + UX: posting pins to draft/scheduled recipes wastes posts
+ * (link returns 404 or login wall to non-admins). This is a hard guard
+ * applied just before createPin.
+ *
+ * Returns:
+ *   - { ok: true, status: 'publish' }        → safe to post
+ *   - { ok: false, status, reason }          → skip the post
+ *   - { ok: true, status: 'unknown' }        → REST unreachable; permissive
+ *                                              fail-open (don't block on infra)
+ */
+export async function _isRecipePublished(draftUrl) {
+  if (!draftUrl) return { ok: false, status: 'no-url', reason: 'no draftUrl on pin' };
+  let origin, postId;
+  try {
+    const u = new URL(draftUrl);
+    origin = u.origin;
+    postId = u.searchParams.get('post');
+  } catch {
+    return { ok: false, status: 'invalid-url', reason: `cannot parse ${draftUrl}` };
+  }
+  if (!postId || !/^\d+$/.test(postId)) return { ok: false, status: 'no-post-id', reason: 'no ?post=N in draftUrl' };
+
+  const cacheKey = `${origin}|${postId}`;
+  const cached = _recipeStatusCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < RECIPE_STATUS_TTL_MS) {
+    return cached.status === 'publish'
+      ? { ok: true, status: 'publish' }
+      : { ok: false, status: cached.status, reason: `recipe status is "${cached.status}", not publish (cached)` };
+  }
+  // Query the canonical /posts/{id} — returns status only for public posts.
+  // We use ?context=embed which works without auth and includes the status
+  // for posts the requester can see (publish = everyone; draft/future =
+  // requires auth). For non-authenticated reads, missing post = unpublished.
+  const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?_fields=status,id`;
+  try {
+    const res = await fetch(restUrl, { signal: AbortSignal.timeout(8000) });
+    if (res.status === 404) {
+      // Post not visible to public → either trashed, draft, or future
+      _recipeStatusCache.set(cacheKey, { status: 'not-public', at: Date.now() });
+      return { ok: false, status: 'not-public', reason: 'WP returned 404 (post is draft/future/trashed)' };
+    }
+    if (!res.ok) {
+      Logger.warn(`[Executor] recipe status check ${restUrl} → HTTP ${res.status}; fail-open`);
+      return { ok: true, status: 'unknown' };
+    }
+    const json = await res.json();
+    const status = json?.status || 'unknown';
+    _recipeStatusCache.set(cacheKey, { status, at: Date.now() });
+    return status === 'publish'
+      ? { ok: true, status }
+      : { ok: false, status, reason: `recipe status is "${status}", not publish` };
+  } catch (e) {
+    Logger.warn(`[Executor] recipe status check failed for post ${postId}: ${e.message}; fail-open`);
+    return { ok: true, status: 'unknown' };
+  }
+}
 
 /**
  * Resolve the real public permalink for a WP post.
@@ -392,6 +544,7 @@ export async function runPlanItem(date, itemId, serverCtx, options = {}) {
   const config = await Planifier.getConfig();
 
   serverCtx.automationRunning = true;
+  serverCtx.automationStartedAt = Date.now();
   await Planifier.updatePlanItem(date, itemId, {
     status: 'in_progress',
   });
@@ -414,6 +567,9 @@ export async function runPlanItem(date, itemId, serverCtx, options = {}) {
       result = await runCreateRecipe(item, config, serverCtx);
     } else if (item.type === 'pinterest-session') {
       result = await runPinterestSession(item, config);
+    } else if (item.type === 'warming-session') {
+      const { runWarmingSession } = await import('./warming-executor.js');
+      result = await runWarmingSession(item, config);
     } else {
       throw new Error(`Unknown item type: ${item.type}`);
     }
@@ -422,6 +578,7 @@ export async function runPlanItem(date, itemId, serverCtx, options = {}) {
     Logger.error(`[Executor] item ${itemId} failed: ${e.message}`);
   } finally {
     serverCtx.automationRunning = false;
+    serverCtx.automationStartedAt = null;
     const durationSec = Math.round((Date.now() - startedAt) / 1000);
     const status = error ? 'error' : 'done';
     await Planifier.updatePlanItem(date, itemId, {

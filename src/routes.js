@@ -16,6 +16,8 @@ import { GeminiVisualOrchestrator } from './modules/gemini-visual/orchestrator.j
 import { RegenOrchestrator } from './modules/regen/regen-orchestrator.js';
 import { RegenScheduler } from './modules/regen/regen-scheduler.js';
 import { Planifier } from './modules/planifier/planifier.js';
+import { SitesConfig } from './shared/utils/sites-config.js';
+import { PinCampaigns } from './shared/utils/pin-campaigns.js';
 import { DolphinAnty } from './shared/utils/dolphin-anty.js';
 import { ACCOUNT_STATUSES, PIN_DISTRIBUTION_STRATEGIES } from './modules/planifier/default-config.js';
 import { readAllPools, summarizePool, markPinPosted, unmarkPinPosted, pickNextEligiblePin, writeValidationToSheet, readAllRecipes, addRecipeToSheet, deleteRecipeFromSheet, resetRecipeToPending, getAvailableSheetTabs } from './modules/planifier/pin-pool.js';
@@ -805,11 +807,11 @@ export function setupRoutes(app, ctx) {
       const { date } = req.params;
       const { type, site, accountId, scheduledAt, willPost, locked } = req.body || {};
       if (!type || !site) return res.status(400).json({ error: 'type and site are required' });
-      if (type !== 'create-recipe' && type !== 'pinterest-session') {
-        return res.status(400).json({ error: 'type must be create-recipe or pinterest-session' });
+      if (!['create-recipe', 'pinterest-session', 'warming-session'].includes(type)) {
+        return res.status(400).json({ error: 'type must be create-recipe / pinterest-session / warming-session' });
       }
-      if (type === 'pinterest-session' && !accountId) {
-        return res.status(400).json({ error: 'accountId required for pinterest-session' });
+      if ((type === 'pinterest-session' || type === 'warming-session') && !accountId) {
+        return res.status(400).json({ error: 'accountId required for pinterest/warming session' });
       }
       let plan = await Planifier.getPlan(date);
       if (!plan) {
@@ -828,9 +830,9 @@ export function setupRoutes(app, ctx) {
         // Default: now + 1 minute
         scheduledIso = new Date(Date.now() + 60_000).toISOString();
       }
-      // Lookup dolphinProfileId from config if pinterest-session
+      // Lookup dolphinProfileId from config if pinterest/warming session
       let dolphinProfileId = null;
-      if (type === 'pinterest-session') {
+      if (type === 'pinterest-session' || type === 'warming-session') {
         const cfg = await Planifier.getConfig();
         const account = (cfg.sites?.[site]?.pinterestAccounts || []).find(a => a.id === accountId);
         dolphinProfileId = account?.dolphinProfileId || null;
@@ -900,6 +902,299 @@ export function setupRoutes(app, ctx) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Boards validator — cached pre-flight check per account ─────
+  // GET /api/planifier/boards-validation/:site/:accountId
+  //   Returns the latest cached validation (or null if never run).
+  app.get('/api/planifier/boards-validation/:site/:accountId', async (req, res) => {
+    try {
+      const { readValidation } = await import('./modules/planifier/boards-validator.js');
+      const v = await readValidation(req.params.site, req.params.accountId);
+      res.json({ ok: true, validation: v });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  /**
+   * Check ctx.automationRunning, BUT auto-clear it if it's been "running"
+   * for > 15 min (a previous job likely crashed without unwinding the flag).
+   * Returns true if actually busy now.
+   */
+  function _isActuallyBusy() {
+    if (!ctx.automationRunning) return false;
+    const STALE_MS = 15 * 60 * 1000;
+    const startedAt = ctx.automationStartedAt;
+    if (startedAt && Date.now() - startedAt > STALE_MS) {
+      Logger.warn(`[Server] automationRunning flag stuck for ${Math.round((Date.now() - startedAt) / 60000)} min — auto-clearing as stale.`);
+      ctx.automationRunning = false;
+      ctx.automationStartedAt = null;
+      return false;
+    }
+    return true;
+  }
+
+  // ── ChatGPT pin generator — open Chrome with dedicated profile ────
+  // First-time setup convenience: user clicks "Open profile + login" in the
+  // Pin Generator settings → server launches Chrome with the configured
+  // profile path so they can log in to ChatGPT once. The Chrome window
+  // stays open until user closes it; the persistent profile keeps cookies.
+  app.post('/api/chatgpt-pin/open-profile', async (req, res) => {
+    try {
+      let { profilePath, gptUrl } = req.body || {};
+      // Default to a project-local folder when empty so user doesn't have to pick a path
+      if (!profilePath || !profilePath.trim()) {
+        const { join: jpc } = await import('path');
+        profilePath = jpc(ctx.__dirname, '..', 'data', 'chatgpt-pin-profile');
+        Logger.info(`[ChatGPTPinProfile] No path provided — defaulting to ${profilePath}`);
+      }
+      const { chromium } = await import('playwright');
+      // Use launchPersistentContext (NOT in a managed handle — we deliberately
+      // don't close it so the user can interact and close manually).
+      const context = await chromium.launchPersistentContext(profilePath, {
+        headless: false,
+        viewport: null,
+        args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
+        ignoreDefaultArgs: ['--enable-automation'],
+      });
+      // Open the target URL in a new tab (or reuse first tab)
+      const page = context.pages()[0] || (await context.newPage());
+      const url = gptUrl?.trim() || 'https://chatgpt.com/';
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+      Logger.info(`[ChatGPTPinProfile] Opened ${url} in profile ${profilePath}`);
+      res.json({ ok: true, profilePath, url, usedDefault: !req.body?.profilePath });
+      // Note: we don't close the context. User closes manually when done logging in.
+    } catch (e) {
+      Logger.error(`[ChatGPTPinProfile] failed: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Manual override — POST /api/force-clear-busy → force clear stuck flag.
+  // Use when the dashboard reports "Other automation running" but you know
+  // nothing is actually running (e.g. after a server crash mid-job).
+  app.post('/api/force-clear-busy', (req, res) => {
+    const wasBusy = ctx.automationRunning;
+    const startedAt = ctx.automationStartedAt;
+    ctx.automationRunning = false;
+    ctx.automationStartedAt = null;
+    Logger.warn(`[Server] busy flag manually cleared (was=${wasBusy}, since=${startedAt ? new Date(startedAt).toISOString() : 'unknown'})`);
+    res.json({ ok: true, wasBusy, startedAt });
+  });
+
+  // POST /api/planifier/boards-validation/:site/:accountId/run
+  //   Force-runs validation NOW: connects to Dolphin profile, opens Pinterest
+  //   profile page, scrapes boards, compares with site categories, persists.
+  //   Heavy (~30-60s) — single-flight gated on ctx.automationRunning.
+  app.post('/api/planifier/boards-validation/:site/:accountId/run', async (req, res) => {
+    try {
+      if (_isActuallyBusy()) {
+        return res.status(409).json({ error: 'Other automation running — try again in a few minutes' });
+      }
+      const { site, accountId } = req.params;
+      const config = await Planifier.getConfig();
+      const siteCfg = config.sites?.[site];
+      if (!siteCfg) return res.status(400).json({ error: `Site ${site} not in planifier config` });
+      const account = (siteCfg.pinterestAccounts || []).find(a => a.id === accountId);
+      if (!account) return res.status(400).json({ error: `Account ${accountId} not found` });
+      const profileId = account.dolphinProfileId;
+      if (!profileId) return res.status(400).json({ error: `Account ${accountId} has no Dolphin profile` });
+
+      // Load site categories
+      const { readFile: rf2 } = await import('fs/promises');
+      const { join: jp2 } = await import('path');
+      const settings = JSON.parse(await rf2(jp2(ctx.__dirname, '..', 'data', 'sites', site, 'settings.json'), 'utf8'));
+      const categories = (settings.wpCategories || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (categories.length === 0) return res.status(400).json({ error: 'Site has no wpCategories defined' });
+
+      // Mark busy + launch Dolphin
+      ctx.automationRunning = true;
+      ctx.automationStartedAt = Date.now();
+      const { DolphinAnty } = await import('./shared/utils/dolphin-anty.js');
+      const { chromium } = await import('playwright');
+      const planCfg = await Planifier.getConfig();
+      const dolphin = new DolphinAnty({ dolphinAnty: planCfg.dolphinAnty });
+      let browser, context, page;
+      try {
+        Logger.info(`[BoardsValidate] Starting Dolphin profile ${profileId} for ${site}/${accountId}...`);
+        const { port } = await dolphin.startAndGetCDP(Number(profileId));
+        browser = await chromium.connectOverCDP(`http://localhost:${port}`);
+        context = browser.contexts()[0] || (await browser.newContext());
+        page = context.pages()[0] || (await context.newPage());
+
+        const { PinterestPage } = await import('./shared/pages/pinterest.js');
+        const pinterest = new PinterestPage(page);
+        await pinterest.init();
+
+        const { validate } = await import('./modules/planifier/boards-validator.js');
+        const result = await validate(page, site, accountId, categories);
+        res.json({ ok: true, validation: result });
+      } finally {
+        try { await browser?.close(); } catch {}
+        try { await dolphin.stopProfile(Number(profileId)); } catch {}
+        ctx.automationRunning = false;
+        ctx.automationStartedAt = null;
+      }
+    } catch (e) {
+      Logger.error(`[BoardsValidate] ${e.message}`);
+      try { ctx.automationRunning = false; } catch {}
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Per-site recipe listing (powers calendar modal dropdowns) ─────
+  // Returns:
+  //   - GET /api/sites/:siteId/recipes         → all rows with topic + draftUrl
+  //   - GET /api/sites/:siteId/pending-topics  → rows where status empty/pending (no draftUrl yet)
+  //
+  // Cached implicitly by the SheetsAPI gviz endpoint; each call is one read.
+  app.get('/api/sites/:siteId/recipes', async (req, res) => {
+    try {
+      const siteId = req.params.siteId;
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const settingsPath = join(process.cwd(), 'data', 'sites', siteId, 'settings.json');
+      const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+      const cfg = await Planifier.getConfig();
+      const override = cfg?.sites?.[siteId]?.sheetTab;
+      const tab = (override && override.trim()) || settings.generatorSheetTab || settings.sheetTabName;
+      if (!tab) return res.status(400).json({ error: `No recipes tab configured for site ${siteId}` });
+      const rows = await SheetsAPI.readSheet(settings.sheetId, tab);
+      const startRow = Number(settings.generatorStartRow || settings.startRow || 2);
+      const recipes = [];
+      for (let i = startRow - 2; i < rows.length; i++) {
+        const row = rows[i];
+        const topic = (row[0] || '').trim();
+        const status = (row[1] || '').trim().toLowerCase();
+        const draftUrl = (row[2] || '').trim();
+        if (!topic) continue;
+        recipes.push({
+          rowIndex: i + 2,
+          topic,
+          status,
+          draftUrl,
+          isPending: !status || status === 'pending',
+          isDone: status === 'done',
+        });
+      }
+      res.json({ ok: true, sheetTab: tab, recipes });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/sites/:siteId/pending-topics', async (req, res) => {
+    try {
+      const siteId = req.params.siteId;
+      const r = await fetch(`http://localhost:${app.locals.port || 3000}/api/sites/${encodeURIComponent(siteId)}/recipes`).then(r => r.json()).catch(() => null);
+      if (r?.recipes) {
+        return res.json({ ok: true, topics: r.recipes.filter(x => x.isPending) });
+      }
+      // Fallback: read directly
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const settings = JSON.parse(await readFile(join(process.cwd(), 'data', 'sites', siteId, 'settings.json'), 'utf8'));
+      const cfg = await Planifier.getConfig();
+      const tab = (cfg?.sites?.[siteId]?.sheetTab || '').trim() || settings.generatorSheetTab || settings.sheetTabName;
+      const rows = await SheetsAPI.readSheet(settings.sheetId, tab);
+      const startRow = Number(settings.generatorStartRow || settings.startRow || 2);
+      const topics = [];
+      for (let i = startRow - 2; i < rows.length; i++) {
+        const topic = (rows[i][0] || '').trim();
+        const status = (rows[i][1] || '').trim().toLowerCase();
+        if (topic && (!status || status === 'pending')) {
+          topics.push({ rowIndex: i + 2, topic, status });
+        }
+      }
+      res.json({ ok: true, topics });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Multi-site sites-config (Google Sheet backed) ──────────────────
+  // GET — list all sites with metadata for the dashboard table.
+  app.get('/api/sites-config', async (req, res) => {
+    try {
+      const sites = await SitesConfig.list({ noCache: !!req.query.fresh });
+      res.json({ ok: true, sites });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Pin Campaigns CRUD (Google Sheet backed) ───────────────────
+  app.get('/api/pin-campaigns', async (req, res) => {
+    try {
+      const all = await PinCampaigns.list();
+      const filtered = req.query.site
+        ? all.filter(c => c.site === req.query.site)
+        : all;
+      res.json({ ok: true, campaigns: filtered });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/pin-campaigns', async (req, res) => {
+    try {
+      const b = req.body || {};
+      if (!b.site || !b.recipe_url || !b.type) {
+        return res.status(400).json({ error: 'site, recipe_url, type required' });
+      }
+      const row = await PinCampaigns.create({
+        site: b.site,
+        recipe_url: b.recipe_url,
+        recipe_title: b.recipe_title || '',
+        type: b.type,
+        template: b.template || '',
+        scheduled_date_1: b.scheduled_date_1 || '',
+        scheduled_date_2: b.scheduled_date_2 || '',
+        scheduled_date_3: b.scheduled_date_3 || '',
+        account_id: b.account_id || '',
+        notes: b.notes || '',
+      });
+      res.json({ ok: true, campaign: row });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/pin-campaigns/:campaignId', async (req, res) => {
+    try {
+      const ALLOWED = [
+        'recipe_url', 'recipe_title', 'type', 'template',
+        'scheduled_date_1', 'scheduled_date_2', 'scheduled_date_3',
+        'status_1', 'status_2', 'status_3',
+        'account_id', 'notes',
+      ];
+      const patch = {};
+      for (const k of ALLOWED) {
+        if (req.body && req.body[k] !== undefined) patch[k] = req.body[k];
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: 'no allowed fields in body' });
+      }
+      const r = await PinCampaigns.patch(req.params.campaignId, patch);
+      res.json({ ok: true, updated: r.updated, patch });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/pin-campaigns/:campaignId', async (req, res) => {
+    try {
+      // Soft-delete: set all 3 statuses to 'cancelled'. (Hard delete of a
+      // sheet row would shift indices and break ongoing operations.)
+      const r = await PinCampaigns.patch(req.params.campaignId, {
+        status_1: 'cancelled', status_2: 'cancelled', status_3: 'cancelled',
+      });
+      res.json({ ok: true, updated: r.updated });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // PUT — update one site's columns. Body: { active?, warming_enabled?, display_name?, notes?, ... }
+  // Only whitelisted columns are written; others are ignored.
+  app.put('/api/sites-config/:siteId', async (req, res) => {
+    try {
+      const ALLOWED = ['active', 'warming_enabled', 'display_name', 'wp_url', 'recipes_tab', 'scraper_tab', 'notes'];
+      const patch = {};
+      for (const k of ALLOWED) {
+        if (req.body && req.body[k] !== undefined) patch[k] = req.body[k];
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: 'no allowed fields in body' });
+      }
+      const result = await SitesConfig.update(req.params.siteId, patch);
+      res.json({ ok: true, updated: result.updated, patch });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // Browse session simulator — preview what a session looks like
   app.post('/api/planifier/simulate-browse', async (req, res) => {
     try {
@@ -910,22 +1205,33 @@ export function setupRoutes(app, ctx) {
 
       // Build recipe titles list from pin-pool (most-recent first by publishedAt)
       let recipeTitles = [];
+      let recipeObjs = [];
       try {
         if (config.sites?.[siteName]?.useRecipeNamesAsKeywords) {
           const { readSitePool } = await import('./modules/planifier/pin-pool.js');
           const pool = await readSitePool(siteName, config);
-          recipeTitles = pool
+          recipeObjs = pool
             .filter(r => r.topic)
             .sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))
-            .map(r => r.topic);
+            .map(r => ({ title: r.topic, category: r.category || '' }));
+          recipeTitles = recipeObjs.map(r => r.title);
         }
       } catch (e) {
         Logger.warn(`[simulate-browse] recipe titles unavailable: ${e.message}`);
       }
 
-      const one = simulateSession(config, siteName, override || {}, recipeTitles);
-      const agg = simulateMany(config, siteName, Math.max(1, Math.min(500, Number(runs) || 100)), override || {}, recipeTitles);
-      res.json({ ok: true, one, aggregate: agg, recipeTitlesAvailable: recipeTitles.length });
+      // Load site's WP categories — used as primary search keywords with
+      // 1-to-1 mapping to Pinterest boards.
+      let categories = [];
+      try {
+        const { readFile: rfCat } = await import('fs/promises');
+        const { join: jpCat } = await import('path');
+        const ss = JSON.parse(await rfCat(jpCat(ctx.__dirname, '..', 'data', 'sites', siteName, 'settings.json'), 'utf8'));
+        categories = (ss.wpCategories || '').split(',').map(s => s.trim()).filter(Boolean);
+      } catch {}
+      const one = simulateSession(config, siteName, override || {}, recipeTitles, { categories, recipes: recipeObjs });
+      const agg = simulateMany(config, siteName, Math.max(1, Math.min(500, Number(runs) || 100)), override || {}, recipeTitles, { categories, recipes: recipeObjs });
+      res.json({ ok: true, one, aggregate: agg, recipeTitlesAvailable: recipeTitles.length, categoriesUsed: categories });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -967,6 +1273,19 @@ export function setupRoutes(app, ctx) {
     try {
       const config = await Planifier.getConfig();
       const recipes = await readAllRecipes(config);
+      // Enrich with LIVE WP status (publish/draft/future/private/trash) via
+      // authenticated REST. Cached 5 min per (site, postId). Recipes without
+      // a draftUrl get null. Runs in parallel so 100 recipes ≈ first call ~3-8s,
+      // subsequent calls instant from cache.
+      const { fetchLiveWpStatus } = await import('./modules/planifier/pin-pool.js');
+      await Promise.all(recipes.map(async (r) => {
+        if (!r.draftUrl) return;
+        const live = await fetchLiveWpStatus(r.site, r.draftUrl);
+        if (live) {
+          r.wpStatusLive = live;            // live truth from WP
+          r.wpStatus = live;                // override sheet col R (which is rarely populated)
+        }
+      }));
       // Build summary
       const summary = {
         total: recipes.length,

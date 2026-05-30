@@ -7,6 +7,118 @@ import { sanitizeAIText } from './base-orchestrator.js';
 import { Logger } from '../shared/utils/logger.js';
 
 /**
+ * Resolve a ?p=ID admin/raw URL to its canonical permalink via WP REST.
+ * Falls back to the original URL on any error. Caches per-process.
+ *
+ * Used by sanitizeInternalLinks() to upgrade ?p=N links the AI sometimes
+ * inserts (they "work" via WP redirect but the user-visible link is ugly
+ * + some browsers/clients don't follow the redirect cleanly).
+ */
+const _canonicalLinkCache = new Map();
+async function _resolveCanonical(rawUrl, settings) {
+  if (!rawUrl) return rawUrl;
+  let origin, postId;
+  try {
+    const u = new URL(rawUrl);
+    origin = u.origin;
+    postId = u.searchParams.get('p');
+  } catch { return rawUrl; }
+  if (!postId || !/^\d+$/.test(postId)) return rawUrl;
+  const cacheKey = `${origin}|${postId}`;
+  if (_canonicalLinkCache.has(cacheKey)) return _canonicalLinkCache.get(cacheKey);
+  try {
+    const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?_fields=link`;
+    const res = await fetch(restUrl, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.link) {
+        _canonicalLinkCache.set(cacheKey, json.link);
+        return json.link;
+      }
+    }
+  } catch {}
+  _canonicalLinkCache.set(cacheKey, rawUrl);
+  return rawUrl;
+}
+
+/**
+ * Link sanitizer — runs LAST on the rendered HTML before publish.
+ *
+ * Two passes:
+ *   1. Replace any anchor href that looks like "?p=ID" with the canonical
+ *      permalink fetched from WP REST.
+ *   2. Wrap any standalone plain-text URL (https://siteHost/...) with
+ *      <a href="URL">URL</a>. Skips URLs already inside an anchor.
+ *
+ * Skips:
+ *   - URLs inside <a> tags (already linked)
+ *   - URLs inside <code>/<pre> blocks
+ *   - WP shortcodes, asset URLs (.jpg/.png/etc)
+ *
+ * @param {string} html
+ * @param {object} settings - site settings with wpUrl (host) + REST access
+ * @returns {Promise<string>} cleaned HTML
+ */
+async function sanitizeInternalLinks(html, settings) {
+  if (!html || !settings?.wpUrl) return html;
+  let result = html;
+  const host = settings.wpUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+  // ── Pass 1: resolve ?p=ID anchors to canonical ───────────────
+  const anchorRegex = /<a\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi;
+  const replacements = [];
+  let m;
+  while ((m = anchorRegex.exec(result)) !== null) {
+    const fullMatch = m[0];
+    const href = m[2];
+    if (!href.includes(`${host}/?p=`) && !href.match(/\?p=\d+/)) continue;
+    replacements.push({ original: fullMatch, href, prefix: m[1] || '', suffix: m[3] || '' });
+  }
+  for (const r of replacements) {
+    const canonical = await _resolveCanonical(r.href, settings);
+    if (canonical && canonical !== r.href) {
+      const newAnchor = `<a${r.prefix}href="${canonical}"${r.suffix}>`;
+      result = result.split(r.original).join(newAnchor);
+      Logger.info(`[LinkSanitize] ?p=ID → ${canonical}`);
+    }
+  }
+
+  // ── Pass 2: wrap standalone plain-text URLs ──────────────────
+  // Process line by line, ignoring anchors + code blocks. We use a single
+  // regex pass with negative lookbehind for href=" / > (inside a tag).
+  const urlRegex = new RegExp(
+    `(?<!["'=>])\\b(https?://${host.replace(/\./g, '\\.')}/[^\\s<>"']+)`,
+    'g'
+  );
+  // Don't touch URLs that end in common asset extensions
+  const isAsset = u => /\.(jpg|jpeg|png|gif|webp|svg|css|js|pdf|zip|mp4|webm)$/i.test(u);
+  // Skip if inside code/pre block — naive but covers most cases
+  // Process outside <code>...</code> and <pre>...</pre> blocks
+  const parts = result.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/gi);
+  let wrapped = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) continue;  // code/pre block — leave untouched
+    parts[i] = parts[i].replace(urlRegex, (match, url) => {
+      if (isAsset(url)) return url;
+      // Resolve ?p=ID inline if present
+      if (/\?p=\d+/.test(url)) {
+        // Best-effort: leave as-is, pass 1 already handled anchor variants
+        // For plain text ?p= links we wrap them and let pass 1 catch them
+        // next time. Keep simple — async resolution inside a regex callback
+        // is awkward; the visible link still works via WP redirect.
+      }
+      wrapped++;
+      return `<a href="${url}">${url}</a>`;
+    });
+  }
+  if (wrapped > 0) {
+    Logger.info(`[LinkSanitize] wrapped ${wrapped} plain-text URL(s) as <a>`);
+  }
+  result = parts.join('');
+  return result;
+}
+
+/**
  * Internal Link Post-Processing Safety Net
  * Scans HTML for related recipe titles mentioned as plain text (not already linked).
  * Auto-wraps unlinked mentions with the correct <a href>.
@@ -136,7 +248,18 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
       opts.bgColor ? `background-color:${opts.bgColor};padding:12px` : ''
     ].filter(Boolean).join(';');
     const styleAttr = cssRules ? ` style="${cssRules}"` : '';
-    const listItems = items.map(t => `<!-- wp:list-item -->\n<li>${t}</li>\n<!-- /wp:list-item -->`).join('\n');
+    const _toStr = t => {
+      if (t == null) return '';
+      if (typeof t === 'string') return t;
+      if (typeof t === 'object') {
+        const head = t.title || t.name || t.heading || t.label;
+        const body = t.body || t.description || t.text || t.content || t.tip || t.note;
+        if (head && body) return `<strong>${head}:</strong> ${body}`;
+        return body || head || t.tip || '';
+      }
+      return String(t);
+    };
+    const listItems = items.map(t => `<!-- wp:list-item -->\n<li>${_toStr(t)}</li>\n<!-- /wp:list-item -->`).join('\n');
     return `<!-- wp:list${jsonAttrs} -->\n<ul class="wp-block-list"${styleAttr}>\n${listItems}\n</ul>\n<!-- /wp:list -->`;
   };
 
@@ -547,6 +670,14 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   const relatedPosts = state._relatedPosts || [];
   if (relatedPosts.length > 0) {
     html = autoLinkRelatedRecipes(html, relatedPosts);
+  }
+
+  // Final link sanitizer: resolve ?p=ID hrefs to canonical permalinks +
+  // wrap plain-text URLs as proper anchors. Best-effort — never blocks.
+  try {
+    html = await sanitizeInternalLinks(html, settings);
+  } catch (e) {
+    Logger.warn(`[LinkSanitize] failed (non-fatal): ${e.message}`);
   }
 
   const post = await WordPressAPI.createDraftPost(

@@ -672,6 +672,31 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     if (!recipe.pro_tips && recipe.tips) recipe.pro_tips = recipe.tips;
     if (!recipe.storage_notes && recipe.storage) recipe.storage_notes = recipe.storage;
 
+    // Gemini sometimes returns string-array fields as object-array
+    // (e.g. [{title, body}, ...] or [{tip: "..."}]). The renderer's
+    // <li>${item}</li> would then coerce each object to "[object Object]".
+    // Flatten to plain strings, picking the most informative field.
+    const _flattenToStringArray = (arr) => {
+      if (!Array.isArray(arr)) return arr;
+      return arr.map(item => {
+        if (item == null) return '';
+        if (typeof item === 'string') return item;
+        if (typeof item === 'object') {
+          const t = item.title || item.name || item.heading || item.label;
+          const b = item.body || item.description || item.text || item.content || item.tip || item.note;
+          if (t && b) return `<strong>${t}:</strong> ${b}`;
+          return b || t || item.tip || Object.values(item).filter(v => typeof v === 'string').join(': ') || '';
+        }
+        return String(item);
+      }).filter(Boolean);
+    };
+    // NOTE: do NOT flatten `substitutions` here — post-builder has a
+    // dedicated object-aware renderer that expects {ingredient, swap, note}.
+    // Flattening would break that custom layout. Same for `faq` (uses
+    // {question, answer}) and `equipment` (uses {name, description}).
+    if (Array.isArray(recipe.pro_tips))    recipe.pro_tips    = _flattenToStringArray(recipe.pro_tips);
+    if (Array.isArray(recipe.variations))  recipe.variations  = _flattenToStringArray(recipe.variations);
+
     if (!recipe.steps || !Array.isArray(recipe.steps)) {
       Logger.error('AI returned keys:', Object.keys(recipe).join(', '));
       Logger.error('Tried fallbacks: instructions, recipeInstructions, directions, method — none worked.');
@@ -1282,14 +1307,41 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const pinFilename = `pin-${pendingIdx + 1}.jpg`;
     const outputPath = join(outputDir, pinFilename);
 
-    await this._generateAndVerify({
-      prompt, backgroundPath: templatePath, contextPaths,
-      aspectRatio: settings.pinterestAspectRatio || 'PORTRAIT',
-      outputPath, skipSimilarityCheck: true,
-      label: `Pin ${pendingIdx + 1}`, imageType: 'pin', stepNumber: pendingIdx + 1, vgSettings,
-      verifyFn: async (path) => verifyPinterestImage(await this._getGeminiApiKey(), path, recipeTitle, vgSettings),
-      correctionFn: null // No correction for pins — just retry with same prompt
-    });
+    const useChatGPT = (settings.pinGenerator || 'flow').toLowerCase() === 'chatgpt';
+    if (useChatGPT) {
+      Logger.info(`[PinGen] Routing pin ${pendingIdx + 1} to ChatGPT image gen (settings.pinGenerator=chatgpt)`);
+      // Build pinVars for the user's chatgptPin.promptTemplate wrapper. Resolves
+      // @title / @website / @pin_title / @pin_description / @ingredients in the
+      // wrapper so they reach ChatGPT with actual values (not literal "@title").
+      const pinVars = {
+        '@title': recipeTitle,
+        '@pin_title': pin.title || '',
+        '@pin_description': pin.description || '',
+        '@website': websiteDomain,
+        '@ingredients': ingredientsList || '',
+      };
+      const ok = await this._generatePinViaChatGPT({
+        prompt,
+        templatePath,
+        contextPaths,
+        outputPath,
+        settings,
+        pinVars,
+      });
+      if (!ok) throw new Error(`Pinterest pin ${pendingIdx + 1} image generation failed (ChatGPT)`);
+    } else {
+      await this._generateAndVerify({
+        prompt, backgroundPath: templatePath, contextPaths,
+        aspectRatio: settings.pinterestAspectRatio || 'PORTRAIT',
+        outputPath, skipSimilarityCheck: true,
+        label: `Pin ${pendingIdx + 1}`, imageType: 'pin', stepNumber: pendingIdx + 1, vgSettings,
+        verifyFn: async (path) => verifyPinterestImage(await this._getGeminiApiKey(), path, recipeTitle, vgSettings),
+        correctionFn: null // No correction for pins — just retry with same prompt
+      });
+    }
+
+    // NO post-crop normalization — keep native ratio (9:16 from ChatGPT picker).
+    // See base-orchestrator for rationale.
 
     // Store image data
     const imgBuf = readFileSync(outputPath);

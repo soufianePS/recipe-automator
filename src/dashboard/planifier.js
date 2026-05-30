@@ -131,6 +131,8 @@
   async function plfLoadActiveTab() {
     try {
       if (state.activeTab === 'overview') await plfLoadOverview();
+      if (state.activeTab === 'sites') await plfLoadSites();
+      if (state.activeTab === 'calendar') await plfLoadCalendar();
       if (state.activeTab === 'config') await plfRenderConfigPanel();
       if (state.activeTab === 'rules') plfRenderRulesPanel();
       if (state.activeTab === 'plan') await plfLoadUpcoming(7);
@@ -265,6 +267,830 @@
     }
     box.style.display = '';
     box.innerHTML = issues.map(msg => `<div class="plf-diagnostic-item">${msg}</div>`).join('');
+  }
+
+  // ── Multi-Site ───────────────────────────────────────────────
+  //
+  // Renders an editable table of all sites stored in the shared Google Sheet's
+  // sites-config tab. Toggles for active + warming_enabled write back to the
+  // sheet (and refresh the Planifier config cache on next tick).
+  async function plfLoadSites({ fresh = false } = {}) {
+    const tbody = document.getElementById('sitesTableBody');
+    const statusEl = document.getElementById('sitesStatus');
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">Loading${fresh ? ' (forced refresh)' : ''}...</td></tr>`;
+    try {
+      const r = await api('GET', `/api/sites-config${fresh ? '?fresh=1' : ''}`);
+      const sites = r.sites || [];
+      if (sites.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">No sites yet. Add one in the sheet directly, then refresh.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = sites.map(s => `
+        <tr data-site="${escapeHtml(s.site_id)}">
+          <td><code>${escapeHtml(s.site_id)}</code></td>
+          <td><input type="text" class="site-input" data-field="display_name" value="${escapeHtml(s.display_name || '')}" /></td>
+          <td><input type="text" class="site-input" data-field="wp_url" value="${escapeHtml(s.wp_url || '')}" /></td>
+          <td style="text-align:center;"><input type="checkbox" class="site-toggle" data-field="active" ${s.active ? 'checked' : ''}></td>
+          <td style="text-align:center;"><input type="checkbox" class="site-toggle" data-field="warming_enabled" ${s.warming_enabled ? 'checked' : ''}></td>
+          <td><input type="text" class="site-input" data-field="notes" value="${escapeHtml(s.notes || '')}" placeholder="optional" /></td>
+          <td><button class="btn btn-primary btn-small site-save-btn" type="button">Save</button></td>
+        </tr>
+      `).join('');
+      if (statusEl) statusEl.textContent = `${sites.length} site(s) loaded · ${sites.filter(s => s.active).length} active · ${sites.filter(s => s.warming_enabled).length} warming`;
+      // Also load the boards-validation widget right after
+      plfLoadBoardsValidation().catch(() => {});
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#f88;padding:24px;">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+      if (e.message.includes('Missing') || e.message.includes('credentials')) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:#f88;">Google service-account credentials are missing.</span> See <code>scripts/init-sheet-v2.mjs</code> for setup.`;
+      }
+    }
+  }
+
+  // ── Boards validation widget ─────────────────────────────────
+  //
+  // For every active site x Pinterest account, fetches the cached validation
+  // result (Pinterest boards vs site.wpCategories). Renders per-account cards.
+  // Cache populates automatically when warming/Pinterest sessions run.
+  async function plfLoadBoardsValidation() {
+    const grid = document.getElementById('boardsValGrid');
+    if (!grid) return;
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:24px;font-size:13px;">Loading...</div>`;
+    try {
+      // Load sites + planifier config (for accounts)
+      const [sitesRes, configRes] = await Promise.all([
+        api('GET', '/api/sites-config'),
+        api('GET', '/api/planifier/config'),
+      ]);
+      const sites = (sitesRes.sites || []).filter(s => s.active);
+      const cfgSites = configRes?.sites || {};
+      // Build (site, account) tuples
+      const pairs = [];
+      for (const s of sites) {
+        const accs = cfgSites[s.site_id]?.pinterestAccounts || [];
+        for (const a of accs) {
+          if (a.status === 'disabled') continue;
+          pairs.push({ site: s.site_id, displayName: s.display_name || s.site_id, accountId: a.id, accountStatus: a.status });
+        }
+      }
+      if (pairs.length === 0) {
+        grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:24px;font-size:13px;">No active accounts to validate. Configure Pinterest accounts in the Configuration tab.</div>`;
+        return;
+      }
+      // Fetch all validations in parallel
+      const results = await Promise.all(pairs.map(async p => {
+        try {
+          const r = await api('GET', `/api/planifier/boards-validation/${encodeURIComponent(p.site)}/${encodeURIComponent(p.accountId)}`);
+          return { ...p, validation: r.validation };
+        } catch { return { ...p, validation: null }; }
+      }));
+      // Render cards
+      grid.innerHTML = results.map(r => _renderBoardsValCard(r)).join('');
+    } catch (e) {
+      grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:#f88;padding:24px;font-size:13px;">Failed: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderBoardsValCard(r) {
+    const { site, displayName, accountId, accountStatus, validation } = r;
+    const runBtn = `<button class="btn btn-secondary btn-small boards-val-run-btn" data-site="${escapeHtml(site)}" data-account="${escapeHtml(accountId)}" type="button" title="Launch Dolphin + scrape Pinterest profile now (~30-60s)">↻ Run now</button>`;
+    if (!validation) {
+      return `
+        <div class="boards-val-card boards-val-unchecked">
+          <div class="boards-val-head">
+            <strong>${escapeHtml(displayName)} / ${escapeHtml(accountId)}</strong>
+            <span class="boards-val-badge unknown">— never run</span>
+          </div>
+          <div class="boards-val-meta">Account status: <code>${escapeHtml(accountStatus)}</code></div>
+          <div class="boards-val-body" style="color:var(--text-muted);font-size:12px;">
+            Will run automatically the next time a warming or Pinterest session fires for this account.
+          </div>
+          <div style="margin-top:8px;">${runBtn}</div>
+        </div>
+      `;
+    }
+    const present = validation.present || [];
+    const missing = validation.missing || [];
+    const extras  = validation.extras || [];
+    const total = present.length + missing.length;
+    const ratio = total > 0 ? Math.round((present.length / total) * 100) : 0;
+    const status = missing.length === 0 ? 'ok' : (present.length === 0 ? 'bad' : 'warn');
+    const ageMin = Math.floor((Date.now() - new Date(validation.validatedAt).getTime()) / 60000);
+    const ageDisplay = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
+    return `
+      <div class="boards-val-card boards-val-${status}">
+        <div class="boards-val-head">
+          <strong>${escapeHtml(displayName)} / ${escapeHtml(accountId)}</strong>
+          <span class="boards-val-badge ${status}">${present.length}/${total} ok</span>
+        </div>
+        <div class="boards-val-meta">Status: <code>${escapeHtml(accountStatus)}</code> · last check: ${escapeHtml(ageDisplay)}</div>
+        ${missing.length > 0 ? `
+          <div class="boards-val-row missing">
+            <span class="boards-val-row-label">⚠ Missing boards:</span>
+            <span>${missing.map(m => `<span class="boards-val-pill missing">${escapeHtml(m)}</span>`).join('')}</span>
+          </div>
+        ` : ''}
+        ${present.length > 0 ? `
+          <div class="boards-val-row present">
+            <span class="boards-val-row-label">✓ Present:</span>
+            <span>${present.map(p => `<span class="boards-val-pill present">${escapeHtml(p)}</span>`).join('')}</span>
+          </div>
+        ` : ''}
+        ${extras.length > 0 ? `
+          <div class="boards-val-row extras">
+            <span class="boards-val-row-label">＋ Extra boards (not used as keywords):</span>
+            <span style="color:var(--text-muted);font-size:11px;">${extras.slice(0,8).map(e => escapeHtml(e)).join(' · ')}${extras.length > 8 ? ` … +${extras.length - 8} more` : ''}</span>
+          </div>
+        ` : ''}
+        ${missing.length > 0 ? `
+          <div class="boards-val-tip">
+            <strong>How to fix:</strong> Open Pinterest, create boards named exactly like the missing categories. Match is case-insensitive partial so "Dinner Ideas" matches category "Dinner".
+          </div>
+        ` : ''}
+        <div style="margin-top:6px;display:flex;justify-content:flex-end;">${runBtn}</div>
+      </div>
+    `;
+  }
+
+  // Delegated handlers for the sites table (refresh + per-row save)
+  document.addEventListener('click', async (e) => {
+    if (e.target.id === 'sitesRefreshBtn') {
+      e.preventDefault();
+      await plfLoadSites({ fresh: true });
+      return;
+    }
+    if (e.target.id === 'boardsValRefreshBtn') {
+      e.preventDefault();
+      await plfLoadBoardsValidation();
+      return;
+    }
+    if (e.target.id === 'forceClearBusyBtn') {
+      e.preventDefault();
+      if (!confirm('Force-clear the "busy" flag?\n\nOnly do this if NOTHING is actually running (a previous job crashed without unwinding). If a session IS running, clearing this could let two browsers race.')) return;
+      try {
+        const r = await api('POST', '/api/force-clear-busy');
+        _showToast(`Cleared (was=${r.wasBusy}${r.startedAt ? ', stuck since ' + new Date(r.startedAt).toLocaleTimeString() : ''})`);
+      } catch (err) {
+        _showToast('Failed: ' + err.message, true);
+      }
+      return;
+    }
+    const runBtn = e.target.closest('.boards-val-run-btn');
+    if (runBtn) {
+      e.preventDefault();
+      const site = runBtn.dataset.site;
+      const acc  = runBtn.dataset.account;
+      if (!confirm(`Run validation for ${site}/${acc}?\n\nThis will launch the Dolphin profile and open Pinterest (~30-60s). Don't trigger if another automation is currently running.`)) return;
+      const original = runBtn.textContent;
+      runBtn.disabled = true;
+      runBtn.textContent = '⏳ Running…';
+      try {
+        const r = await api('POST', `/api/planifier/boards-validation/${encodeURIComponent(site)}/${encodeURIComponent(acc)}/run`);
+        _showToast(`Validation done: ${r.validation.present.length}/${r.validation.present.length + r.validation.missing.length} boards ok`);
+        await plfLoadBoardsValidation();
+      } catch (err) {
+        _showToast('Validation failed: ' + err.message, true);
+        runBtn.disabled = false;
+        runBtn.textContent = original;
+      }
+      return;
+    }
+    const saveBtn = e.target.closest('.site-save-btn');
+    if (!saveBtn) return;
+    e.preventDefault();
+    const row = saveBtn.closest('tr[data-site]');
+    if (!row) return;
+    const siteId = row.dataset.site;
+    const patch = {};
+    row.querySelectorAll('.site-input').forEach(inp => { patch[inp.dataset.field] = inp.value; });
+    row.querySelectorAll('.site-toggle').forEach(inp => { patch[inp.dataset.field] = !!inp.checked; });
+    const original = saveBtn.textContent;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      await api('PUT', `/api/sites-config/${encodeURIComponent(siteId)}`, patch);
+      saveBtn.textContent = '✓ Saved';
+      setTimeout(() => { saveBtn.textContent = original; saveBtn.disabled = false; }, 1500);
+    } catch (err) {
+      saveBtn.textContent = '✗ Error';
+      setTimeout(() => { saveBtn.textContent = original; saveBtn.disabled = false; }, 2500);
+      console.error('Save site failed:', err);
+    }
+  });
+
+  // Tiny HTML escape for safe inline templating
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // ── Calendar (FullCalendar) ──────────────────────────────────
+  //
+  // Renders pin-campaigns slots + planifier plan items on a unified month view.
+  // Drag/drop reschedules campaign slots. Click a day to create. Click an
+  // event to edit/delete. Color-coded by type.
+
+  let _calInstance = null;   // FullCalendar instance, cached after init
+
+  async function plfLoadCalendar() {
+    const el = document.getElementById('planifierCalendar');
+    if (!el) return;
+    if (typeof FullCalendar === 'undefined') {
+      el.innerHTML = '<p style="color:#f88;padding:20px;">FullCalendar library failed to load (check internet/CDN).</p>';
+      return;
+    }
+    // Populate site filter once
+    await _ensureCalSiteFilter();
+    if (_calInstance) {
+      _calInstance.refetchEvents();
+      return;
+    }
+    _calInstance = new FullCalendar.Calendar(el, {
+      initialView: 'timeGridWeek',   // default = Week view (shows time grid + "now" red line)
+      headerToolbar: {
+        left: 'prev,next today',
+        center: 'title',
+        right: 'timeGridWeek,timeGridDay,dayGridMonth,listWeek',
+      },
+      height: 'auto',
+      firstDay: 1,                   // Monday
+      editable: true,                // drag/drop ON
+      droppable: false,
+      dayMaxEvents: 4,
+      eventDisplay: 'block',
+      eventTimeFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
+      nowIndicator: true,            // red "now" line in timeGrid views (like Google Calendar)
+      scrollTime: '08:00:00',        // when entering week/day view, scroll to 8am by default
+      slotDuration: '00:30:00',
+      slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
+      allDaySlot: true,
+      events: _calFetchEvents,
+      eventClick: _calOnEventClick,
+      dateClick: _calOnDateClick,
+      eventDrop: _calOnEventDrop,
+    });
+    _calInstance.render();
+    // Wire filter selectors → refetch on change
+    document.getElementById('calSiteFilter')?.addEventListener('change', () => _calInstance.refetchEvents());
+    document.getElementById('calTypeFilter')?.addEventListener('change', () => _calInstance.refetchEvents());
+    document.getElementById('calNewCampaignBtn')?.addEventListener('click', () => _calOpenCampaignModal(null));
+    // Type cards delegation
+    document.getElementById('campaignTypeCards')?.addEventListener('change', _calOnTypeChange);
+    document.getElementById('campaignSiteInput')?.addEventListener('change', _calOnSiteChange);
+    document.getElementById('campaignSaveBtn')?.addEventListener('click', _calSaveCampaign);
+    document.getElementById('campaignDeleteBtn')?.addEventListener('click', _calDeleteCampaign);
+  }
+
+  // Build event list from pin-campaigns + planifier 7-day plan items.
+  async function _calFetchEvents(info, success, failure) {
+    try {
+      const siteFilter = document.getElementById('calSiteFilter')?.value || '';
+      const typeFilter = document.getElementById('calTypeFilter')?.value || '';
+      const events = [];
+
+      // 1. Pin-campaigns from sheet → up to 3 events per campaign
+      try {
+        const r = await api('GET', `/api/pin-campaigns${siteFilter ? '?site=' + encodeURIComponent(siteFilter) : ''}`);
+        for (const c of (r.campaigns || [])) {
+          if (typeFilter && c.type !== typeFilter) continue;
+          for (const slot of [1, 2, 3]) {
+            const dateRaw = (c[`scheduled_date_${slot}`] || '').trim();
+            const status = (c[`status_${slot}`] || 'pending').toLowerCase();
+            if (!dateRaw || status === 'skip' || status === 'cancelled') continue;
+            // Detect time component — works for "YYYY-MM-DDTHH:MM" AND
+            // "YYYY-MM-DD HH:MM" (Google Sheets auto-converts T → space).
+            const isDateTime = /\d{2}:\d{2}/.test(dateRaw);
+            // Normalize space → T for FullCalendar (ISO 8601 strict)
+            const date = isDateTime ? dateRaw.replace(' ', 'T') : dateRaw;
+            events.push({
+              id: `camp:${c.campaign_id}:${slot}`,
+              title: `${c.type === 'regen-3pins' ? '🔄' : '＋'} ${c.recipe_title || '(untitled)'} · pin ${slot}`,
+              start: date,
+              allDay: !isDateTime,
+              backgroundColor: _calColorByType(c.type, status),
+              borderColor: _calColorByType(c.type, status),
+              textColor: '#fff',
+              extendedProps: {
+                kind: 'campaign',
+                campaignId: c.campaign_id,
+                slot,
+                campaign: c,
+              },
+              editable: status === 'pending',  // can't drag once posted
+            });
+          }
+        }
+      } catch (e) { console.warn('campaigns fetch failed', e); }
+
+      // 2. Planifier 7-day plan items (read-only on calendar, just for awareness)
+      try {
+        const up = await api('GET', '/api/planifier/upcoming?days=14');
+        for (const plan of (up.plans || up || [])) {
+          for (const it of (plan.items || [])) {
+            if (siteFilter && it.site !== siteFilter) continue;
+            if (typeFilter && it.type !== typeFilter) continue;
+            const done = (it.status === 'done' || it.status === 'posted');
+            events.push({
+              id: `plan:${plan.date}:${it.id}`,
+              title: _calItemTitle(it),
+              start: it.scheduledAt,
+              allDay: false,
+              backgroundColor: _calColorByType(it.type, it.status),
+              borderColor: _calColorByType(it.type, it.status),
+              textColor: '#fff',
+              editable: false,
+              extendedProps: { kind: 'planitem', planDate: plan.date, item: it },
+            });
+          }
+        }
+      } catch (e) { console.warn('upcoming fetch failed', e); }
+
+      success(events);
+    } catch (e) { failure(e); }
+  }
+
+  function _calItemTitle(it) {
+    const iconByType = {
+      'create-recipe': '🍳',
+      'pinterest-session': '📌',
+      'warming-session': '🔥',
+    };
+    const icon = iconByType[it.type] || '•';
+    const acc = it.accountId ? `/${it.accountId}` : '';
+    return `${icon} ${it.site}${acc} (${it.type})`;
+  }
+
+  function _calColorByType(type, status) {
+    // Greyed-out for done/posted/error
+    const s = (status || '').toLowerCase();
+    if (s === 'done' || s === 'posted' || s === 'completed') return '#888';
+    if (s === 'error' || s === 'failed') return '#f44336';
+    const colors = {
+      'regen-3pins': '#7c4dff',
+      'single-pin': '#2196f3',
+      'warming-session': '#ffc107',
+      'pinterest-session': '#00c853',
+      'create-recipe': '#ff7043',
+    };
+    return colors[type] || '#7c4dff';
+  }
+
+  // Drag/drop handler — only campaign slots are editable; updates one date in the sheet.
+  async function _calOnEventDrop(info) {
+    const ev = info.event;
+    const props = ev.extendedProps;
+    if (props.kind !== 'campaign') { info.revert(); return; }
+    const slot = props.slot;
+    // Preserve the time component if the event had one (timed → timed)
+    const hadTime = !ev.allDay && ev.start;
+    const newScheduled = hadTime
+      ? `${ev.startStr.slice(0, 10)}T${ev.start.toTimeString().slice(0, 5)}:00`
+      : ev.startStr.slice(0, 10);
+    try {
+      await api('PUT', `/api/pin-campaigns/${encodeURIComponent(props.campaignId)}`, {
+        [`scheduled_date_${slot}`]: newScheduled,
+      });
+      _showToast(`Moved to ${hadTime ? newScheduled.replace('T', ' ') : newScheduled}`);
+    } catch (e) {
+      info.revert();
+      _showToast(`Move failed: ${e.message}`, true);
+    }
+  }
+
+  async function _calOnEventClick(info) {
+    const props = info.event.extendedProps;
+    if (props.kind === 'campaign') {
+      _calOpenCampaignModal(props.campaign);
+    } else if (props.kind === 'planitem') {
+      // Read-only info popup — clicking a planifier item shows details
+      const it = props.item;
+      const ok = confirm(
+        `Plan item details:\n\n` +
+        `Type: ${it.type}\n` +
+        `Site: ${it.site}\n` +
+        `Account: ${it.accountId || '—'}\n` +
+        `Scheduled: ${new Date(it.scheduledAt).toLocaleString()}\n` +
+        `Status: ${it.status}\n\n` +
+        `Open in Plan 7j to edit?`
+      );
+      if (ok) plfShowTab('plan');
+    }
+  }
+
+  function _calOnDateClick(info) {
+    // Pre-fill date 1 with the clicked day
+    _calOpenCampaignModal(null, info.dateStr);
+  }
+
+  async function _ensureCalSiteFilter() {
+    const sel = document.getElementById('calSiteFilter');
+    const modalSel = document.getElementById('campaignSiteInput');
+    if (!sel || sel.options.length > 1) return;
+    try {
+      const r = await api('GET', '/api/sites-config');
+      for (const s of (r.sites || [])) {
+        if (!s.active) continue;
+        sel.appendChild(new Option(s.display_name || s.site_id, s.site_id));
+        if (modalSel) modalSel.appendChild(new Option(s.display_name || s.site_id, s.site_id));
+      }
+    } catch {}
+  }
+
+  // Public entry point — opens calendar modal pre-filled for Create Pin.
+  // Called from the Recipes tab's "＋ New Pin" button. Routes the user
+  // through the calendar UI for date selection + template + slot.
+  window.plfNewPinForRecipe = async function (site, draftUrl, topic) {
+    // Switch to calendar tab first (initializes modal handlers if not loaded)
+    plfShowTab('calendar');
+    // Wait for the tab to render
+    await new Promise(r => setTimeout(r, 250));
+    // Pre-select Create Pin
+    const radio = document.querySelector('input[name="campaignKind"][value="single-pin"]');
+    if (radio) radio.checked = true;
+    // Set site (triggers dropdowns refresh)
+    const siteSel = document.getElementById('campaignSiteInput');
+    if (siteSel) {
+      siteSel.value = site;
+      // Open modal first so the visibility logic kicks in
+      _calOpenCampaignModal(null, new Date().toISOString().slice(0, 10));
+      // Manually trigger refresh + pre-select the recipe after dropdown loads
+      setTimeout(async () => {
+        await _calRefreshRecipeDropdown();
+        const recSel = document.getElementById('campaignRecipeSelect');
+        if (recSel && draftUrl) {
+          recSel.value = draftUrl;
+          // If the URL isn't an exact match (legacy format diff), add it
+          if (recSel.value !== draftUrl) {
+            const opt = new Option(topic + ' (custom)', draftUrl, true, true);
+            opt.dataset.title = topic;
+            recSel.appendChild(opt);
+            recSel.value = draftUrl;
+          }
+        }
+        await _calRefreshTemplateGallery();
+      }, 100);
+    }
+  };
+
+  // ── Unified campaign modal — 4 action types ─────────────────
+  //
+  // The modal supports scheduling ANY of these via one form:
+  //   - create-recipe   → POST /api/planifier/plan/:date/items     (planifier plan)
+  //   - single-pin      → POST /api/pin-campaigns                  (sheet pin-campaigns)
+  //   - regen-3pins     → POST /api/pin-campaigns                  (sheet pin-campaigns)
+  //   - warming-session → POST /api/planifier/plan/:date/items     (planifier plan)
+  //
+  // Fields are conditionally shown based on selected type. Recipe/topic
+  // dropdowns are loaded lazily when the site selection changes.
+
+  let _recipeCache = new Map();   // siteId → { recipes, topics, at }
+  const RECIPE_CACHE_TTL_MS = 60_000;
+
+  function _calCurrentKind() {
+    return document.querySelector('input[name="campaignKind"]:checked')?.value || '';
+  }
+
+  function _calApplyTypeVisibility(kind) {
+    const map = {
+      'create-recipe':   { topic: true,  recipe: false, account: false, template: false, slot: false, prefix: false, tags: false, dates2: false, time: true,  date1Label: 'Date' },
+      'single-pin':      { topic: false, recipe: true,  account: false, template: true,  slot: true,  prefix: true,  tags: true,  dates2: false, time: true,  date1Label: 'Date' },
+      'warming-session': { topic: false, recipe: false, account: true,  template: false, slot: false, prefix: false, tags: false, dates2: false, time: true,  date1Label: 'Date' },
+    };
+    const cfg = map[kind] || { topic: false, recipe: false, account: false, template: false, slot: false, prefix: false, tags: false, dates2: false, time: false };
+    document.getElementById('campaignTopicWrap').style.display = cfg.topic ? '' : 'none';
+    document.getElementById('campaignRecipeRecipeWrap').style.display = cfg.recipe ? '' : 'none';
+    document.getElementById('campaignAccountWrap').style.display = cfg.account ? '' : 'none';
+    document.getElementById('campaignTemplateWrap').style.display = cfg.template ? '' : 'none';
+    document.getElementById('campaignSlotWrap').style.display = cfg.slot ? '' : 'none';
+    const prefixWrap = document.getElementById('campaignPrefixWrap');
+    if (prefixWrap) prefixWrap.style.display = cfg.prefix ? '' : 'none';
+    const tagsWrap = document.getElementById('campaignTagsWrap');
+    if (tagsWrap) tagsWrap.style.display = cfg.tags ? '' : 'none';
+    document.getElementById('campaignDate2Wrap').style.display = cfg.dates2 ? '' : 'none';
+    document.getElementById('campaignDate3Wrap').style.display = cfg.dates2 ? '' : 'none';
+    document.getElementById('campaignTimeWrap').style.display = cfg.time ? '' : 'none';
+    const lbl = document.getElementById('campaignDate1Label');
+    if (lbl) lbl.textContent = cfg.date1Label || 'Date';
+
+    // Visually highlight the active card
+    document.querySelectorAll('.cal-type-card').forEach(card => {
+      card.classList.toggle('active', card.dataset.type === kind);
+    });
+  }
+
+  async function _calOnTypeChange() {
+    const kind = _calCurrentKind();
+    _calApplyTypeVisibility(kind);
+    // For recipe-dependent types, refresh dropdowns
+    if (kind === 'single-pin') { await _calRefreshRecipeDropdown(); await _calRefreshTemplateGallery(); }
+    if (kind === 'create-recipe') await _calRefreshTopicDropdown();
+    if (kind === 'warming-session') await _calRefreshAccountDropdown();
+  }
+
+  async function _calOnSiteChange() {
+    const kind = _calCurrentKind();
+    _recipeCache.clear();    // site changed, invalidate cache
+    if (kind === 'single-pin') { await _calRefreshRecipeDropdown(); await _calRefreshTemplateGallery(); }
+    if (kind === 'create-recipe') await _calRefreshTopicDropdown();
+    if (kind === 'warming-session') await _calRefreshAccountDropdown();
+  }
+
+  async function _calLoadRecipes(siteId) {
+    if (!siteId) return { recipes: [], topics: [] };
+    const cached = _recipeCache.get(siteId);
+    if (cached && Date.now() - cached.at < RECIPE_CACHE_TTL_MS) return cached;
+    try {
+      const r = await api('GET', `/api/sites/${encodeURIComponent(siteId)}/recipes`);
+      const recipes = r.recipes || [];
+      const data = {
+        recipes: recipes.filter(x => x.draftUrl),  // recipes with a draft URL (post created)
+        topics:  recipes.filter(x => x.isPending), // pending topics for create-recipe
+        at: Date.now(),
+      };
+      _recipeCache.set(siteId, data);
+      return data;
+    } catch (e) {
+      console.warn('Recipe fetch failed:', e);
+      return { recipes: [], topics: [] };
+    }
+  }
+
+  async function _calRefreshRecipeDropdown() {
+    const sel = document.getElementById('campaignRecipeSelect');
+    const loadEl = document.getElementById('campaignRecipeLoad');
+    if (!sel) return;
+    const siteId = document.getElementById('campaignSiteInput')?.value || '';
+    if (!siteId) { sel.innerHTML = '<option value="">— pick a site first —</option>'; return; }
+    loadEl.textContent = 'Loading posted recipes...';
+    const { recipes } = await _calLoadRecipes(siteId);
+    // POSTED ONLY — must be status=done AND have a draftUrl. Pinning to drafts
+    // or pending recipes would 404. Hard guard at the source.
+    const posted = recipes.filter(r => r.isDone && r.draftUrl);
+    if (posted.length === 0) {
+      sel.innerHTML = '<option value="">— no posted recipes for this site —</option>';
+      loadEl.textContent = 'Only recipes with status=done and a draft URL appear here';
+      return;
+    }
+    // Sort: most recent first (rowIndex descending)
+    posted.sort((a, b) => (b.rowIndex || 0) - (a.rowIndex || 0));
+    sel.innerHTML = '<option value="">— pick a posted recipe —</option>' +
+      posted.map(r => `<option value="${escapeHtml(r.draftUrl)}" data-title="${escapeHtml(r.topic)}">${escapeHtml(r.topic)}</option>`).join('');
+    loadEl.textContent = `${posted.length} posted recipes available · only published ones can receive new pins`;
+  }
+
+  // ── Template thumbnail gallery (uses /api/planifier/regen-assets) ───
+  async function _calRefreshTemplateGallery() {
+    const box = document.getElementById('campaignTemplateGallery');
+    const hidden = document.getElementById('campaignTemplateInput');
+    if (!box) return;
+    const siteId = document.getElementById('campaignSiteInput')?.value || '';
+    if (!siteId) {
+      box.innerHTML = '<div class="cal-template-empty">Pick a site first to load templates...</div>';
+      hidden.value = '';
+      return;
+    }
+    box.innerHTML = '<div class="cal-template-empty">Loading templates…</div>';
+    try {
+      const r = await api('GET', `/api/planifier/regen-assets/${encodeURIComponent(siteId)}`);
+      const pool = (r.templatesGenerator?.length ? r.templatesGenerator : r.templatesScraper) || [];
+      if (pool.length === 0) {
+        box.innerHTML = '<div class="cal-template-empty" style="color:#ffb347;">⚠ No templates in backgrounds.json — add some via Settings → Images.</div>';
+        return;
+      }
+      const randomOption = `
+        <div class="cal-template-thumb" data-name="" title="Random pick at generation time">
+          <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(124,77,255,0.08);font-size:11px;text-align:center;padding:8px;color:#b8a4ff;">🎲<br>Random<br>(any template)</div>
+          <div class="caption">Random</div>
+        </div>`;
+      box.innerHTML = randomOption + pool.map(t => `
+        <div class="cal-template-thumb" data-name="${escapeHtml(t.name)}" title="${escapeHtml(t.name)}">
+          <img src="${escapeHtml(t.thumbDataUrl)}" alt="${escapeHtml(t.name)}" />
+          <div class="caption">${escapeHtml(t.name)}</div>
+        </div>
+      `).join('');
+      // Wire selection
+      box.querySelectorAll('.cal-template-thumb').forEach(thumb => {
+        thumb.addEventListener('click', () => {
+          box.querySelectorAll('.cal-template-thumb').forEach(t => t.classList.remove('selected'));
+          thumb.classList.add('selected');
+          hidden.value = thumb.dataset.name;
+        });
+      });
+    } catch (e) {
+      box.innerHTML = `<div class="cal-template-empty" style="color:#f88;">Failed to load: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function _calRefreshTopicDropdown() {
+    const sel = document.getElementById('campaignTopicSelect');
+    const loadEl = document.getElementById('campaignTopicLoad');
+    if (!sel) return;
+    const siteId = document.getElementById('campaignSiteInput')?.value || '';
+    if (!siteId) { sel.innerHTML = '<option value="">— pick a site first —</option>'; return; }
+    loadEl.textContent = 'Loading pending topics...';
+    const { topics } = await _calLoadRecipes(siteId);
+    if (topics.length === 0) {
+      sel.innerHTML = '<option value="">— no pending topics — orchestrator will create from sheet —</option>';
+      loadEl.textContent = 'No pending topics in sheet (will pick auto when scheduled fires)';
+      return;
+    }
+    sel.innerHTML = '<option value="">— auto-pick next pending —</option>' +
+      topics.map(t => `<option value="${escapeHtml(t.topic)}" data-row="${t.rowIndex}">${escapeHtml(t.topic)}</option>`).join('');
+    loadEl.textContent = `${topics.length} pending topics in sheet`;
+  }
+
+  async function _calRefreshAccountDropdown() {
+    const sel = document.getElementById('campaignAccountSelect');
+    if (!sel) return;
+    const siteId = document.getElementById('campaignSiteInput')?.value || '';
+    sel.innerHTML = '<option value="">— pick a site first —</option>';
+    if (!siteId) return;
+    try {
+      const cfg = await api('GET', '/api/planifier/config');
+      const accs = cfg?.sites?.[siteId]?.pinterestAccounts || [];
+      sel.innerHTML = accs.length === 0
+        ? '<option value="">— no Pinterest accounts configured —</option>'
+        : accs.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.id)} · ${escapeHtml(a.status || '')}${a.dolphinProfileId ? ' · dolphin#' + a.dolphinProfileId : ''}</option>`).join('');
+    } catch (e) {
+      sel.innerHTML = '<option value="">— failed to load accounts —</option>';
+    }
+  }
+
+  function _calOpenCampaignModal(campaign, defaultDate = '') {
+    const modal = document.getElementById('campaignModal');
+    if (!modal) return;
+    const isEdit = !!campaign;
+    document.getElementById('campaignModalTitle').textContent = isEdit ? 'Edit Event' : 'New Event';
+    document.getElementById('campaignIdInput').value = campaign?.campaign_id || '';
+    document.getElementById('campaignSiteInput').value = campaign?.site || '';
+    // Edits only work on pin-campaigns rows for now (single-pin / regen-3pins)
+    const initialKind = campaign?.type || 'create-recipe';
+    const radio = document.querySelector(`input[name="campaignKind"][value="${initialKind}"]`);
+    if (radio) radio.checked = true;
+    document.getElementById('campaignTemplateInput').value = campaign?.template || '';
+    document.getElementById('campaignDate1Input').value = (campaign?.scheduled_date_1 || defaultDate || '').slice(0, 10);
+    document.getElementById('campaignDate2Input').value = (campaign?.scheduled_date_2 || '').slice(0, 10);
+    document.getElementById('campaignDate3Input').value = (campaign?.scheduled_date_3 || '').slice(0, 10);
+    // Extract time component from scheduled_date_1 — accepts both
+    // "YYYY-MM-DDTHH:MM:SS" and "YYYY-MM-DD HH:MM:SS" (Sheets auto-converts T → space)
+    const date1Raw = campaign?.scheduled_date_1 || '';
+    const timeMatch = date1Raw.match(/[T ](\d{2}:\d{2})/);
+    document.getElementById('campaignTimeInput').value = timeMatch ? timeMatch[1] : '';
+    // Strip the slot=X, prefix=X, tags=X markers from notes display
+    const rawNotes = campaign?.notes || '';
+    const cleanNotes = rawNotes
+      .replace(/\s*·?\s*slot=[^·]+/g, '')
+      .replace(/\s*·?\s*prefix=[^·]+/g, '')
+      .replace(/\s*·?\s*tags=[^·]+/g, '')
+      .trim();
+    document.getElementById('campaignNotesInput').value = cleanNotes;
+    const slotMatch = rawNotes.match(/slot=([^\s·]+)/);
+    const slotEl = document.getElementById('campaignSlotInput');
+    if (slotEl && slotMatch) slotEl.value = slotMatch[1];
+    // Extract prefix (everything after "prefix=" up to next ·)
+    const prefixMatch = rawNotes.match(/prefix=([^·]+)/);
+    const prefixEl = document.getElementById('campaignPrefixInput');
+    if (prefixEl) prefixEl.value = prefixMatch ? prefixMatch[1].trim() : '';
+    // Extract tags (everything after "tags=" up to next ·)
+    const tagsMatch = rawNotes.match(/tags=([^·]+)/);
+    const tagsEl = document.getElementById('campaignTagsInput');
+    if (tagsEl) tagsEl.value = tagsMatch ? tagsMatch[1].trim() : '';
+    document.getElementById('campaignDeleteBtn').style.display = isEdit ? '' : 'none';
+
+    // Disable type switching when editing (the event is bound to a type)
+    document.querySelectorAll('input[name="campaignKind"]').forEach(r => {
+      r.disabled = isEdit && r.value !== initialKind;
+    });
+
+    _calApplyTypeVisibility(initialKind);
+    modal.style.display = 'flex';
+    // Scroll modal-body to TOP each open so user sees the type cards first
+    const modalBody = modal.querySelector('.plf-modal-body');
+    if (modalBody) modalBody.scrollTop = 0;
+
+    // After paint, refresh dropdowns + gallery if the site is already set
+    setTimeout(() => {
+      if (initialKind === 'single-pin') {
+        _calRefreshRecipeDropdown().then(() => {
+          if (campaign?.recipe_url) document.getElementById('campaignRecipeSelect').value = campaign.recipe_url;
+        });
+        _calRefreshTemplateGallery().then(() => {
+          if (campaign?.template) {
+            const thumb = document.querySelector(`.cal-template-thumb[data-name="${campaign.template.replace(/"/g, '\\"')}"]`);
+            if (thumb) thumb.click();
+          }
+        });
+      } else if (initialKind === 'create-recipe') {
+        _calRefreshTopicDropdown();
+      } else if (initialKind === 'warming-session') {
+        _calRefreshAccountDropdown();
+      }
+    }, 50);
+  }
+
+  /**
+   * Save — routes to the right backend based on the selected kind.
+   */
+  async function _calSaveCampaign() {
+    const id = document.getElementById('campaignIdInput').value;
+    const kind = _calCurrentKind();
+    const site = document.getElementById('campaignSiteInput').value;
+    const notes = document.getElementById('campaignNotesInput').value.trim();
+    const date1 = document.getElementById('campaignDate1Input').value;
+    if (!site) { _showToast('Site required', true); return; }
+    if (!kind) { _showToast('Pick an event type', true); return; }
+    if (!date1) { _showToast('Date is required', true); return; }
+
+    try {
+      // ── pin-campaigns backend (single-pin only — creates NEW pin, no overwrite) ──
+      if (kind === 'single-pin') {
+        const recipeSel = document.getElementById('campaignRecipeSelect');
+        const recipe_url = recipeSel.value;
+        const recipe_title = recipeSel.options[recipeSel.selectedIndex]?.dataset.title || '';
+        if (!recipe_url) { _showToast('Pick a posted recipe', true); return; }
+        const slot = document.getElementById('campaignSlotInput')?.value || 'extra';
+        const prefix = (document.getElementById('campaignPrefixInput')?.value || '').trim();
+        const tagsRaw = (document.getElementById('campaignTagsInput')?.value || '').trim();
+        // Combine date + time → ISO datetime (so executor honors the time)
+        const time = (document.getElementById('campaignTimeInput')?.value || '').trim();
+        const scheduled1 = time
+          ? `${date1}T${time}:00`            // e.g. "2026-05-24T14:30:00"
+          : date1;                            // date only (fires anytime that day)
+        // Encode slot + prefix + tags in notes (parsed by campaigns-executor)
+        // Tags format: "tags=A,B,C" — pipe-separator used so commas in tag names survive
+        const notesParts = [];
+        if (notes) notesParts.push(notes);
+        notesParts.push(`slot=${slot}`);
+        if (prefix) notesParts.push(`prefix=${prefix}`);
+        if (tagsRaw) notesParts.push(`tags=${tagsRaw.replace(/·/g, '')}`);  // strip · which is our separator
+        const payload = {
+          site, type: kind,
+          recipe_url, recipe_title,
+          template: document.getElementById('campaignTemplateInput').value.trim(),
+          scheduled_date_1: scheduled1,
+          scheduled_date_2: '',
+          scheduled_date_3: '',
+          notes: notesParts.join(' · '),
+        };
+        if (id) await api('PUT', `/api/pin-campaigns/${encodeURIComponent(id)}`, payload);
+        else    await api('POST', '/api/pin-campaigns', payload);
+        _showToast(id ? 'Pin update saved' : `New pin scheduled${time ? ' for ' + time : ''}`);
+      }
+      // ── planifier plan backend (create-recipe / warming-session) ─
+      else if (kind === 'create-recipe' || kind === 'warming-session') {
+        const time = document.getElementById('campaignTimeInput').value || '';  // HH:MM optional
+        const accountId = kind === 'warming-session'
+          ? document.getElementById('campaignAccountSelect').value
+          : null;
+        if (kind === 'warming-session' && !accountId) { _showToast('Pick a Pinterest account', true); return; }
+        const payload = {
+          type: kind,
+          site,
+          accountId: accountId || null,
+          scheduledAt: time,    // HH:MM — server converts to ISO using :date param
+          locked: true,         // manually-scheduled events are locked (survive plan regen)
+        };
+        await api('POST', `/api/planifier/plan/${encodeURIComponent(date1)}/items`, payload);
+        _showToast(`Scheduled ${kind} on ${date1}`);
+      }
+      document.getElementById('campaignModal').style.display = 'none';
+      _calInstance?.refetchEvents();
+    } catch (e) {
+      _showToast('Save failed: ' + e.message, true);
+    }
+  }
+
+  async function _calDeleteCampaign() {
+    const id = document.getElementById('campaignIdInput').value;
+    if (!id) return;
+    if (!confirm('Cancel all 3 slots of this campaign? (soft delete — row stays in sheet)')) return;
+    try {
+      await api('DELETE', `/api/pin-campaigns/${encodeURIComponent(id)}`);
+      document.getElementById('campaignModal').style.display = 'none';
+      _calInstance?.refetchEvents();
+      _showToast('Campaign cancelled');
+    } catch (e) {
+      _showToast('Delete failed: ' + e.message, true);
+    }
+  }
+
+  // Lightweight toast (no dependency). Bottom-right, fades out.
+  function _showToast(msg, isError = false) {
+    let host = document.getElementById('plfToastHost');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'plfToastHost';
+      host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;';
+      document.body.appendChild(host);
+    }
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.style.cssText = `padding:10px 16px;border-radius:8px;color:#fff;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,0.3);max-width:340px;background:${isError ? '#f44336' : '#7c4dff'};opacity:0;transform:translateY(10px);transition:opacity 0.2s,transform 0.2s;`;
+    host.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateY(0)'; });
+    setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateY(10px)'; setTimeout(() => t.remove(), 250); }, 3500);
   }
 
   // ── Overview ─────────────────────────────────────────────────
@@ -747,8 +1573,39 @@
           <label>Boards (comma-separated)</label>
           <input type="text" class="plf-acc-boards" placeholder="dinner-ideas, easy-recipes, comfort-food" value="${escapeHtml((acc.boards || []).join(', '))}" />
         </div>
+        <div class="plf-account-body">
+          <div class="plf-rule-field">
+            <label>Created at <span style="color:var(--text-muted);font-weight:400;">(account age)</span></label>
+            <input type="date" class="plf-acc-createdat" value="${acc.createdAt ? new Date(acc.createdAt).toISOString().slice(0,10) : ''}" />
+          </div>
+          <div class="plf-rule-field">
+            <label>Auto-progress <span style="color:var(--text-muted);font-weight:400;">(W1→W2→W3→active)</span></label>
+            <label style="display:flex;align-items:center;gap:8px;padding-top:6px;">
+              <input type="checkbox" class="plf-acc-autoprogress" ${acc.autoProgress !== false ? 'checked' : ''} />
+              <span style="font-size:12px;color:var(--text-muted);">${acc.createdAt ? _agingHint(acc) : 'Set createdAt first'}</span>
+            </label>
+          </div>
+          <div class="plf-rule-field">
+            <label>Warming board <span style="color:var(--text-muted);font-weight:400;">(for "I like it" saves)</span></label>
+            <input type="text" class="plf-acc-warmingboard" placeholder="I Like It" value="${escapeHtml(acc.warmingBoard || '')}" />
+          </div>
+        </div>
       </div>
     `;
+  }
+
+  /**
+   * Build a small hint string showing days-since-creation + days-to-next-promotion.
+   * Returns "" if account has no createdAt.
+   */
+  function _agingHint(acc) {
+    if (!acc.createdAt) return '';
+    const days = Math.floor((Date.now() - new Date(acc.createdAt).getTime()) / 86400000);
+    const thresholds = { warmup_week_1: 7, warmup_week_2: 14, warmup_week_3: 28 };
+    const next = thresholds[acc.status];
+    if (!next) return `${days}d old · no auto-promotion (status: ${acc.status})`;
+    const remaining = Math.max(0, next - days);
+    return `${days}d old · next promotion in ${remaining}d`;
   }
 
   window.plfAddAccount = function (siteName) {
@@ -761,6 +1618,9 @@
       pinsPerDayMin: 0,
       pinsPerDayMax: 0,
       boards: [],
+      createdAt: new Date().toISOString(),
+      autoProgress: true,
+      warmingBoard: 'I Like It',
     });
     plfReadFormIntoConfig();   // preserve other edits
     plfRenderSitesConfig();
@@ -789,14 +1649,23 @@
       site.pinDistribution = $('.plf-site-strategy', card).value;
       const tabSel = $('.plf-site-sheetTab', card);
       if (tabSel) site.sheetTab = tabSel.value || '';
-      site.pinterestAccounts = $$('.plf-account-card', card).map(ac => ({
-        id: $('.plf-acc-id', ac).value.trim() || 'acc',
-        dolphinProfileId: $('.plf-acc-dolphin', ac).value || null,
-        status: $('.plf-acc-status', ac).value,
-        pinsPerDayMin: Number($('.plf-acc-pmin', ac).value) || 0,
-        pinsPerDayMax: Number($('.plf-acc-pmax', ac).value) || 0,
-        boards: $('.plf-acc-boards', ac).value.split(',').map(s => s.trim()).filter(Boolean),
-      }));
+      site.pinterestAccounts = $$('.plf-account-card', card).map(ac => {
+        const createdInput = $('.plf-acc-createdat', ac);
+        const dateVal = createdInput?.value || '';
+        // Convert YYYY-MM-DD to ISO datetime (midnight UTC) for consistent storage
+        const createdAt = dateVal ? new Date(dateVal + 'T00:00:00.000Z').toISOString() : null;
+        return {
+          id: $('.plf-acc-id', ac).value.trim() || 'acc',
+          dolphinProfileId: $('.plf-acc-dolphin', ac).value || null,
+          status: $('.plf-acc-status', ac).value,
+          pinsPerDayMin: Number($('.plf-acc-pmin', ac).value) || 0,
+          pinsPerDayMax: Number($('.plf-acc-pmax', ac).value) || 0,
+          boards: $('.plf-acc-boards', ac).value.split(',').map(s => s.trim()).filter(Boolean),
+          createdAt,
+          autoProgress: $('.plf-acc-autoprogress', ac)?.checked ?? true,
+          warmingBoard: ($('.plf-acc-warmingboard', ac)?.value || '').trim() || 'I Like It',
+        };
+      });
     });
 
     // Rules (if rules panel was rendered, fields exist in DOM)
@@ -1705,9 +2574,18 @@
       try { state.uiState = await api('GET', '/api/planifier/ui-state'); } catch {}
       const r = await api('GET', '/api/planifier/recipes');
       _recipesCache = r;
-      // Stat cards
+      // Stat cards. WP REST returns 'publish' (singular); also accept legacy
+      // 'published' from manually-filled sheet col R. Counts FUTURE separately
+      // so user sees scheduled recipes at a glance.
       $('#plfRecStatTotal').textContent = r.summary.total;
-      $('#plfRecStatPublished').textContent = (r.summary.byWpStatus?.published) || 0;
+      const byWp = r.summary.byWpStatus || {};
+      const pubCount = (byWp.publish || 0) + (byWp.published || 0);
+      const draftCount = (byWp.draft || 0) + (byWp['auto-draft'] || 0);
+      const futureCount = byWp.future || 0;
+      // Show "X publish · Y draft · Z scheduled" so all 3 states are visible
+      $('#plfRecStatPublished').textContent = futureCount
+        ? `${pubCount} · ${draftCount}d · ${futureCount}📅`
+        : `${pubCount}${draftCount ? ' · ' + draftCount + ' draft' : ''}`;
       $('#plfRecStatPending').textContent = (r.summary.byStatus?.pending) || 0;
       $('#plfRecStatValid').textContent = r.summary.validationStats?.valid || 0;
       // Populate site filter
@@ -1726,6 +2604,39 @@
     }
   }
 
+  // Render WP status as a colored badge. Maps live WP statuses to readable
+  // labels with a color cue: publish=green, draft=red, future=violet, etc.
+  // Empty/null = grey "—" so the user knows it wasn't fetched.
+  function _renderWpBadge(wpStatus) {
+    const s = (wpStatus || '').toLowerCase();
+    const labelMap = {
+      publish: 'PUBLISH',
+      published: 'PUBLISH',
+      draft: 'DRAFT',
+      future: 'SCHEDULED',
+      pending: 'PENDING',
+      private: 'PRIVATE',
+      trash: 'TRASH',
+      'auto-draft': 'AUTO-DRAFT',
+    };
+    const clsMap = {
+      publish: 'plf-rec-wp-publish',
+      published: 'plf-rec-wp-publish',
+      draft: 'plf-rec-wp-draft',
+      future: 'plf-rec-wp-future',
+      pending: 'plf-rec-wp-pending',
+      private: 'plf-rec-wp-private',
+      trash: 'plf-rec-wp-trash',
+      'auto-draft': 'plf-rec-wp-draft',
+    };
+    if (!s || s === '—' || s === '(none)') {
+      return '<span class="plf-rec-wp-badge plf-rec-wp-none">—</span>';
+    }
+    const label = labelMap[s] || s.toUpperCase();
+    const cls = clsMap[s] || 'plf-rec-wp-none';
+    return `<span class="plf-rec-wp-badge ${cls}">${escapeHtml(label)}</span>`;
+  }
+
   function plfRenderRecipes() {
     if (!_recipesCache) return;
     const box = $('#plfRecipesTable');
@@ -1736,7 +2647,20 @@
     const filterStatus = $('#plfRecFilterStatus')?.value || '';
     const filterValid = $('#plfRecFilterValid')?.value || '';
 
-    let list = _recipesCache.recipes;
+    // Tag each recipe with isNonLive — visible flag for recipes that
+    // shouldn't receive Pinterest pins (recipe page is draft/future/trashed
+    // OR sheet says done but no draftUrl was ever written).
+    const _isNonLive = r => {
+      const status = (r.status || '').toLowerCase();
+      const wp = (r.wpStatus || '').toLowerCase();
+      // Orphan: marked done but no draftUrl
+      if (status === 'done' && !r.draftUrl) return true;
+      // Done but WP says non-public (only if R column populated)
+      if (status === 'done' && wp && wp !== 'publish' && wp !== 'published') return true;
+      return false;
+    };
+
+    let list = _recipesCache.recipes.map(r => ({ ...r, isNonLive: _isNonLive(r) }));
     if (search) list = list.filter(r => (r.topic || '').toLowerCase().includes(search));
     if (filterSite) list = list.filter(r => r.site === filterSite);
     if (filterStatus) list = list.filter(r => (r.status || '') === filterStatus);
@@ -1744,6 +2668,7 @@
       if (filterValid === 'valid') list = list.filter(r => r.validation?.valid === true);
       else if (filterValid === 'invalid') list = list.filter(r => r.validation?.valid === false);
       else if (filterValid === 'none') list = list.filter(r => !r.validation);
+      else if (filterValid === 'nonlive') list = list.filter(r => r.isNonLive);
     }
 
     if (list.length === 0) {
@@ -1780,7 +2705,8 @@
       }).join('');
       const draftUrl = r.draftUrl || '';
       const isOrphan = status === 'done' && !draftUrl;
-      const rowCls = (r.validation?.valid === false ? 'invalid ' : '') + (isOrphan ? 'orphan ' : '');
+      const isNonLive = r.isNonLive;
+      const rowCls = (r.validation?.valid === false ? 'invalid ' : '') + (isOrphan ? 'orphan ' : '') + (isNonLive && !isOrphan ? 'nonlive ' : '');
 
       // Action buttons depend on state
       let actionsHtml = '';
@@ -1792,8 +2718,11 @@
           <button class="delete" onclick="plfDeleteRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(r.topic||'')}')" title="HARD DELETE: WP post + media + reset sheet row to pending">Delete</button>
         `;
       } else {
+        // "New Pin" button only for posted recipes (status=done + draftUrl)
+        const canCreatePin = status === 'done' && !!draftUrl;
         actionsHtml = `
           <button onclick="plfValidateOneRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(draftUrl)}')" title="Re-validate via WP REST" ${draftUrl ? '' : 'disabled style="opacity:0.4;cursor:not-allowed;"'}>Validate</button>
+          ${canCreatePin ? `<button class="new-pin" onclick="plfNewPinForRecipe('${escapeHtml(r.site)}', '${escapeHtml(draftUrl)}', '${escapeHtml((r.topic || '').replace(/'/g, "\\'"))}')" title="Schedule a new pin for this recipe via calendar">＋ New Pin</button>` : ''}
           ${draftUrl ? `<a href="${escapeHtml(draftUrl)}" target="_blank" rel="noopener" title="Open in WP admin">Edit</a>` : ''}
           <button class="delete" onclick="plfDeleteRecipe('${escapeHtml(r.site)}', ${r.rowIndex}, '${escapeHtml(r.topic||'')}')" title="HARD DELETE: WP post + media + reset sheet row to pending (topic kept)">Delete</button>
         `;
@@ -1804,10 +2733,11 @@
           <div class="rownum">${r.rowIndex}</div>
           <div class="topic">
             ${escapeHtml(r.topic || '(empty)')}
+            ${isNonLive && !isOrphan ? `<span class="rec-nonlive-flag" title="WP status: ${escapeHtml(r.wpStatus || 'unknown')} — recipe not public, pin posting will skip this">🔴 NOT LIVE (${escapeHtml(r.wpStatus || 'unknown')})</span>` : ''}
             <span class="site-tag">${escapeHtml(r.site)}${r.publishedAt ? ' · ' + escapeHtml(r.publishedAt) : ''}</span>
           </div>
           <div><span class="plf-rec-status-badge ${statusClass}">${escapeHtml(status || '—')}</span></div>
-          <div style="font-size:11px;color:#9a9ab8;">${escapeHtml(wpStatus)}</div>
+          <div>${_renderWpBadge(wpStatus)}</div>
           <div>${validationHtml}</div>
           <div class="plf-rec-pins" onclick="event.stopPropagation()">${pinsHtml}</div>
           <div class="plf-rec-actions" onclick="event.stopPropagation()">

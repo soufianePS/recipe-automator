@@ -921,7 +921,7 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
 // 12. PINTEREST PROMPT — dedicated to verified generator
 // ─────────────────────────────────────────────────────────────
 
-export const DEFAULT_VG_PINTEREST_PROMPT = `Create a premium Pinterest recipe pin in vertical 3:4 format.
+export const DEFAULT_VG_PINTEREST_PROMPT = `Create a premium Pinterest recipe pin.
 
 FIRST IMAGE = layout/design template reference
 SECOND IMAGE = food identity reference

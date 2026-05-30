@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Image Size Checker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, Segoe UI, Inter, sans-serif; }
+  body { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; color: #e4e4f0; }
+  .app { width: 100%; max-width: 720px; }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; background: linear-gradient(135deg, #7c4dff, #00d68f); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { color: #9a9ab8; font-size: 13px; margin-bottom: 24px; }
+  .drop-zone {
+    border: 2px dashed rgba(124,77,255,0.4);
+    border-radius: 16px;
+    padding: 60px 30px;
+    text-align: center;
+    background: rgba(124,77,255,0.05);
+    transition: all 0.2s;
+    cursor: pointer;
+  }
+  .drop-zone:hover, .drop-zone.dragging {
+    border-color: #7c4dff;
+    background: rgba(124,77,255,0.12);
+    transform: translateY(-2px);
+  }
+  .drop-zone .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.7; }
+  .drop-zone .label { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .drop-zone .hint { font-size: 12px; color: #9a9ab8; }
+  input[type=file] { display: none; }
+  .results { display: none; margin-top: 24px; }
+  .results.show { display: block; }
+  .preview {
+    background: rgba(0,0,0,0.3);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+    margin-bottom: 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .preview img { max-width: 100%; max-height: 320px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+  .preview .fname { margin-top: 12px; font-size: 12px; color: #9a9ab8; word-break: break-all; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 12px; }
+  .card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .card .lab { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: #9a9ab8; margin-bottom: 4px; }
+  .card .val { font-size: 20px; font-weight: 700; color: #fff; }
+  .verdict {
+    margin-top: 8px;
+    border-radius: 10px;
+    padding: 16px;
+    font-size: 14px;
+    line-height: 1.5;
+    border: 1px solid;
+  }
+  .verdict.optimal { background: rgba(0,214,143,0.10); color: #00d68f; border-color: rgba(0,214,143,0.3); }
+  .verdict.ok      { background: rgba(124,77,255,0.10); color: #b39bff; border-color: rgba(124,77,255,0.3); }
+  .verdict.warn    { background: rgba(255,179,71,0.10); color: #ffb347; border-color: rgba(255,179,71,0.3); }
+  .verdict.bad     { background: rgba(255,82,82,0.10); color: #ff6b6b; border-color: rgba(255,82,82,0.35); }
+  .verdict h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
+  .ratio-bar { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .chip { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 6px; padding: 4px 9px; font-size: 11px; }
+  .chip.match { background: rgba(0,214,143,0.15); border-color: rgba(0,214,143,0.4); color: #00d68f; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>📐 Image Size Checker</h1>
+  <p class="subtitle">Drag-drop ou click — dimensions, ratio détecté, verdict Pinterest.</p>
+
+  <label class="drop-zone" id="drop">
+    <input type="file" id="file" accept="image/*">
+    <div class="icon">🖼️</div>
+    <div class="label">Drag-drop ton image ici</div>
+    <div class="hint">ou click pour parcourir · JPG / PNG / WEBP</div>
+  </label>
+
+  <div class="results" id="results">
+    <div class="preview">
+      <img id="img" alt="">
+      <div class="fname" id="fname"></div>
+    </div>
+    <div class="grid">
+      <div class="card"><div class="lab">Width</div><div class="val" id="w"></div></div>
+      <div class="card"><div class="lab">Height</div><div class="val" id="h"></div></div>
+      <div class="card"><div class="lab">Ratio détecté</div><div class="val" id="ratioName"></div></div>
+      <div class="card"><div class="lab">W ÷ H</div><div class="val" id="ratioNum"></div></div>
+    </div>
+    <div class="ratio-bar" id="chips"></div>
+    <div class="verdict" id="verdict"></div>
+  </div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileIn = document.getElementById('file');
+const results = document.getElementById('results');
+
+// Common ratios (sorted tall → wide)
+const RATIOS = [
+  { name: '9:16',   value: 9/16,   label: 'Story / Reels',         use: 'Crop en feed Pinterest' },
+  { name: '1:2',    value: 1/2,    label: 'Très tall',              use: 'Trop tall pour Pinterest' },
+  { name: '2:3',    value: 2/3,    label: 'Pinterest optimal',     use: 'Sweet spot Pinterest' },
+  { name: '3:4',    value: 3/4,    label: 'Portrait standard',     use: 'OK Pinterest, moins de reach' },
+  { name: '4:5',    value: 4/5,    label: 'Instagram Portrait',     use: 'OK mais court pour Pinterest' },
+  { name: '1:1',    value: 1,      label: 'Carré',                  use: 'Mauvais pour Pinterest' },
+  { name: '4:3',    value: 4/3,    label: 'Landscape standard',     use: 'Mauvais pour Pinterest' },
+  { name: '16:9',   value: 16/9,   label: 'Widescreen / YouTube',  use: 'Très mauvais pour Pinterest' },
+];
+
+function pickRatio(actualValue) {
+  let best = null, minDiff = Infinity;
+  for (const r of RATIOS) {
+    const diff = Math.abs(actualValue - r.value);
+    if (diff < minDiff) { minDiff = diff; best = r; }
+  }
+  // If actual is between two — also compute the EXACT W:H
+  return { ...best, diff: minDiff };
+}
+
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+
+function exactRatio(w, h) {
+  const g = gcd(w, h);
+  return `${w/g}:${h/g}`;
+}
+
+function show(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    const r = w / h;
+    const pick = pickRatio(r);
+    const exact = exactRatio(w, h);
+    document.getElementById('img').src = url;
+    document.getElementById('fname').textContent = `${file.name} · ${(file.size/1024).toFixed(0)} KB`;
+    document.getElementById('w').textContent = w + ' px';
+    document.getElementById('h').textContent = h + ' px';
+    document.getElementById('ratioName').textContent = pick.name + (pick.diff < 0.005 ? '' : ' (≈)');
+    document.getElementById('ratioNum').textContent = r.toFixed(4);
+
+    // Render all chips, highlight detected
+    const chipBox = document.getElementById('chips');
+    chipBox.innerHTML = '';
+    for (const ro of RATIOS) {
+      const c = document.createElement('div');
+      c.className = 'chip' + (ro.name === pick.name ? ' match' : '');
+      c.textContent = ro.name + ' = ' + ro.value.toFixed(3);
+      chipBox.appendChild(c);
+    }
+
+    // Verdict
+    let cls, title, body;
+    if (Math.abs(r - 2/3) < 0.005) {
+      cls = 'optimal'; title = '✅ PINTEREST OPTIMAL';
+      body = `Ratio exact 2:3 — sweet spot Pinterest. Pleine hauteur dans le feed, max reach.<br/>Exact W:H = <strong>${exact}</strong>`;
+    } else if (r < 2/3 && r >= 9/16) {
+      cls = 'warn'; title = '🟠 TROP TALL (Story-ish)';
+      body = `Ratio ${pick.name} = ${r.toFixed(3)} — plus tall que 2:3. Pinterest <strong>crop top/bottom</strong> en feed. OK seulement si tu vises la page détail du pin.<br/>Exact W:H = <strong>${exact}</strong>`;
+    } else if (r < 9/16) {
+      cls = 'bad'; title = '🔴 BEAUCOUP TROP TALL';
+      body = `Ratio ${pick.name} = ${r.toFixed(3)} — extrêmement tall. Pinterest crop sévèrement. À éviter.<br/>Exact W:H = <strong>${exact}</strong>`;
+    } else if (r > 2/3 && r <= 0.8) {
+      cls = 'ok'; title = '🟣 ACCEPTABLE';
+      body = `Ratio ${pick.name} = ${r.toFixed(3)} — plus court que 2:3 mais OK pour Pinterest (full visible). ~10-15% moins de surface vs 2:3.<br/>Exact W:H = <strong>${exact}</strong>`;
+    } else if (r <= 1) {
+      cls = 'warn'; title = '🟠 PEU OPTIMAL';
+      body = `Ratio ${pick.name} = ${r.toFixed(3)} — proche du carré. Pinterest accepte mais le pin paraît petit dans le feed (moins de reach).<br/>Exact W:H = <strong>${exact}</strong>`;
+    } else {
+      cls = 'bad'; title = '🔴 LANDSCAPE / HORIZONTAL';
+      body = `Ratio ${pick.name} = ${r.toFixed(3)} — image plus large que haute. Pinterest pénalise lourdement. À ne pas poster.<br/>Exact W:H = <strong>${exact}</strong>`;
+    }
+    document.getElementById('verdict').className = 'verdict ' + cls;
+    document.getElementById('verdict').innerHTML = `<h3>${title}</h3>${body}`;
+    results.classList.add('show');
+  };
+  img.src = url;
+}
+
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragging'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('dragging'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('dragging');
+  const f = e.dataTransfer.files[0]; if (f && f.type.startsWith('image/')) show(f);
+});
+fileIn.addEventListener('change', e => {
+  const f = e.target.files[0]; if (f) show(f);
+});
+</script>
+</body>
+</html>
