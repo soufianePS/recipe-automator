@@ -209,6 +209,84 @@ export function appendProtoItems(dateStr, rules, items, protos) {
 }
 
 /**
+ * Remaining active window for a date, in minutes-from-midnight.
+ * For TODAY the lower bound is floored to now+5min (can't schedule the past).
+ */
+function remainingWindow(dateStr, rules) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const now = new Date();
+  const isToday = now.getFullYear() === year && (now.getMonth() + 1) === month && now.getDate() === day;
+  let loMin = rules.activeHourStart * 60;
+  const hiMin = rules.activeHourEnd * 60;
+  if (isToday) {
+    const f = new Date(now.getTime() + 5 * 60000);
+    const fm = f.getHours() * 60 + f.getMinutes();
+    if (fm > loMin) loMin = fm;
+  }
+  return { loMin, hiMin };
+}
+
+function minToIso(dateStr, posMin) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  let p = Math.max(0, Math.min(1439, Math.round(posMin)));
+  const hour = Math.floor(p / 60);
+  const minute = p % 60;
+  const seconds = randInt(0, 59);
+  return new Date(year, month - 1, day, hour, minute, seconds).toISOString();
+}
+
+/**
+ * Place EVERY proto today — never drop, never overflow. This honours the
+ * configured volume exactly when the user clicks Regenerate.
+ *
+ * Strategy:
+ *   - If the window comfortably holds all actions at the configured gap, use
+ *     the normal random gap-respecting placement (most natural spacing).
+ *   - Otherwise the configured gap can't fit everything, so spread the actions
+ *     EVENLY across the remaining window (gaps shrink just enough to fit). If
+ *     the window is so small that even a small floor gap won't fit, the window
+ *     is extended past the active-hour end as a last resort — the point is the
+ *     full configured set still lands today.
+ *
+ * Returns { compressed } — how many items were placed with sub-configured gaps.
+ */
+function fitAllPlace(dateStr, rules, items, protos) {
+  const n = protos.length;
+  if (n === 0) return { compressed: 0 };
+
+  const { loMin, hiMin } = remainingWindow(dateStr, rules);
+  const FLOOR_GAP = 8;  // absolute minimum spacing (minutes) when compressing
+  let endMin = hiMin;
+  let span = endMin - loMin;
+  // Last-resort: extend past active-hour end so the full set still fits today.
+  if (span < (n - 1) * FLOOR_GAP) {
+    endMin = Math.min(1439, loMin + (n - 1) * FLOOR_GAP);
+    span = endMin - loMin;
+  }
+  const evenGap = n > 1 ? span / (n - 1) : span;
+
+  // Enough room for natural, gap-respecting random placement.
+  if (evenGap >= rules.minGapBetweenActions) {
+    const { overflow, relaxedCount } = appendProtoItems(dateStr, rules, items, protos);
+    if (overflow.length === 0) return { compressed: relaxedCount };
+    // Shouldn't happen given the room check, but never drop: even-place leftovers.
+    protos = overflow;
+  }
+
+  // Compressed even spread: position i at loMin + i*evenGap (+ jitter), in order.
+  const gap = n > 1 ? span / (n - 1) : 0;
+  let compressed = 0;
+  for (let i = 0; i < protos.length; i++) {
+    const base = loMin + i * gap;
+    const jit = (Math.random() - 0.5) * gap * 0.35;
+    const posMin = Math.max(loMin, Math.min(endMin, base + jit));
+    items.push(protoToItem(protos[i], minToIso(dateStr, posMin), true));
+    compressed++;
+  }
+  return { compressed };
+}
+
+/**
  * Main entry: build the day plan.
  *
  * @param {string} dateStr — 'YYYY-MM-DD'
@@ -296,26 +374,26 @@ export function buildDayPlan(dateStr, config, options = {}) {
     }
   }
 
-  // ── Phase 2: interleave + allocate. allocate() relaxes gaps step-by-step so
-  // tight windows still get filled; anything that can't fit even at floor gaps
-  // is returned as overflow for the caller to cascade to the next day.
+  // ── Phase 2: interleave + place EVERYTHING. fitAllPlace honours the full
+  // configured volume — it spreads actions across the remaining window with
+  // the largest gaps that still fit (shrinking below the configured gap only
+  // when there are too many actions for the window). Nothing is dropped or
+  // pushed to another day: clicking Regenerate gives exactly what's configured.
   const ordered = interleave(recipeProtos, sessionProtos);
   const items = [];
-  const { overflow, relaxedCount } = appendProtoItems(dateStr, rules, items, ordered);
+  const { compressed } = fitAllPlace(dateStr, rules, items, ordered);
 
   items.sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
 
   const summary = summarize(items, config);
-  summary.relaxed = relaxedCount;
-  summary.overflow = overflow.length;
+  summary.compressed = compressed;  // # placed with sub-configured gaps
 
   return {
     date: dateStr,
     generatedAt: new Date().toISOString(),
     globalSkip,
     items,
-    overflow,        // protos that couldn't fit today (caller may cascade)
-    relaxedCount,
+    compressed,
     summary,
   };
 }

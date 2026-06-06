@@ -9,7 +9,7 @@
  * Phase 2+ will add a tick loop that picks due items and runs them.
  */
 
-import { buildDayPlan, appendProtoItems, summarize } from './day-plan-builder.js';
+import { buildDayPlan } from './day-plan-builder.js';
 import {
   loadConfig, saveConfig, ensureSiteConfig,
   loadPlan, savePlan, listPlanDates, deletePlan,
@@ -415,60 +415,26 @@ export const Planifier = {
   /**
    * Generate-and-save the plan for a date (overwrites any existing).
    *
-   * Tight-window handling (e.g. clicking Regenerate late in the day): the
-   * builder interleaves recipes + Pinterest sessions and relaxes gaps so the
-   * remaining window is used fairly. Anything that STILL can't fit today is
-   * cascaded onto the next day's plan instead of being silently dropped. The
-   * returned plan carries a `report` summarising what happened.
+   * The builder places EXACTLY the configured volume (recipes + Pinterest
+   * sessions) on this day — nothing is dropped or pushed to another day. When
+   * there are more actions than the active window comfortably holds at the
+   * configured gap, the gaps are compressed evenly so everything still fits.
+   * The returned plan carries a `report` for the dashboard toast.
    */
   async regeneratePlan(date) {
     const config = await loadConfig();
     const plan = buildDayPlan(date, config);
-    // `overflow`/`relaxedCount` are build-time metadata — don't persist them
-    // on the day file (the executor only reads `items`).
-    const { overflow = [], relaxedCount = 0, ...persistable } = plan;
+    // `compressed` is build-time metadata — don't persist it on the day file
+    // (the executor only reads `items`).
+    const { compressed = 0, ...persistable } = plan;
     await savePlan(date, persistable);
-
-    const report = {
-      placed: plan.items.length,
-      relaxed: relaxedCount,
-      movedToNextDay: 0,
-      stillDropped: 0,
-      nextDate: null,
-    };
-
-    // Cascade whatever couldn't fit today onto the next day (full window → room).
-    if (overflow.length) {
-      const nextDate = addDays(date, 1);
-      let nextPlan = await loadPlan(nextDate);
-      if (!nextPlan) {
-        const np = buildDayPlan(nextDate, config);
-        const { overflow: _o, relaxedCount: _r, ...npPersist } = np;
-        nextPlan = npPersist;
-      }
-      // Idempotent: drop any items previously cascaded from THIS date (pending
-      // only) so repeated regenerates of `date` don't pile up duplicates.
-      nextPlan.items = nextPlan.items.filter(it =>
-        !(it.overflowFrom === date && it.status === 'pending'));
-
-      const tagged = overflow.map(p => ({ ...p, overflowFrom: date }));
-      const { overflow: stillOverflow } = appendProtoItems(nextDate, config.rules, nextPlan.items, tagged);
-      nextPlan.items.sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
-      nextPlan.summary = summarize(nextPlan.items, config);
-      await savePlan(nextDate, nextPlan);
-
-      report.movedToNextDay = overflow.length - stillOverflow.length;
-      report.stillDropped = stillOverflow.length;
-      report.nextDate = nextDate;
-    }
 
     Logger.info(
       `[Planifier] regenerated plan for ${date} — ${plan.items.length} action(s)` +
-      (report.relaxed ? `, ${report.relaxed} with relaxed gaps` : '') +
-      (report.movedToNextDay ? `, ${report.movedToNextDay} moved to ${report.nextDate}` : '') +
-      (report.stillDropped ? `, ${report.stillDropped} dropped` : '')
+      (plan.summary.recipes != null ? ` (${plan.summary.recipes} recipes, ${plan.summary.pinterestSessions} pin sessions)` : '') +
+      (compressed ? `, ${compressed} with compressed gaps` : '')
     );
-    return { ...persistable, report };
+    return { ...persistable, report: { placed: plan.items.length, compressed, summary: plan.summary } };
   },
 
   /**

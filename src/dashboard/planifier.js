@@ -1233,13 +1233,10 @@
       const r = await api('POST', `/api/planifier/plan/${todayKey()}/regenerate`);
       renderTodayTimeline(r.plan);
       const rep = r.plan?.report;
-      let msg = `Today's plan regenerated — ${rep?.placed ?? r.plan.items.length} action(s)`;
-      const notes = [];
-      if (rep?.relaxed) notes.push(`${rep.relaxed} with tighter gaps`);
-      if (rep?.movedToNextDay) notes.push(`${rep.movedToNextDay} moved to tomorrow (small window today)`);
-      if (rep?.stillDropped) notes.push(`${rep.stillDropped} couldn't be placed`);
-      if (notes.length) msg += ' — ' + notes.join(', ');
-      showToast(msg, rep?.stillDropped ? 'warning' : 'success');
+      const s = rep?.summary || r.plan?.summary || {};
+      let msg = `Today's plan regenerated — ${s.recipes ?? 0} recipes + ${s.pinterestSessions ?? 0} pin sessions`;
+      if (rep?.compressed) msg += ` (gaps compressed to fit all ${rep.placed} actions today)`;
+      showToast(msg, 'success');
       plfLoadOverview();
     } catch (e) {
       showToast('Regenerate failed: ' + e.message, 'error');
