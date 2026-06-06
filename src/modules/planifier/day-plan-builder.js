@@ -117,6 +117,98 @@ function findSlot(dateStr, rules, candidate, items, maxAttempts = 30) {
 }
 
 /**
+ * Gap-relaxation ladder. When the remaining active window is too tight to
+ * place an action at the configured gaps (e.g. a late-day regenerate), we
+ * retry with progressively smaller gaps so the action still lands TODAY
+ * rather than being silently dropped. Floors keep actions from bunching up
+ * to a detectable degree.
+ */
+const RELAX_STEPS = [1.0, 0.66, 0.4];
+const GAP_FLOORS = { minGapBetweenActions: 25, minGapInterAccount: 15, minGapIntraAccount: 35 };
+
+function relaxRules(rules, factor) {
+  if (factor === 1.0) return rules;
+  return {
+    ...rules,
+    minGapBetweenActions: Math.max(GAP_FLOORS.minGapBetweenActions, Math.round(rules.minGapBetweenActions * factor)),
+    minGapInterAccount: Math.max(GAP_FLOORS.minGapInterAccount, Math.round(rules.minGapInterAccount * factor)),
+    minGapIntraAccount: Math.max(GAP_FLOORS.minGapIntraAccount, Math.round(rules.minGapIntraAccount * factor)),
+  };
+}
+
+/**
+ * Try to place one action today, relaxing gaps step by step if needed.
+ * Returns { slot, relaxed } or null if it can't fit even at the floor gaps
+ * (caller should overflow it to the next day).
+ */
+function allocate(dateStr, rules, candidate, items) {
+  for (const factor of RELAX_STEPS) {
+    const slot = findSlot(dateStr, relaxRules(rules, factor), candidate, items);
+    if (slot) return { slot, relaxed: factor !== 1.0 };
+  }
+  return null;
+}
+
+/**
+ * Round-robin two lists so neither category monopolizes the early slots.
+ * Without this, recipes (allocated first) would claim every slot in a tight
+ * window and Pinterest sessions would always be the ones dropped.
+ */
+function interleave(a, b) {
+  const out = [];
+  const max = Math.max(a.length, b.length);
+  for (let i = 0; i < max; i++) {
+    if (i < a.length) out.push(a[i]);
+    if (i < b.length) out.push(b[i]);
+  }
+  return out;
+}
+
+/**
+ * Turn a placed proto + slot into a real plan item.
+ */
+function protoToItem(proto, slot, relaxed) {
+  const item = {
+    id: randomUUID(),
+    type: proto.type,
+    site: proto.site,
+    accountId: proto.accountId || null,
+    scheduledAt: slot,
+    status: ITEM_STATUSES.PENDING,
+  };
+  if (proto.dolphinProfileId !== undefined) item.dolphinProfileId = proto.dolphinProfileId;
+  if (proto.type === ACTION_TYPES.CREATE_RECIPE) item.willPost = false;
+  if (proto.type === ACTION_TYPES.PINTEREST_SESSION) {
+    item.willPost = !!proto.willPost;
+    item.browseOnly = !!proto.browseOnly;
+  }
+  if (relaxed) item.relaxedGap = true;
+  if (proto.overflowFrom) item.overflowFrom = proto.overflowFrom;
+  return item;
+}
+
+/**
+ * Allocate a batch of protos into `items` (mutated in place). Each proto that
+ * fits becomes a real item; ones that can't fit even at floor gaps are
+ * returned in `overflow` so the caller can cascade them to the next day.
+ *
+ * Exported so regeneratePlan can append a previous day's overflow onto an
+ * existing plan using the exact same slotting logic.
+ */
+export function appendProtoItems(dateStr, rules, items, protos) {
+  const overflow = [];
+  let relaxedCount = 0;
+  for (const proto of protos) {
+    const candidate = { site: proto.site, accountId: proto.accountId || null };
+    const res = allocate(dateStr, rules, candidate, items);
+    if (!res) { overflow.push(proto); continue; }
+    if (res.relaxed) relaxedCount++;
+    items.push(protoToItem(proto, res.slot, res.relaxed));
+  }
+  return { overflow, relaxedCount };
+}
+
+/**
  * Main entry: build the day plan.
  *
  * @param {string} dateStr — 'YYYY-MM-DD'
@@ -127,10 +219,16 @@ function findSlot(dateStr, rules, candidate, items, maxAttempts = 30) {
  */
 export function buildDayPlan(dateStr, config, options = {}) {
   const rules = config.rules;
-  const items = [];
 
   // Day-level skip — entire day off?
   const globalSkip = !options.forceNoSkip && Math.random() < (rules.skipDayProbability || 0);
+
+  // ── Phase 1: collect "what we want to do today" as protos (no slots yet).
+  // Recipes and Pinterest/warming sessions are gathered separately so we can
+  // interleave them — otherwise recipes (allocated first) grab every slot in a
+  // tight window and Pinterest is always the category that gets dropped.
+  const recipeProtos = [];
+  const sessionProtos = [];
 
   for (const [siteName, siteCfg] of Object.entries(config.sites || {})) {
     if (!siteCfg.enabled) continue;
@@ -144,19 +242,14 @@ export function buildDayPlan(dateStr, config, options = {}) {
     // ── Recipes
     const recipeCount = rollCount(siteCfg.recipesPerDayMin || 0, siteCfg.recipesPerDayMax || 0);
     for (let i = 0; i < recipeCount; i++) {
-      const candidate = { site: siteName, accountId: null };
-      const slot = findSlot(dateStr, rules, candidate, items);
-      if (!slot) break;
-      items.push({
-        id: randomUUID(),
-        type: ACTION_TYPES.CREATE_RECIPE,
-        site: siteName,
-        accountId: null,
-        scheduledAt: slot,
-        status: ITEM_STATUSES.PENDING,
-        willPost: false,
-      });
+      recipeProtos.push({ type: ACTION_TYPES.CREATE_RECIPE, site: siteName, accountId: null });
     }
+
+    // Detect warming mode for this site. When sites-config has
+    // warming_enabled === TRUE for this site, we emit warming-session protos
+    // instead of pinterest-session ones. Warming sites still create recipes
+    // normally; the difference is only in the Pinterest action behavior.
+    const warmingEnabled = !!(siteCfg.warming_enabled || siteCfg.warmingEnabled);
 
     // ── Pinterest sessions per account
     for (const account of siteCfg.pinterestAccounts || []) {
@@ -173,45 +266,29 @@ export function buildDayPlan(dateStr, config, options = {}) {
         )
       );
 
-      // Detect warming mode for this site. When sites-config has
-      // warming_enabled === TRUE for this site, we emit warming-session items
-      // instead of pinterest-session ones. Warming sites still create recipes
-      // normally; the difference is only in the Pinterest action behavior.
-      const warmingEnabled = !!(siteCfg.warming_enabled || siteCfg.warmingEnabled);
-
       for (let i = 0; i < sessionTarget; i++) {
-        const candidate = { site: siteName, accountId: account.id };
-        const slot = findSlot(dateStr, rules, candidate, items);
-        if (!slot) break;
-
         if (warmingEnabled) {
           // Warming session: extended browse + saves to "I Like It" + 1
           // warming pin (no outbound link). No willPost concept — the warming
           // pin is the only thing posted (from warming-pin-list).
-          items.push({
-            id: randomUUID(),
+          sessionProtos.push({
             type: ACTION_TYPES.WARMING_SESSION,
             site: siteName,
             accountId: account.id,
             dolphinProfileId: account.dolphinProfileId || null,
-            scheduledAt: slot,
-            status: ITEM_STATUSES.PENDING,
           });
           continue;
         }
 
-        // Normal pinterest-session
+        // Normal pinterest-session — roll willPost now so it survives overflow.
         const willPost = statusCfg.canPost
           && (Math.random() * 100) >= (rules.sessionsWithoutPostPct || 0);
 
-        items.push({
-          id: randomUUID(),
+        sessionProtos.push({
           type: ACTION_TYPES.PINTEREST_SESSION,
           site: siteName,
           accountId: account.id,
           dolphinProfileId: account.dolphinProfileId || null,
-          scheduledAt: slot,
-          status: ITEM_STATUSES.PENDING,
           willPost: !!willPost,
           browseOnly: statusCfg.browseOnly,
         });
@@ -219,14 +296,27 @@ export function buildDayPlan(dateStr, config, options = {}) {
     }
   }
 
+  // ── Phase 2: interleave + allocate. allocate() relaxes gaps step-by-step so
+  // tight windows still get filled; anything that can't fit even at floor gaps
+  // is returned as overflow for the caller to cascade to the next day.
+  const ordered = interleave(recipeProtos, sessionProtos);
+  const items = [];
+  const { overflow, relaxedCount } = appendProtoItems(dateStr, rules, items, ordered);
+
   items.sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+
+  const summary = summarize(items, config);
+  summary.relaxed = relaxedCount;
+  summary.overflow = overflow.length;
 
   return {
     date: dateStr,
     generatedAt: new Date().toISOString(),
     globalSkip,
     items,
-    summary: summarize(items, config),
+    overflow,        // protos that couldn't fit today (caller may cascade)
+    relaxedCount,
+    summary,
   };
 }
 
@@ -240,12 +330,14 @@ export function summarize(items, config) {
     pinterestSessions: 0,
     pinterestPosts: 0,
     pinterestBrowseOnly: 0,
+    warmingSessions: 0,
     bySite: {},
     byAccount: {},
   };
 
   for (const item of items) {
     if (item.type === ACTION_TYPES.CREATE_RECIPE) out.recipes++;
+    if (item.type === ACTION_TYPES.WARMING_SESSION) out.warmingSessions++;
     if (item.type === ACTION_TYPES.PINTEREST_SESSION) {
       out.pinterestSessions++;
       if (item.willPost) out.pinterestPosts++;

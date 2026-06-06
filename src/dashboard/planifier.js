@@ -1232,7 +1232,14 @@
     try {
       const r = await api('POST', `/api/planifier/plan/${todayKey()}/regenerate`);
       renderTodayTimeline(r.plan);
-      showToast('Today\'s plan regenerated', 'success');
+      const rep = r.plan?.report;
+      let msg = `Today's plan regenerated — ${rep?.placed ?? r.plan.items.length} action(s)`;
+      const notes = [];
+      if (rep?.relaxed) notes.push(`${rep.relaxed} with tighter gaps`);
+      if (rep?.movedToNextDay) notes.push(`${rep.movedToNextDay} moved to tomorrow (small window today)`);
+      if (rep?.stillDropped) notes.push(`${rep.stillDropped} couldn't be placed`);
+      if (notes.length) msg += ' — ' + notes.join(', ');
+      showToast(msg, rep?.stillDropped ? 'warning' : 'success');
       plfLoadOverview();
     } catch (e) {
       showToast('Regenerate failed: ' + e.message, 'error');
