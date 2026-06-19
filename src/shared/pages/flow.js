@@ -1651,10 +1651,13 @@ export class FlowPage {
         await this._delay(500);
       }
       if (!started) {
-        Logger.warn('[Flow] No generation progress detected after Create — retrying click');
-        // Try clicking again with native mouse
-        await this.page.mouse.click(arrowPos.x, arrowPos.y);
-        await this._delay(1000);
+        // IMPORTANT: in the updated Flow chat UI the Create/arrow button turns
+        // into a STOP control while generating, so clicking it again CANCELS
+        // the run ("La réponse a été annulée"). Progress detection can miss the
+        // new indicator, so we must NOT re-click here. Proceed to wait for the
+        // result instead — if it genuinely didn't start, _waitForGeneration
+        // times out and the outer generate() retries with a fresh project.
+        Logger.warn('[Flow] Progress indicator not detected after Create — NOT re-clicking (would cancel in new Flow); proceeding to wait');
       }
       return;
     }
