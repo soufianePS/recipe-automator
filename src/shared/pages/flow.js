@@ -345,10 +345,13 @@ export class FlowPage {
     // Background uploaded once, context images already on canvas from prior generations.
     // ~50% faster than creating a new project per image.
 
-    // 1. Ensure project is open and background is on canvas
-    await this._ensureProject(backgroundFilePath);
+    // 1. Ensure project is open and background is on canvas.
+    //    On a NEW project this also applies the Agent defaults (aspect/model/
+    //    count/confirm) via the tune panel — the only place they live now.
+    await this._ensureProject(backgroundFilePath, aspectRatio);
 
-    // 2. Set generation settings (aspect ratio + x1)
+    // 2. Legacy classic settings (no-op on the new Agent-only Flow; kept as a
+    //    fallback in case the inline model button ever returns).
     await this._setGenerationSettings(aspectRatio);
 
     // 2b. Clear any leftover refs from previous generation in this project
@@ -595,8 +598,8 @@ export class FlowPage {
    * Falls back to normal _doGenerate if reuse fails.
    */
   async _doGenerateWithReuse(prompt, backgroundFilePath, contextFilePaths, aspectRatio, outputPath) {
-    // 1. Ensure project is open and background is on canvas
-    await this._ensureProject(backgroundFilePath);
+    // 1. Ensure project is open and background is on canvas (+ Agent defaults on new project)
+    await this._ensureProject(backgroundFilePath, aspectRatio);
 
     // 2. Set generation settings
     await this._setGenerationSettings(aspectRatio);
@@ -738,7 +741,7 @@ export class FlowPage {
    * Creates a new project only on first call; subsequent calls reuse the same project.
    * If the background file changes, uploads the new one to the existing canvas.
    */
-  async _ensureProject(backgroundFilePath) {
+  async _ensureProject(backgroundFilePath, aspectRatio) {
     const bgName = basename(backgroundFilePath);
 
     // Check if project is still alive
@@ -772,6 +775,12 @@ export class FlowPage {
       this._bgFilesOnCanvas.clear();
       this._generatedNames.clear();
       Logger.info('[Flow] New project created');
+
+      // NEW Flow is Agent-only: model/aspect/count + confirm live in the Agent
+      // settings panel (the `tune` icon), PER PROJECT. The legacy inline model
+      // button is gone, so _setGenerationSettings is a no-op now. Apply our
+      // defaults here, once per project.
+      await this._applyAgentDefaults(aspectRatio);
     }
 
     // Upload background to canvas if not already there
@@ -779,6 +788,54 @@ export class FlowPage {
       Logger.info(`[Flow] Uploading background to canvas: ${bgName}`);
       await this._uploadBgToCanvas(backgroundFilePath);
       this._bgFilesOnCanvas.add(bgName);
+    }
+  }
+
+  /**
+   * Apply the Agent generation defaults for the NEW Flow UI (Agent-only).
+   * These live in the agent settings panel (the `tune` icon on the chat input)
+   * and are PER-PROJECT, resetting to 16:9 / x2 / Nano Banana 2 / confirm=Always
+   * on each new project. We set: Confirm=Never, aspect (mapped), 1x, Nano Banana Pro.
+   * All controls are Radix with dynamic ids → target by visible text/role.
+   * The IMAGE section renders before the VIDEO section, so `.first()` = image.
+   */
+  async _applyAgentDefaults(aspectRatio) {
+    const ASPECT_LABEL = {
+      LANDSCAPE: '16:9', LANDSCAPE_4_3: '4:3', SQUARE: '1:1',
+      PORTRAIT_3_4: '3:4', PORTRAIT: '9:16',
+    };
+    const label = ASPECT_LABEL[aspectRatio] || '9:16';
+    try {
+      const tunePos = await this.page.evaluate(() => {
+        const b = [...document.querySelectorAll('button')].find(b => (b.querySelector('i')?.textContent || '').trim() === 'tune');
+        if (!b) return null; const r = b.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      });
+      if (!tunePos) { Logger.warn('[Flow] Agent settings (tune) button not found — defaults not applied'); return; }
+      await this.page.mouse.click(tunePos.x, tunePos.y);
+      await this._delay(2000);
+      const open = await this.page.evaluate(() => /Confirmer avant de générer/i.test(document.body.innerText));
+      if (!open) { Logger.warn('[Flow] Agent settings panel did not open — defaults not applied'); await this.page.keyboard.press('Escape').catch(() => {}); return; }
+
+      // Confirm before generating = Never (so the agent generates without pausing)
+      try { await this.page.getByText('Jamais', { exact: true }).first().click({ timeout: 3000 }); } catch {}
+      // Image aspect ratio (image section is first in the panel)
+      try { await this.page.getByText(label, { exact: false }).first().click({ timeout: 3000 }); } catch (e) { Logger.debug(`[Flow] aspect ${label} not clicked: ${e.message}`); }
+      // Image count = 1x (one image per prompt)
+      try { await this.page.getByText('1x', { exact: true }).first().click({ timeout: 3000 }); } catch {}
+      // Model = Nano Banana Pro (open the model menu, pick Pro)
+      try {
+        await this.page.getByText(/Nano Banana 2|Nano Banana Pro/i).first().click({ timeout: 3000 });
+        await this._delay(900);
+        await this.page.getByText(/Nano Banana Pro/i).last().click({ timeout: 3000 });
+      } catch (e) { Logger.debug(`[Flow] model select skipped: ${e.message}`); }
+      // Save
+      try { await this.page.getByRole('button', { name: /Enregistrer/i }).first().click({ timeout: 3000 }); } catch {}
+      await this._delay(1200);
+      Logger.info(`[Flow] Agent defaults applied: Never, ${label}, 1x, Nano Banana Pro`);
+    } catch (e) {
+      Logger.warn(`[Flow] _applyAgentDefaults failed: ${e.message}`);
+      try { await this.page.keyboard.press('Escape'); } catch {}
     }
   }
 
