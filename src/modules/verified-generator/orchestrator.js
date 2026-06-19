@@ -973,72 +973,22 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const contextPaths = [];
     const refRoles = []; // parallel array used to build role labels in the prose prompt
 
-    if (idx > 0) {
-      // Pinterest finished-dish ref (LOWEST weight) — color palette / food-blog style anchor.
-      // Only ONE ref (not 2) for step N≥2 to minimize the risk of Flow
-      // "jumping ahead" to the finished dish on mid-cooking steps.
-      const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
-      if (pinterestRefs.length > 0) {
-        contextPaths.push(...pinterestRefs);
-        refRoles.push(`a Pinterest photo of the FINISHED dish — use ONLY for the dish's typical color palette, garnish style, and food-blog look. DO NOT copy this composition or render the finished plate — this is step ${idx + 1} of the cooking process, the food is still mid-cooking`);
-        Logger.info(`[Step ${idx + 1}] 1 Pinterest finished-dish ref attached (lowest weight, palette/style anchor only)`);
-      }
-      // Identity anchor (low-mid weight) — silhouette anchor only
-      const identityAnchors = (state.vgIdentityAnchorRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
-      if (identityAnchors.length > 0 && foodIdentityCanon?.primary_food) {
-        contextPaths.push(...identityAnchors);
-        refRoles.push(`a raw / pre-cook photo of "${foodIdentityCanon.primary_food}" — use this ONLY to anchor the food's silhouette and proportions, never for plating style`);
-        Logger.info(`[Step ${idx + 1}] identity anchor attached: raw "${foodIdentityCanon.primary_food}"`);
-      }
-      // Step N-3 (mid-low weight) — even-earlier-state continuity for color/texture trail.
-      // Skipped when idx < 3.
-      if (idx >= 3) {
-        const prevPrevPrevPath = this._findStepImage(state.steps, idx - 3, outputDir);
-        if (prevPrevPrevPath) {
-          contextPaths.push(prevPrevPrevPath);
-          refRoles.push(`an earlier step (step ${idx - 2}) — use this for color and texture continuity from earlier in the cooking trail, NOT for composition`);
-          Logger.info(`[Step ${idx + 1}] step ${idx - 2} attached as mid-low weight continuity ref (color/texture trail)`);
-        }
-      }
-      // Step N-2 (mid weight) — earlier-state continuity ref for color/texture
-      // Skipped when idx < 2.
-      if (idx >= 2) {
-        const prevPrevPath = this._findStepImage(state.steps, idx - 2, outputDir);
-        if (prevPrevPath) {
-          contextPaths.push(prevPrevPath);
-          refRoles.push(`an earlier step (step ${idx - 1}) — use this for color and texture continuity, NOT for composition (the food has moved since then)`);
-          Logger.info(`[Step ${idx + 1}] step ${idx - 1} attached as mid-weight continuity ref (color/texture)`);
-        }
-      }
-      // Previous step image last (highest weight) — strongest continuity anchor
-      const prevPath = this._findStepImage(state.steps, idx - 1, outputDir);
-      if (prevPath) {
-        contextPaths.push(prevPath);
-        refRoles.push(`the immediately previous step (step ${idx}) — primary continuity anchor for state, container, and composition. Keep the SAME container, same plating, same lighting. Only change what the new step requires`);
-      }
-    } else {
-      // Step 1 — Pinterest hero refs first (lowest weight, style only)
+    // NEW Flow refactor: the BACKGROUND (passed separately to generate) is the
+    // ONLY standing reference. We do NOT attach previous steps / identity anchor
+    // / ingredients as refs anymore — visual continuity (same bowl, plating,
+    // food identity) comes from staying in the SAME Flow chat/project across all
+    // images of the recipe. EXCEPTION: at STEP 1 only, attach the Pinterest refs
+    // ONCE to inspire the dish's color palette / food-blog style; that style then
+    // carries through the chat. This removes the flaky ref-attach/clear logic.
+    if (idx === 0) {
       const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
       if (pinterestRefs.length > 0) {
         contextPaths.push(...pinterestRefs);
-        refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's typical color palette and style. Do NOT copy plating or composition — this is the FIRST cooking step, the food is raw, not finished`);
-        Logger.info(`[Step 1] ${pinterestRefs.length} Pinterest hero refs attached (low weight, style only)`);
-      }
-      // Identity anchor middle (silhouette anchor for canon food)
-      const identityAnchors = (state.vgIdentityAnchorRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
-      if (identityAnchors.length > 0 && foodIdentityCanon?.primary_food) {
-        contextPaths.push(...identityAnchors);
-        refRoles.push(`a raw / pre-cook photo of "${foodIdentityCanon.primary_food}" — use this ONLY to anchor the food's silhouette and proportions, never for plating style`);
-        Logger.info(`[Step 1] identity anchor attached: raw "${foodIdentityCanon.primary_food}"`);
-      }
-      // Ingredients flatlay LAST (highest weight) — same surface, same lighting, correct raw ingredients
-      const ingredientsPath = join(outputDir, FILENAMES.ingredients);
-      if (existsSync(ingredientsPath)) {
-        contextPaths.push(ingredientsPath);
-        refRoles.push(`the ingredients flat-lay — use this for the EXACT marble surface texture, the EXACT lighting direction and softness, and the EXACT visual identity of the raw ingredients`);
-        Logger.info('[Step 1] ingredients flatlay attached LAST (highest weight) — surface/lighting anchor');
+        refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's typical color palette and food-blog style. Do NOT copy plating or composition — this is the FIRST cooking step, the food is raw`);
+        Logger.info(`[Step 1] ${pinterestRefs.length} Pinterest refs attached ONCE for inspiration; later steps rely on chat continuity + background only`);
       }
     }
+    // idx > 0: no image refs — background only; continuity comes from the same Flow chat/project.
 
     // Now build the prompt with refRoles so the prose can label each ref explicitly
     const prompt = buildStepPrompt(visualStep, vgSettings, { isLastStep, foodIdentityCanon, refRoles, firstStep: idx === 0 });
@@ -1138,32 +1088,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const contextPaths = [];
     const refRoles = [];
 
-    const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
-    if (pinterestRefs.length > 0) {
-      contextPaths.push(...pinterestRefs);
-      refRoles.push(`Pinterest reference photos of the finished dish — use these for the canonical color palette, garnish style, and overall food-blog look this dish is known for`);
-      Logger.info(`[Hero] using ${pinterestRefs.length} Pinterest refs as visual style anchor`);
-    }
-
-    // Middle step ref — recipe-trajectory continuity for 3+ step recipes
-    if (state.steps?.length >= 3) {
-      const midIdx = Math.floor(state.steps.length / 2);
-      const midStepPath = this._findStepImage(state.steps, midIdx, outputDir);
-      if (midStepPath && !contextPaths.includes(midStepPath)) {
-        contextPaths.push(midStepPath);
-        refRoles.push(`a mid-recipe step image — use this for ingredient continuity (the food in the hero must look like the SAME ingredients shown cooking earlier, not random substitutes)`);
-        Logger.info(`[Hero] middle step ${midIdx + 1} attached as recipe-trajectory ref`);
-      }
-    }
-
-    // Last step / serving (highest weight) — most direct continuity anchor
-    if (state.steps?.length > 0) {
-      const lastStepPath = this._findStepImage(state.steps, state.steps.length - 1, outputDir);
-      if (lastStepPath) {
-        contextPaths.push(lastStepPath);
-        refRoles.push(`the serving / final step image — primary continuity anchor: the hero shows the SAME finished food, possibly from a slightly different angle, same plate, same garnish, same lighting`);
-      }
-    }
+    // NEW Flow refactor: hero uses the BACKGROUND only (passed separately). No
+    // image refs — the hero is generated in the SAME Flow chat as all the steps,
+    // so continuity (same finished dish, plate, garnish, lighting) comes from the
+    // conversation context, not from re-attaching the last/mid step images.
 
     // Now build the hero prompt with the refRoles labels embedded
     const prompt = buildHeroPrompt(heroState, vgSettings, { foodIdentityCanon, refRoles });
