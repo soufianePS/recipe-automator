@@ -2123,6 +2123,38 @@
 
   </div>
 
+  <!-- ============================================================== -->
+  <!-- SITE CONFIG DRAWER (per-site control tower)                     -->
+  <!-- ============================================================== -->
+  <div id="siteConfigOverlay" class="scfg-overlay" onclick="closeSiteConfig(event)">
+    <aside class="scfg-drawer" onclick="event.stopPropagation()">
+      <header class="scfg-header">
+        <div class="scfg-titlewrap">
+          <div class="scfg-title">Configure <span id="scfgSiteName">site</span></div>
+          <div class="scfg-sub" id="scfgSiteDomain"></div>
+        </div>
+        <button class="scfg-close" onclick="closeSiteConfig()" title="Close">&times;</button>
+      </header>
+
+      <div class="scfg-toolbar">
+        <span class="scfg-toolbar-label">&#10024; Generate from another site:</span>
+        <select id="scfgCopyFrom" class="scfg-copyselect"><option value="">— choose a site —</option></select>
+        <button class="btn btn-secondary btn-sm" onclick="scfgCopyFromSite()">Copy config</button>
+        <span class="scfg-toolbar-hint">(copies everything except this site's name &amp; WordPress credentials)</span>
+      </div>
+
+      <div class="scfg-body" id="scfgBody">
+        <div class="scfg-loading">Loading…</div>
+      </div>
+
+      <footer class="scfg-footer">
+        <span id="scfgStatus" class="scfg-status"></span>
+        <button class="btn btn-secondary" onclick="closeSiteConfig()">Cancel</button>
+        <button class="btn btn-start" onclick="saveSiteConfig()">Save changes</button>
+      </footer>
+    </aside>
+  </div>
+
   <!-- Toast container -->
   <div id="toastContainer" class="toast-container"></div>
 

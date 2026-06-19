@@ -2275,7 +2275,8 @@
             '</div>' +
           '</div>' +
           '<div class="site-card-actions">' +
-            (!isActive ? '<button class="btn-switch" onclick="switchSite(\'' + s + '\')">Switch</button>' : '') +
+            '<button class="btn-switch" onclick="openSiteConfig(\'' + s + '\')">&#9881; Configure</button>' +
+            (!isActive ? '<button class="btn-outline-secondary" onclick="switchSite(\'' + s + '\')">Switch</button>' : '') +
             '<button class="btn-outline-secondary" onclick="duplicateSiteUI(\'' + s + '\')">Duplicate</button>' +
             '<a href="/api/sites/' + s + '/export" class="btn-outline-secondary" style="text-decoration:none;display:inline-flex;align-items:center;">Export</a>' +
             (!isActive && sites.length > 1 ? '<button class="btn-outline-danger" onclick="deleteSiteUI(\'' + s + '\')">Delete</button>' : '') +
@@ -3008,3 +3009,178 @@
         e.target.textContent = orig;
       }
     });
+
+
+    // ================================================================
+    // SITE CONFIG DRAWER — per-site control tower. Edit ANY site's
+    // settings.json without switching the active site. Data-driven so
+    // every per-site setting is described in one schema.
+    // ================================================================
+    const SITE_CONFIG_SCHEMA = [
+      { group: 'WordPress', fields: [
+        { key: 'siteName', label: 'Display name', type: 'text', identity: true },
+        { key: 'wpUrl', label: 'WordPress URL', type: 'text', identity: true, placeholder: 'https://example.com' },
+        { key: 'wpUsername', label: 'WP username', type: 'text', identity: true },
+        { key: 'wpAppPassword', label: 'WP application password', type: 'password', identity: true },
+        { key: 'wpCategories', label: 'Categories (comma-separated)', type: 'text' },
+        { key: 'recipeCardPlugin', label: 'Recipe card plugin', type: 'select', options: ['wprm', 'tasty-recipes'] },
+      ]},
+      { group: 'Google Sheets', fields: [
+        { key: 'sheetId', label: 'Spreadsheet ID', type: 'text' },
+        { key: 'generatorSheetTab', label: 'Generator tab', type: 'text' },
+        { key: 'scraperSheetTab', label: 'Scraper tab', type: 'text' },
+        { key: 'appsScriptUrl', label: 'Apps Script URL', type: 'text' },
+      ]},
+      { group: 'AI & Images', fields: [
+        { key: 'aiProvider', label: 'Recipe JSON AI', type: 'select', options: ['gemini', 'chatgpt'] },
+        { key: 'nutritionApiKey', label: 'Nutrition API key', type: 'password' },
+        { key: 'heroAspectRatio', label: 'Hero aspect ratio', type: 'text' },
+        { key: 'stepAspectRatio', label: 'Step aspect ratio', type: 'text' },
+        { key: 'ingredientAspectRatio', label: 'Ingredients aspect ratio', type: 'text' },
+      ]},
+      { group: 'Pinterest & Pins', fields: [
+        { key: 'pinterestEnabled', label: 'Pinterest pins enabled', type: 'checkbox' },
+        { key: 'pinGenerator', label: 'Pin image generator', type: 'select', options: ['chatgpt', 'flow'] },
+        { key: 'chatgptPin.profilePath', label: 'ChatGPT pin profile path', type: 'text', hint: 'Leave empty = data/chatgpt-pin-profile (recommended)' },
+        { key: 'pinterestAspectRatio', label: 'Pin aspect ratio', type: 'text' },
+      ]},
+      { group: 'Verified Generator', fields: [
+        { key: 'verifiedGenerator.minVisualSteps', label: 'Min steps', type: 'number' },
+        { key: 'verifiedGenerator.maxVisualSteps', label: 'Max steps', type: 'number' },
+        { key: 'verifiedGenerator.maxVerificationRetries', label: 'Max verify retries', type: 'number' },
+        { key: 'verifiedGenerator.defaultContainer', label: 'Default container', type: 'text' },
+      ]},
+    ];
+
+    let scfgSite = null, scfgData = null, scfgDirty = false;
+
+    function scfgGet(obj, path) {
+      return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+    }
+    function scfgSet(obj, path, val) {
+      const parts = path.split('.');
+      let o = obj;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (o[parts[i]] == null || typeof o[parts[i]] !== 'object') o[parts[i]] = {};
+        o = o[parts[i]];
+      }
+      o[parts[parts.length - 1]] = val;
+    }
+    function setScfgStatus(msg, cls) {
+      const el = document.getElementById('scfgStatus');
+      if (el) { el.textContent = msg; el.className = 'scfg-status' + (cls ? ' ' + cls : ''); }
+    }
+
+    async function openSiteConfig(site) {
+      scfgSite = site; scfgDirty = false;
+      document.getElementById('scfgSiteName').textContent = site;
+      document.getElementById('scfgSiteDomain').textContent = '';
+      document.getElementById('scfgBody').innerHTML = '<div class="scfg-loading">Loading...</div>';
+      setScfgStatus('', '');
+      document.getElementById('siteConfigOverlay').classList.add('open');
+      try {
+        const sitesResp = await fetch('/api/sites').then(r => r.json());
+        const sel = document.getElementById('scfgCopyFrom');
+        sel.innerHTML = '<option value="">-- choose a site --</option>' +
+          (sitesResp.sites || []).filter(s => s !== site)
+            .map(s => '<option value="' + s + '">' + escapeHtml(s) + '</option>').join('');
+      } catch (e) {}
+      try {
+        const resp = await fetch('/api/sites/' + encodeURIComponent(site) + '/settings');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        scfgData = await resp.json();
+        document.getElementById('scfgSiteDomain').textContent = extractDomain(scfgData.wpUrl) || '';
+        renderScfg();
+      } catch (e) {
+        document.getElementById('scfgBody').innerHTML = '<div class="scfg-loading" style="color:#f88;">Failed to load: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+    window.openSiteConfig = openSiteConfig;
+
+    function renderScfg() {
+      const body = document.getElementById('scfgBody');
+      body.innerHTML = SITE_CONFIG_SCHEMA.map(group => {
+        const fields = group.fields.map(f => {
+          const val = scfgGet(scfgData, f.key);
+          const id = 'scfg_' + f.key.replace(/\./g, '_');
+          if (f.type === 'checkbox') {
+            return '<div class="scfg-field scfg-check"><input type="checkbox" id="' + id + '" ' +
+              (val ? 'checked' : '') + ' onchange="scfgOnChange(\'' + f.key + '\',\'checkbox\',this)">' +
+              '<label for="' + id + '">' + f.label + '</label></div>';
+          }
+          let input;
+          if (f.type === 'select') {
+            input = '<select id="' + id + '" onchange="scfgOnChange(\'' + f.key + '\',\'select\',this)">' +
+              f.options.map(o => '<option value="' + o + '" ' + (String(val) === o ? 'selected' : '') + '>' + o + '</option>').join('') +
+              '</select>';
+          } else {
+            const safe = val == null ? '' : String(val).replace(/"/g, '&quot;');
+            input = '<input type="' + f.type + '" id="' + id + '" value="' + safe + '" placeholder="' + (f.placeholder || '') +
+              '" oninput="scfgOnChange(\'' + f.key + '\',\'' + f.type + '\',this)">';
+          }
+          return '<div class="scfg-field"><label for="' + id + '">' + f.label + '</label>' + input +
+            (f.hint ? '<div class="scfg-hint">' + f.hint + '</div>' : '') + '</div>';
+        }).join('');
+        return '<div class="scfg-group"><div class="scfg-group-title">' + group.group + '</div>' + fields + '</div>';
+      }).join('');
+    }
+
+    function scfgOnChange(key, type, el) {
+      let v;
+      if (type === 'checkbox') v = el.checked;
+      else if (type === 'number') v = el.value === '' ? '' : Number(el.value);
+      else v = el.value;
+      scfgSet(scfgData, key, v);
+      scfgDirty = true;
+      setScfgStatus('Unsaved changes', 'dirty');
+    }
+    window.scfgOnChange = scfgOnChange;
+
+    function closeSiteConfig() {
+      if (scfgDirty && !confirm('Discard unsaved changes?')) return;
+      document.getElementById('siteConfigOverlay').classList.remove('open');
+      scfgSite = null; scfgData = null; scfgDirty = false;
+    }
+    window.closeSiteConfig = closeSiteConfig;
+
+    async function saveSiteConfig() {
+      if (!scfgSite || !scfgData) return;
+      setScfgStatus('Saving...', '');
+      try {
+        const resp = await fetch('/api/sites/' + encodeURIComponent(scfgSite) + '/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scfgData)
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'HTTP ' + resp.status);
+        scfgDirty = false;
+        setScfgStatus('Saved', 'ok');
+        toast('Settings saved for ' + scfgSite, 'success');
+        siteSettingsCache = {};
+        settingsLoaded = false;
+        loadSites();
+      } catch (e) {
+        setScfgStatus('Error: ' + e.message, 'err');
+      }
+    }
+    window.saveSiteConfig = saveSiteConfig;
+
+    async function scfgCopyFromSite() {
+      const src = document.getElementById('scfgCopyFrom').value;
+      if (!src) { toast('Choose a site to copy from', 'warning'); return; }
+      if (!confirm('Copy all settings from "' + src + '" into "' + scfgSite + '"? This keeps this site name and WP credentials.')) return;
+      try {
+        const other = await fetch('/api/sites/' + encodeURIComponent(src) + '/settings').then(r => r.json());
+        const identityKeys = SITE_CONFIG_SCHEMA.flatMap(g => g.fields).filter(f => f.identity).map(f => f.key);
+        const keep = {};
+        for (const k of identityKeys) keep[k] = scfgGet(scfgData, k);
+        scfgData = Object.assign({}, other);
+        for (const k of identityKeys) scfgSet(scfgData, k, keep[k]);
+        scfgDirty = true;
+        renderScfg();
+        setScfgStatus('Copied from ' + src + ' -- review, then Save', 'dirty');
+      } catch (e) {
+        setScfgStatus('Copy failed: ' + e.message, 'err');
+      }
+    }
+    window.scfgCopyFromSite = scfgCopyFromSite;

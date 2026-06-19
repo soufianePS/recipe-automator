@@ -102,6 +102,27 @@ export function setupRoutes(app, ctx) {
     res.json(VERIFIED_GENERATOR_DEFAULTS.prompts);
   });
 
+  // ── Per-site settings (control tower) — read/write ANY site's settings.json
+  // without making it the active site. Powers the "Configure" panel on Sites.
+  app.get('/api/sites/:name/settings', async (req, res) => {
+    try {
+      const settings = await StateManager.getSettingsForSite(req.params.name);
+      res.json(settings);
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sites/:name/settings', async (req, res) => {
+    try {
+      await StateManager.saveSettingsForSite(req.params.name, req.body || {});
+      Logger.info(`Settings saved for site "${req.params.name}"`);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   // List of all available list-marker styles (for dashboard dropdown)
   app.get('/api/list-styles', (req, res) => {
     res.json({ options: getListStyleOptions() });

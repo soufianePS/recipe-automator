@@ -382,6 +382,20 @@ export const StateManager = {
     await writeJSON(siteFile('settings.json'), { ...current, ...settings });
   },
 
+  // --- Settings for an ARBITRARY site (control-tower editing, no active switch) ---
+  async getSettingsForSite(siteName) {
+    if (!siteName) throw new Error('siteName required');
+    return readJSON(join(getSiteDir(siteName), 'settings.json'), defaultSettings());
+  },
+
+  async saveSettingsForSite(siteName, settings) {
+    if (!siteName) throw new Error('siteName required');
+    const dir = getSiteDir(siteName);
+    if (!existsSync(dir)) throw new Error(`Unknown site: ${siteName}`);
+    const current = await this.getSettingsForSite(siteName);
+    await writeJSON(join(dir, 'settings.json'), { ...current, ...settings });
+  },
+
   // --- Image data (per-site) ---
   async storeImageData(key, base64Data) {
     const imgDir = getImagesDir();
