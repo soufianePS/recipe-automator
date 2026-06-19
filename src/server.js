@@ -17,7 +17,6 @@ import { FlowAccountManager } from './shared/utils/flow-account-manager.js';
 import { Logger } from './shared/utils/logger.js';
 import { History } from './shared/utils/history.js';
 import { setupRoutes } from './routes.js';
-import { RegenScheduler } from './modules/regen/regen-scheduler.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -168,9 +167,6 @@ setupRoutes(app, ctx);
 app.listen(PORT, () => {
   Logger.info(`Recipe Automator server running at http://localhost:${PORT}`);
   Logger.info('Open the dashboard in your browser to configure and start automation.');
-  // Background tick for scheduled regen drips — DISABLED on user request.
-  // To re-enable: uncomment the line below.
-  // RegenScheduler.init(ctx);
 
   // Arm the planifier ticks now that ctx is fully built.
   // - weekly tick: regenerates J→J+horizon every Sunday

@@ -9,12 +9,8 @@ import { WordPressAPI } from './shared/utils/wordpress-api.js';
 import { Logger } from './shared/utils/logger.js';
 import { History } from './shared/utils/history.js';
 import { FlowAccountManager } from './shared/utils/flow-account-manager.js';
-import { GeneratorOrchestrator } from './modules/generator/orchestrator.js';
 import { ScraperOrchestrator } from './modules/scraper/orchestrator.js';
 import { VerifiedGeneratorOrchestrator } from './modules/verified-generator/orchestrator.js';
-import { GeminiVisualOrchestrator } from './modules/gemini-visual/orchestrator.js';
-import { RegenOrchestrator } from './modules/regen/regen-orchestrator.js';
-import { RegenScheduler } from './modules/regen/regen-scheduler.js';
 import { Planifier } from './modules/planifier/planifier.js';
 import { SitesConfig } from './shared/utils/sites-config.js';
 import { PinCampaigns } from './shared/utils/pin-campaigns.js';
@@ -104,79 +100,6 @@ export function setupRoutes(app, ctx) {
 
   app.get('/api/vg-default-prompts', (req, res) => {
     res.json(VERIFIED_GENERATOR_DEFAULTS.prompts);
-  });
-
-  // ── Gemini Visual: independent prompt + settings + voice list ──
-
-  app.get('/api/gv-prompt', async (req, res) => {
-    try {
-      const { describeBaseTemplate } = await import('./modules/gemini-visual/prompts-gv.js');
-      const settings = await StateManager.getSettings();
-      const result = describeBaseTemplate(settings);
-      // result.source: 'gv' = GV custom override, 'vg' = inherited from VG custom, 'default' = built-in
-      res.json({
-        prompt: result.template,
-        source: result.source,
-        isCustomized: result.source !== 'default',
-      });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/gv-prompt', async (req, res) => {
-    try {
-      const { prompt } = req.body || {};
-      if (typeof prompt !== 'string' || prompt.length < 100) {
-        return res.status(400).json({ error: 'prompt must be a non-empty string' });
-      }
-      const settings = await StateManager.getSettings();
-      settings.geminiVisual = settings.geminiVisual || {};
-      settings.geminiVisual.prompts = settings.geminiVisual.prompts || {};
-      settings.geminiVisual.prompts.recipeVisualPlan = prompt;
-      await StateManager.saveSettings(settings);
-      res.json({ ok: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete('/api/gv-prompt', async (req, res) => {
-    try {
-      const settings = await StateManager.getSettings();
-      if (settings.geminiVisual?.prompts?.recipeVisualPlan) {
-        delete settings.geminiVisual.prompts.recipeVisualPlan;
-        await StateManager.saveSettings(settings);
-      }
-      res.json({ ok: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get('/api/gv-voices', async (req, res) => {
-    try {
-      const { GV_VOICES } = await import('./modules/gemini-visual/voice-pool.js');
-      res.json({ voices: GV_VOICES });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/gv-settings', async (req, res) => {
-    try {
-      const body = req.body || {};
-      const settings = await StateManager.getSettings();
-      settings.geminiVisual = settings.geminiVisual || {};
-      const allowed = ['transformationsOnly', 'whyPerStep', 'maxSteps', 'voiceRotationIndex', 'aiProvider'];
-      for (const key of allowed) {
-        if (key in body) settings.geminiVisual[key] = body[key];
-      }
-      await StateManager.saveSettings(settings);
-      res.json({ ok: true, geminiVisual: settings.geminiVisual });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
   });
 
   // List of all available list-marker styles (for dashboard dropdown)
@@ -557,10 +480,8 @@ export function setupRoutes(app, ctx) {
       Logger.success('Browser launched with your profile');
 
       const OrchestratorClass =
-        mode === 'scrape'         ? ScraperOrchestrator :
-        mode === 'verified'       ? VerifiedGeneratorOrchestrator :
-        mode === 'gemini-visual'  ? GeminiVisualOrchestrator :
-                                    GeneratorOrchestrator;
+        mode === 'scrape' ? ScraperOrchestrator
+                          : VerifiedGeneratorOrchestrator;  // default = verified
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
@@ -573,116 +494,6 @@ export function setupRoutes(app, ctx) {
       });
     } catch (e) {
       ctx.automationRunning = false;
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // ── Regen: rewrite text of existing posts via the patched VG prompt ──
-  // Body: { postIds: number[], dryRun?: boolean }
-  // dryRun=true (default) writes proposed HTML to output/regen/post-<id>.html.
-  // dryRun=false PUTs the new content to WP and replaces the post body.
-  app.post('/api/start-regen', async (req, res) => {
-    try {
-      if (ctx.automationRunning) {
-        return res.status(400).json({ error: 'Automation is already running — pause first' });
-      }
-      const postIds = Array.isArray(req.body?.postIds)
-        ? req.body.postIds.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)
-        : [];
-      if (postIds.length === 0) {
-        return res.status(400).json({ error: 'postIds (array of WP post IDs) is required' });
-      }
-      const dryRun = req.body?.dryRun !== false; // default TRUE — safety
-
-      const settings = await StateManager.getSettings();
-      if (!settings.wpUrl || !settings.wpUsername || !settings.wpAppPassword) {
-        return res.status(400).json({ error: 'WordPress credentials are not configured' });
-      }
-
-      Logger.info(`=== Regen: ${postIds.length} post(s) ${dryRun ? '(DRY-RUN)' : '(LIVE)'} ===`);
-      for (const id of postIds) Logger.info(`  → post ${id}`);
-
-      await StateManager.resetState();
-      await StateManager.updateState({
-        status: STATES.LOADING_JOB,
-        regenMode: true,
-        regenQueue: postIds,
-        regenDryRun: dryRun,
-        regenStartedAt: Date.now()
-      });
-
-      Logger.info('Launching browser...');
-      try {
-        let profileOverride = null;
-        if (await FlowAccountManager.isEnabled()) {
-          const account = await FlowAccountManager.getActiveAccount();
-          if (account) profileOverride = FlowAccountManager.getProfileDir(account);
-        }
-        await ctx.launchBrowserWithProfile(profileOverride);
-      } catch (launchErr) {
-        return res.status(500).json({ error: `Browser launch failed: ${launchErr.message}` });
-      }
-
-      ctx.orchestrator = new RegenOrchestrator(null, ctx.browserContext, ctx);
-      ctx.automationRunning = true;
-      ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
-
-      res.json({
-        ok: true,
-        message: `Regen started: ${postIds.length} post(s) ${dryRun ? '(DRY-RUN)' : '(LIVE)'}`,
-        postIds,
-        dryRun
-      });
-    } catch (e) {
-      ctx.automationRunning = false;
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // ── Regen Scheduler: drip post regen at natural-looking intervals ──
-  // Body: { postIds: number[], spreadDays?: number (default 21), dailyMax?: number (default 3) }
-  app.post('/api/start-regen-scheduled', async (req, res) => {
-    try {
-      const postIds = Array.isArray(req.body?.postIds)
-        ? req.body.postIds.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)
-        : [];
-      if (postIds.length === 0) {
-        return res.status(400).json({ error: 'postIds (array of WP post IDs) is required' });
-      }
-      const spreadDays = Number(req.body?.spreadDays) || Math.max(7, Math.ceil(postIds.length / 1.5));
-      const dailyMax = Number(req.body?.dailyMax) || 3;
-
-      const result = await RegenScheduler.schedulePosts(postIds, { spreadDays, dailyMax });
-      Logger.info(`=== Regen Scheduler: ${postIds.length} post(s) over ~${spreadDays} days, max ${dailyMax}/day ===`);
-      res.json({ ok: true, ...result, spreadDays, dailyMax });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get('/api/regen-schedule', async (req, res) => {
-    try {
-      const schedule = await RegenScheduler.getSchedule();
-      const summary = {
-        total: schedule.items.length,
-        pending: schedule.items.filter(i => i.status === 'pending').length,
-        done: schedule.items.filter(i => i.status === 'done').length,
-        errors: schedule.items.filter(i => i.status === 'error').length,
-        inProgress: schedule.items.filter(i => i.status === 'in_progress').length,
-        firstDue: schedule.items.find(i => i.status === 'pending')?.scheduledAt,
-        lastDue: schedule.items.filter(i => i.status === 'pending').slice(-1)[0]?.scheduledAt,
-      };
-      res.json({ ok: true, summary, schedule });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete('/api/regen-schedule', async (req, res) => {
-    try {
-      const result = await RegenScheduler.clearPending();
-      res.json({ ok: true, ...result });
-    } catch (e) {
       res.status(500).json({ error: e.message });
     }
   });
@@ -1804,10 +1615,8 @@ export function setupRoutes(app, ctx) {
 
       const settings = await StateManager.getSettings();
       const OrchestratorClass =
-        settings.mode === 'scrape'         ? ScraperOrchestrator :
-        settings.mode === 'verified'       ? VerifiedGeneratorOrchestrator :
-        settings.mode === 'gemini-visual'  ? GeminiVisualOrchestrator :
-                                             GeneratorOrchestrator;
+        settings.mode === 'scrape' ? ScraperOrchestrator
+                                   : VerifiedGeneratorOrchestrator;  // default = verified
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
