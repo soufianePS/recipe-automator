@@ -65,10 +65,10 @@
 
       // Load data for specific pages
       if (page === 'dashboard') loadDashboardData();
-      if ((page === 'settings' || page === 'verified' || page === 'gemini-visual') && !settingsLoaded) { loadSettings(); settingsLoaded = true; }
+      if ((page === 'settings' || page === 'verified') && !settingsLoaded) { loadSettings(); settingsLoaded = true; }
       if (page === 'verified') { loadVGStats(); if (settingsLoaded) loadVGPrompts(); }
       if (page === 'sites') loadSites();
-      if (page === 'generator' || page === 'scraper' || page === 'verified' || page === 'gemini-visual') { checkLoginStatus(); loadAiProvider(); }
+      if (page === 'scraper' || page === 'verified') { checkLoginStatus(); loadAiProvider(); }
     }
 
     // Listen for hash changes
@@ -227,15 +227,13 @@
       } catch {}
 
       // Fetch logs for active pages
-      if (currentPage === 'generator' || currentPage === 'scraper' || currentPage === 'verified' || currentPage === 'gemini-visual') {
+      if (currentPage === 'scraper' || currentPage === 'verified') {
         try {
           const resp = await fetch('/api/logs');
           if (!resp.ok) return;
           const logs = await resp.json();
-          updateActivityFeed('genActivityFeed', logs);
           updateActivityFeed('scrActivityFeed', logs);
           updateActivityFeed('vgActivityFeed', logs);
-          updateActivityFeed('gvActivityFeed', logs);
         } catch {}
       }
     }
@@ -2634,179 +2632,6 @@
       if (tab === 'settings') loadSettings();
     }
     window.showVGTab = showVGTab;
-
-    // ================================================================
-    // GV DASHBOARD — Independent tabs, prompt editor, settings
-    // ================================================================
-    function showGVTab(tab) {
-      ['overview', 'prompts', 'settings'].forEach(t => {
-        const panel = document.getElementById('gvPanel' + t.charAt(0).toUpperCase() + t.slice(1));
-        const btn = document.getElementById('gvTab' + t.charAt(0).toUpperCase() + t.slice(1));
-        if (panel) panel.style.display = (t === tab) ? '' : 'none';
-        if (btn) btn.style.background = (t === tab) ? '#6750a4' : '#333';
-      });
-      if (tab === 'prompts') loadGVPrompt();
-      if (tab === 'settings') loadGVSettings();
-    }
-    window.showGVTab = showGVTab;
-
-    async function loadGVPrompt() {
-      try {
-        const resp = await fetch('/api/gv-prompt');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        document.getElementById('gvPromptRecipe').value = data.prompt || '';
-        const statusEl = document.getElementById('gvPromptStatus');
-        if (data.source === 'gv') {
-          statusEl.textContent = 'Source: GV-specific override (saved). "Reset" falls back to VG / default.';
-          statusEl.style.color = '#ff9800';
-        } else if (data.source === 'vg') {
-          statusEl.textContent = 'Source: inherited from VG dashboard customization. Edit + Save to create a GV-specific override.';
-          statusEl.style.color = '#2196f3';
-        } else {
-          statusEl.textContent = 'Source: built-in default (shared with VG). Edit + Save to create a GV-specific override.';
-          statusEl.style.color = '#888';
-        }
-      } catch (e) {
-        document.getElementById('gvPromptStatus').textContent = 'Failed to load: ' + e.message;
-        document.getElementById('gvPromptStatus').style.color = '#f44336';
-      }
-    }
-    window.loadGVPrompt = loadGVPrompt;
-
-    async function saveGVPrompt() {
-      const prompt = document.getElementById('gvPromptRecipe').value;
-      const statusEl = document.getElementById('gvPromptStatus');
-      statusEl.textContent = 'Saving...';
-      statusEl.style.color = '#888';
-      try {
-        const resp = await fetch('/api/gv-prompt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        statusEl.textContent = 'Saved. Will apply on the next recipe.';
-        statusEl.style.color = '#4caf50';
-      } catch (e) {
-        statusEl.textContent = 'Save failed: ' + e.message;
-        statusEl.style.color = '#f44336';
-      }
-    }
-    window.saveGVPrompt = saveGVPrompt;
-
-    async function resetGVPrompt() {
-      if (!confirm('Reset GV prompt to built-in default? Your customizations will be lost.')) return;
-      try {
-        const resp = await fetch('/api/gv-prompt', { method: 'DELETE' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        await loadGVPrompt();
-        document.getElementById('gvPromptStatus').textContent = 'Reset to default.';
-        document.getElementById('gvPromptStatus').style.color = '#4caf50';
-      } catch (e) {
-        document.getElementById('gvPromptStatus').textContent = 'Reset failed: ' + e.message;
-        document.getElementById('gvPromptStatus').style.color = '#f44336';
-      }
-    }
-    window.resetGVPrompt = resetGVPrompt;
-
-    async function loadGVSettings() {
-      try {
-        const [settingsResp, voicesResp] = await Promise.all([
-          fetch('/api/settings').then(r => r.json()),
-          fetch('/api/gv-voices').then(r => r.json()),
-        ]);
-        const gv = settingsResp.geminiVisual || {};
-        // AI provider toggle styling
-        const provider = gv.aiProvider || 'chatgpt';
-        const cgBtn = document.getElementById('gvAiChatgpt');
-        const gmBtn = document.getElementById('gvAiGemini');
-        if (cgBtn) cgBtn.style.background = provider === 'chatgpt' ? '#4caf50' : '#333';
-        if (gmBtn) gmBtn.style.background = provider === 'gemini' ? '#4285f4' : '#333';
-        const sEl = document.getElementById('gvAiProviderStatus');
-        if (sEl) sEl.textContent = `current: ${provider}`;
-
-        document.getElementById('gvTransformationsOnly').checked = gv.transformationsOnly !== false;
-        document.getElementById('gvWhyPerStep').checked = gv.whyPerStep !== false;
-        document.getElementById('gvMaxSteps').value = gv.maxSteps || 5;
-        const idx = gv.voiceRotationIndex || 0;
-        document.getElementById('gvVoiceCurrentIdx').textContent = idx;
-
-        const voices = voicesResp.voices || [];
-        const listEl = document.getElementById('gvVoiceList');
-        listEl.innerHTML = voices.map((v, i) => {
-          const isNext = i === (idx % voices.length);
-          return `<div style="padding:10px 12px;margin-bottom:6px;border-radius:6px;background:${isNext ? 'rgba(103,80,164,0.15)' : 'rgba(255,255,255,0.03)'};border-left:3px solid ${isNext ? '#6750a4' : 'transparent'};">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span style="font-size:11px;color:#666;width:20px;">#${i + 1}</span>
-              <strong style="color:#fff;font-size:13px;">${v.name}</strong>
-              ${isNext ? '<span style="font-size:10px;color:#6750a4;font-weight:600;margin-left:auto;">NEXT</span>' : ''}
-            </div>
-            <div style="font-size:11px;color:#aaa;margin-top:4px;line-height:1.5;">${v.description}</div>
-          </div>`;
-        }).join('');
-      } catch (e) {
-        console.error('loadGVSettings', e);
-      }
-    }
-    window.loadGVSettings = loadGVSettings;
-
-    async function saveGVSettings() {
-      const statusEl = document.getElementById('gvSettingsStatus');
-      statusEl.textContent = 'Saving...';
-      statusEl.style.color = '#888';
-      const body = {
-        transformationsOnly: document.getElementById('gvTransformationsOnly').checked,
-        whyPerStep: document.getElementById('gvWhyPerStep').checked,
-        maxSteps: parseInt(document.getElementById('gvMaxSteps').value, 10) || 5,
-      };
-      try {
-        const resp = await fetch('/api/gv-settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        statusEl.textContent = 'Saved.';
-        statusEl.style.color = '#4caf50';
-      } catch (e) {
-        statusEl.textContent = 'Save failed: ' + e.message;
-        statusEl.style.color = '#f44336';
-      }
-    }
-    window.saveGVSettings = saveGVSettings;
-
-    async function setGVAiProvider(provider) {
-      try {
-        const resp = await fetch('/api/gv-settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ aiProvider: provider }),
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        await loadGVSettings();
-        toast('GV recipe AI: ' + provider, 'success');
-      } catch (e) {
-        toast('Failed: ' + e.message, 'error');
-      }
-    }
-    window.setGVAiProvider = setGVAiProvider;
-
-    async function resetGVVoiceIndex() {
-      if (!confirm('Reset voice rotation to start with the first voice?')) return;
-      try {
-        const resp = await fetch('/api/gv-settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ voiceRotationIndex: 0 }),
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        await loadGVSettings();
-      } catch (e) {
-        alert('Reset failed: ' + e.message);
-      }
-    }
-    window.resetGVVoiceIndex = resetGVVoiceIndex;
 
     async function loadVGStats() {
       try {
