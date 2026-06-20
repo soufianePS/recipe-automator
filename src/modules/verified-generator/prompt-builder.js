@@ -64,6 +64,18 @@ function buildRefRolesParagraph(refRoles) {
   return `${refRoles.length} reference images are attached, in order from first to last attached: ${numbered.join('; ')}. Use each reference for its specific purpose only — do not blend the roles.`;
 }
 
+// Explicit continuity header for follow-up images in the SAME Flow chat.
+// The new Flow remembers the conversation, so we tell it to keep the previous
+// image's scene and only change what the step requires.
+function buildStepContinuitySentence(container) {
+  const c = container || 'container';
+  return `Continuity: this is the NEXT image in the same recipe, generated right after the previous image in this same chat. Keep the EXACT same ${c}, the same plating and arrangement, and the same marble counter and window lighting as the previous image — it must look like the same scene a moment later. Change ONLY what the step below requires.`;
+}
+
+function buildHeroContinuitySentence() {
+  return `Continuity: this hero shot is generated right after the final cooking step in the same chat. It shows the SAME finished dish as the previous image — same food identity, same colors, same kitchen surface and window light — just presented as the most beautiful final shot, possibly from a slightly different angle.`;
+}
+
 function buildCompositionSentence(comp) {
   if (!comp || typeof comp !== 'object') return '';
   const parts = [];
@@ -114,6 +126,10 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
     ? `Photorealistic food photography — the serving shot of a finished dish. Natural homemade iPhone-style kitchen photo, not a commercial studio shot.`
     : `Photorealistic food photography — natural homemade iPhone-style kitchen photo, not a commercial studio shot.`;
 
+  // ── 1b. Continuity header — only for follow-up steps (the chat remembers
+  //        the previous image; step 1 establishes the scene instead). ──
+  const continuityPara = opts.firstStep ? '' : buildStepContinuitySentence(container);
+
   // ── 2. Main scene paragraph ──
   const mainScene = [
     `The scene shows ${container} on a marble counter, captured from a ${camera} angle under soft natural daylight from a kitchen window.`,
@@ -150,7 +166,7 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
   // ── 8. Critical constraints (only proven-effective negatives) ──
   const criticalPara = `Critical: only the ${container} sits on the marble counter — the surface around it is completely bare, with no stray berries, herbs, crumbs, droplets, slices, or scattered ingredients of any kind on the surface. All food is inside the ${container}. No text, no watermark, no logo.`;
 
-  return [opening, mainScene, identityPara, compositionPara, stylePara, referencePara, refRolesPara, criticalPara]
+  return [opening, continuityPara, mainScene, identityPara, compositionPara, stylePara, referencePara, refRolesPara, criticalPara]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -210,6 +226,9 @@ export function buildHeroPrompt(heroState, vgSettings, opts = {}) {
   // ── 1. Opening: hero declaration + subject ──
   const opening = `Photorealistic food photography — the hero shot of the finished recipe. Natural homemade style on a real home kitchen counter, not a commercial studio shoot. This is the most beautiful, magazine-cover-worthy photo of the entire recipe.`;
 
+  // ── 1b. Continuity header — the hero follows the last step in the same chat. ──
+  const continuityPara = buildHeroContinuitySentence();
+
   // ── 2. Scene paragraph ──
   const mainScene = `The scene shows ${description} in ${container}, captured from a ${camera} angle on a marble counter under soft natural daylight from a kitchen window. ${arrangement}.`;
 
@@ -238,7 +257,7 @@ export function buildHeroPrompt(heroState, vgSettings, opts = {}) {
   // ── 8. Critical constraints ──
   const criticalPara = `Critical: only the plate or serving dish is on the marble counter — the surface around it is completely bare. All food stays on or inside the plate; any garnish sits on the plate edge or directly next to the food on the plate, never scattered on the bare counter. No raw ingredients are visible, only the finished cooked dish. No text, no watermark, no logo.`;
 
-  return [opening, mainScene, identityPara, compositionPara, garnishPara, stylePara, referencePara, refRolesPara, criticalPara]
+  return [opening, continuityPara, mainScene, identityPara, compositionPara, garnishPara, stylePara, referencePara, refRolesPara, criticalPara]
     .filter(Boolean)
     .join('\n\n');
 }
