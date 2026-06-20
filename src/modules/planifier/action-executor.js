@@ -43,6 +43,30 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..', '..', '..');
 
 /**
+ * Derive Pinterest "tagged topics" from a recipe when the sheet has no tags
+ * populated (the recipe generator doesn't write a tags column). Uses the
+ * category + meaningful words from the title + a generic food term. Pinterest
+ * matches these to its interest taxonomy via the tag-search suggestions.
+ */
+function _deriveTags(recipe) {
+  const out = [];
+  const seen = new Set();
+  const add = (t) => {
+    const v = String(t || '').trim().toLowerCase();
+    if (v.length > 2 && !seen.has(v)) { seen.add(v); out.push(v); }
+  };
+  const cat = (recipe?.category || '').trim();
+  if (cat) { add(cat); add(`${cat} recipes`); }
+  const STOP = new Set(['the','a','an','and','with','of','for','to','in','on','best','easy','quick','simple','homemade','recipe','recipes','how','make','your']);
+  const words = String(recipe?.topic || '').toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ').split(/\s+/)
+    .filter(w => w.length > 2 && !STOP.has(w));
+  for (const w of words.slice(0, 3)) add(w);
+  add('food recipes');
+  return out.slice(0, 6);
+}
+
+/**
  * Resolve Dolphin connection settings, preferring planifier global config.
  */
 async function _resolveDolphinSettings() {
@@ -210,12 +234,15 @@ async function runPinterestSession(item, config) {
         Logger.info(`[Executor] Board: "${boardName}" (random — recipe has no category, source=${bSource})`);
       }
 
-      // Tags: pull from sheet (pin column D = tags, comma-separated). Was missing
-      // entirely from this code path → no pin ever got tags via pinterest-session.
-      const tags = (pickedPin.pin.tags || '')
+      // Tags ("tagged topics"): from the sheet (pin tags column) if present.
+      // The recipe generator doesn't write a tags column, so it's usually empty
+      // → DERIVE tags from the recipe (category + title words) so pins never go
+      // up with zero tagged topics.
+      let tags = (pickedPin.pin.tags || '')
         .split(',').map(t => t.trim()).filter(Boolean).slice(0, 10);
       if (tags.length === 0) {
-        Logger.warn(`[Executor] ⚠ pin has no tags in sheet (col tags) — Pinterest pin will go up with zero tags`);
+        tags = _deriveTags(pickedPin.recipe);
+        Logger.info(`[Executor] No sheet tags — derived ${tags.length} from recipe: ${tags.join(', ')}`);
       }
 
       // Convert the WP admin edit URL into a public-facing redirect URL.
