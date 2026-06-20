@@ -94,7 +94,7 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
   const targetMinutes = rand(bb.sessionMinutesMin ?? 3, bb.sessionMinutesMax ?? 20);
   const targetSeconds = targetMinutes * 60;
   // Per-session save budget — often 0 (so "sometimes no saves"); capped 0..max
-  const saveBudget = randInt(0, bb.maxSavesPerSession ?? 3);
+  const saveBudget = randInt(0, bb.maxSavesPerSession ?? 5);
 
   // ── Beat implementations (function declarations → mutually hoisted) ──
   function scrollBeat(totalSec, label) {
@@ -139,7 +139,7 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
       keyword = forced.title; recipeCategory = (forced.category || '').trim(); isRecipe = true;
       counters.recipeSearches++;
     } else {
-      const useRecipe = recipesWithCategory.length > 0 && chance(bb.recipeSearchShare ?? 80);
+      const useRecipe = recipesWithCategory.length > 0 && chance(bb.recipeSearchShare ?? 92);
       if (useRecipe) {
         // ONLY recipes that have a category — never a blank-category recipe.
         const r = pick(recipesWithCategory);
@@ -159,7 +159,7 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
     // probabilistic. The save board hint IS the category; the executor saves to
     // any board whose name CONTAINS it (e.g. category "Dinner" → board
     // "Best Dinner Family"). For the target, save == the same board we post to.
-    if (isTarget || chance(bb.searchPinClickAfterProbability ?? 65)) {
+    if (isTarget || chance(bb.searchPinClickAfterProbability ?? 90)) {
       counters.closeups++;
       push(ACTIONS.CLOSEUP, 'Open a search-result pin', rand(2, 4));
       push(ACTIONS.WAIT, 'Read the result', longRead(), { reading: true });
@@ -167,7 +167,7 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
         counters.zooms++;
         push(ACTIONS.ZOOM, 'Zoom into the result image', rand(2, 5));
       }
-      const wantSave = isTarget || (counters.saves < saveBudget && chance(bb.savePinProbability ?? 40));
+      const wantSave = isTarget || (counters.saves < saveBudget && chance(bb.savePinProbability ?? 75));
       if (isRecipe && recipeCategory && wantSave) {
         counters.saves++;
         push(ACTIONS.SAVE, `Save to the board containing "${recipeCategory}"${isTarget ? ' (target recipe — same board we post to)' : ''}`,
@@ -201,14 +201,14 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
   function pickBeat() {
     const w = bb.beatWeights || {};
     const pool = [
-      ['scroll', w.scroll ?? 34],
-      ['closeup', w.closeup ?? 24],
-      ['video', w.video ?? 8],
-      ['idle', w.idle ?? 9],
-      ['hesitate', w.hesitate ?? 5],
+      ['scroll', w.scroll ?? 18],
+      ['closeup', w.closeup ?? 18],
+      ['video', w.video ?? 4],
+      ['idle', w.idle ?? 8],
+      ['hesitate', w.hesitate ?? 6],
     ];
-    if (recipes.length || categories.length || manualKeywords.length) pool.push(['search', w.search ?? 15]);
-    if (counters.profileGlances < 1) pool.push(['profile', w.profile ?? 5]);  // at most one profile glance
+    if (recipes.length || categories.length || manualKeywords.length) pool.push(['search', w.search ?? 42]);
+    if (counters.profileGlances < 1) pool.push(['profile', w.profile ?? 4]);  // at most one profile glance
     const total = pool.reduce((s, [, wt]) => s + wt, 0);
     let r = Math.random() * total;
     for (const [name, wt] of pool) { if ((r -= wt) < 0) return name; }

@@ -78,11 +78,17 @@ export const PLANIFIER_DEFAULTS = {
       closeupLingerSecondsMax: 20,
 
       // 3. Save/re-pin after a closeup
-      savePinProbability: 40,         // % chance per closeup
+      savePinProbability: 75,         // % chance to save a searched recipe to its category board
+      maxSavesPerSession: 5,          // cap on saves per session
 
-      // 4. Search keywords
+      // 4. Search — SEARCH-DRIVEN browsing: the session mostly searches SHEET
+      //    recipes (and saves them to their category board), not just feed scroll.
       searchProbability: 60,          // % chance to do a search in the session
-      searchPinClickAfterProbability: 60, // % chance to closeup a result pin
+      searchPinClickAfterProbability: 90, // % chance to open a result pin (so we can save)
+      recipeSearchShare: 92,          // % of searches that target a SHEET recipe (with category)
+
+      // Action mix per browse beat (search dominates; scroll is secondary).
+      beatWeights: { scroll: 18, closeup: 18, search: 42, video: 4, idle: 8, profile: 4, hesitate: 6 },
 
       // 5. Watch a video pin (only fires if one appears in feed)
       videoPlayProbability: 70,
