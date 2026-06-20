@@ -194,8 +194,11 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
   // ── 4. Layout ──
   const layoutPara = `Layout: items are placed organically with asymmetric spacing — some clustered, some with gaps, none perfectly aligned, and they reach near all four edges of the frame to fill the composition. Heights vary: tall standing bottles and boxes alongside flat bowls and whole produce. Sizes vary: a few large plates or wooden boards for the star ingredients, a small number of ceramic ramekins (2–4 maximum) for finely chopped herbs, spices, grated cheese, or pre-diced items. Everything else stays in its whole, packaged, or plated form. ${layoutHint}`.trim();
 
-  // ── 5. Packaging rule ──
-  const packagingPara = `Packaging: every ingredient that comes in a store package (oil bottles, spice shakers, flour bags, sugar boxes, sauce jars, canned goods, butter blocks, cream cheese bricks) shows a realistic, readable brand label printed directly on the physical package — invent believable fake brand names like "Heath Riles BBQ", "GRAZA Oil", or "Great Value Flour". Scooped ingredients (sour cream, shredded cheese, chopped herbs, salt) sit in plain white or ceramic bowls with no label, no sticker, and no brand stamp.`;
+  // ── 5. Container rule (forceful — keeps loose/small items off the bare surface) ──
+  const containerPara = `Container rule (VERY IMPORTANT): every loose, granular, powdered, chopped, grated, or small ingredient MUST sit inside its OWN small white ceramic bowl, ramekin, or clear glass — never loose or scattered on the surface. This includes salt, sugar, flour, baking soda and baking powder, all spices, chopped or minced herbs, grated cheese, seeds, nuts, oats, and small loose fruit such as berries, blueberries, raspberries, or grapes (a small handful goes in a bowl, not on the counter). ONLY naturally self-contained items may rest directly on the surface: whole uncut produce (a whole apple, banana, lemon, onion, tomato, or a few whole eggs in their shells) and sealed store packaging (bottles, jars, boxes, bags, cans, butter blocks). When unsure, put the ingredient in a small bowl.`;
+
+  // ── 6. Packaging rule ──
+  const packagingPara = `Packaging: every ingredient that comes in a store package (oil bottles, spice shakers, flour bags, sugar boxes, sauce jars, canned goods, butter blocks, cream cheese bricks) shows a realistic, readable brand label printed directly on the physical package — invent believable fake brand names like "Heath Riles BBQ", "GRAZA Oil", or "Great Value Flour". Scooped or loose ingredients in bowls (sour cream, shredded cheese, chopped herbs, salt, sugar, berries) sit in plain white or ceramic bowls with no label, no sticker, and no brand stamp.`;
 
   // ── 6. Style anchors ──
   const stylePara = `Camera angle: ${camera}. Style: authentic home-kitchen food-blog aesthetic, warm tones, sharp focus, raw uncooked ingredients only. Lighting matches the reference image — soft diffused daylight from one side, gentle ambient fill, natural shadow length.`;
@@ -203,7 +206,7 @@ export function buildIngredientsPrompt(ingredientsState, vgSettings) {
   // ── 7. Critical constraints (positive where possible) ──
   const criticalPara = `Critical: ingredients are raw and uncooked, never mixed together. No utensils, no cutting boards as separate items (the surface itself is the background). No text overlays, no watermark, no logo — the only text visible is the brand labels printed on actual packaging.`;
 
-  return [opening, framePara, itemsHeader + '\n' + itemsLines, layoutPara, packagingPara, stylePara, criticalPara]
+  return [opening, framePara, itemsHeader + '\n' + itemsLines, layoutPara, containerPara, packagingPara, stylePara, criticalPara]
     .filter(Boolean)
     .join('\n\n');
 }
