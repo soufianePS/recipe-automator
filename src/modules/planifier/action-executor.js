@@ -127,8 +127,13 @@ async function runPinterestSession(item, config) {
     }
   } catch (e) { Logger.warn(`[Executor] categories unavailable: ${e.message}`); }
 
-  // Pre-roll the session (deterministic — what the user previewed)
-  const plan = simulateSession(config, item.site, {}, recipeTitles, { categories, recipes: recipeObjs });
+  // Pre-roll the session (deterministic — what the user previewed).
+  // If we're going to post a pin, tell the simulator to warm up specifically on
+  // THAT recipe (search it + save to its category board) before posting.
+  const targetRecipe = (item.willPost && pickedPin && pickedPin.recipe)
+    ? { title: pickedPin.recipe.topic, category: pickedPin.recipe.category || '' }
+    : null;
+  const plan = simulateSession(config, item.site, {}, recipeTitles, { categories, recipes: recipeObjs, targetRecipe });
   Logger.info(`[Executor] Planned session: ${plan.durationMinutes}min, ${plan.events.length} events, summary=${JSON.stringify(plan.summary)}`);
 
   const { page, cleanup } = await _connectDolphin(Number(profileId));

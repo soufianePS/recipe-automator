@@ -68,6 +68,14 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
   const account = (site.pinterestAccounts || []).find(a => a.status === 'active' || a.status === 'warmup_week_2');
   const boards = account?.boards || [];
 
+  // The exact recipe this session is about to POST (if any). It drives a
+  // guaranteed warm-up: search THAT recipe, open a result, and save it to its
+  // category board — the same board we'll post our own pin to — before posting.
+  const tr = extras.targetRecipe;
+  const targetRecipe = (tr && tr.title && (tr.category || '').trim())
+    ? { title: tr.title, category: (tr.category || '').trim() }
+    : null;
+
   const events = [];
   let t = 0;
   const counters = {
@@ -122,25 +130,36 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
     }
   }
 
-  function searchBeat() {
+  function searchBeat(forced = null) {
     counters.searches++;
-    const useRecipe = recipesWithCategory.length > 0 && chance(bb.recipeSearchShare ?? 80);
+    const isTarget = !!(forced && forced.title);
     let keyword, recipeCategory = '', isRecipe = false;
-    if (useRecipe) {
-      // ONLY recipes that have a category — never a blank-category recipe.
-      const r = pick(recipesWithCategory);
-      keyword = r.title; recipeCategory = (r.category || '').trim(); isRecipe = true;
+    if (isTarget) {
+      // The EXACT recipe we're about to post — deliberate warm-up.
+      keyword = forced.title; recipeCategory = (forced.category || '').trim(); isRecipe = true;
       counters.recipeSearches++;
-    } else if (categories.length) {
-      keyword = pick(categories);
     } else {
-      keyword = pick(manualKeywords) || 'easy recipes';
+      const useRecipe = recipesWithCategory.length > 0 && chance(bb.recipeSearchShare ?? 80);
+      if (useRecipe) {
+        // ONLY recipes that have a category — never a blank-category recipe.
+        const r = pick(recipesWithCategory);
+        keyword = r.title; recipeCategory = (r.category || '').trim(); isRecipe = true;
+        counters.recipeSearches++;
+      } else if (categories.length) {
+        keyword = pick(categories);
+      } else {
+        keyword = pick(manualKeywords) || 'easy recipes';
+      }
     }
-    push(ACTIONS.SEARCH, `Search "${keyword}"${isRecipe ? ' (recipe from sheet)' : ''}`,
-      rand(6, 12), { keyword, isRecipe, recipeCategory });
+    push(ACTIONS.SEARCH, `Search "${keyword}"${isRecipe ? ' (recipe from sheet)' : ''}${isTarget ? ' — TARGET recipe (warm-up before posting)' : ''}`,
+      rand(6, 12), { keyword, isRecipe, recipeCategory, target: isTarget });
     scrollBeat(rand(12, 30), 'Scroll search results');
 
-    if (chance(bb.searchPinClickAfterProbability ?? 65)) {
+    // For the target recipe we ALWAYS open a result and save it; otherwise it's
+    // probabilistic. The save board hint IS the category; the executor saves to
+    // any board whose name CONTAINS it (e.g. category "Dinner" → board
+    // "Best Dinner Family"). For the target, save == the same board we post to.
+    if (isTarget || chance(bb.searchPinClickAfterProbability ?? 65)) {
       counters.closeups++;
       push(ACTIONS.CLOSEUP, 'Open a search-result pin', rand(2, 4));
       push(ACTIONS.WAIT, 'Read the result', longRead(), { reading: true });
@@ -148,14 +167,11 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
         counters.zooms++;
         push(ACTIONS.ZOOM, 'Zoom into the result image', rand(2, 5));
       }
-      // SAVE — only after a recipe search where we KNOW the category, only
-      // while the per-session budget remains. The board hint IS the category;
-      // the executor saves to any board whose name CONTAINS it (case-insensitive),
-      // e.g. category "Dinner" → board "Best Dinner Family". No category → no save.
-      if (isRecipe && recipeCategory && counters.saves < saveBudget && chance(bb.savePinProbability ?? 40)) {
+      const wantSave = isTarget || (counters.saves < saveBudget && chance(bb.savePinProbability ?? 40));
+      if (isRecipe && recipeCategory && wantSave) {
         counters.saves++;
-        push(ACTIONS.SAVE, `Save to the board containing "${recipeCategory}"`,
-          rand(4, 9), { boardHint: recipeCategory });
+        push(ACTIONS.SAVE, `Save to the board containing "${recipeCategory}"${isTarget ? ' (target recipe — same board we post to)' : ''}`,
+          rand(4, 9), { boardHint: recipeCategory, target: isTarget });
       }
       push(ACTIONS.BACK, 'Back to results', rand(1, 3));
     }
@@ -219,6 +235,14 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
 
   // 2. Initial feed scroll
   scrollBeat(rand(bb.initialFeedScrollSecondsMin ?? 15, bb.initialFeedScrollSecondsMax ?? 60), 'Initial feed scroll');
+
+  // 2b. If this session will POST a pin, warm up specifically on THAT recipe
+  // first: search it, open a result, and save it to its category board — the
+  // same board we then post our own pin to. Happens before the main loop and
+  // therefore before the post.
+  if (targetRecipe) {
+    searchBeat(targetRecipe);
+  }
 
   // 3. Main loop — fill the (variable) target duration with weighted beats
   let guard = 0;
