@@ -340,9 +340,11 @@ export const WordPressAPI = {
         }
       }
 
+      // Internal links must point ONLY to PUBLISHED recipes — a draft has no
+      // public URL yet (its ?p=ID / permalink returns 404 for visitors).
       const url = categoryId
-        ? `${wpUrl}/wp-json/wp/v2/posts?categories=${categoryId}&per_page=${limit}&status=publish,draft&orderby=date&order=desc`
-        : `${wpUrl}/wp-json/wp/v2/posts?per_page=${limit}&status=publish,draft&orderby=date&order=desc`;
+        ? `${wpUrl}/wp-json/wp/v2/posts?categories=${categoryId}&per_page=${limit}&status=publish&orderby=date&order=desc`
+        : `${wpUrl}/wp-json/wp/v2/posts?per_page=${limit}&status=publish&orderby=date&order=desc`;
 
       const resp = await fetchWithRetry(url, { headers: { 'Authorization': authHeader } });
       if (!resp.ok) return [];
@@ -351,8 +353,9 @@ export const WordPressAPI = {
         title: p.title?.rendered?.replace(/<[^>]+>/g, '').trim() || '',
         url: p.link || '',
         slug: p.slug || '',
+        status: p.status,
         excerpt: (p.excerpt?.rendered || '').replace(/<[^>]+>/g, '').trim().slice(0, 140)
-      })).filter(p => p.title && p.url);
+      })).filter(p => p.title && p.url && p.status === 'publish' && !/[?&]p=\d/.test(p.url));
     } catch (e) {
       Logger.warn(`[WP] listPostsByCategory failed: ${e.message}`);
     }
