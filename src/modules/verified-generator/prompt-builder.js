@@ -69,7 +69,7 @@ function buildRefRolesParagraph(refRoles) {
 // image's scene and only change what the step requires.
 function buildStepContinuitySentence(container) {
   const c = container || 'container';
-  return `Continuity: this is the NEXT image in the same recipe, generated right after the previous image in this same chat. Keep the EXACT same ${c}, the same plating and arrangement, and the same marble counter and window lighting as the previous image — it must look like the same scene a moment later. Change ONLY what the step below requires.`;
+  return `Continuity: this is the NEXT image in the same recipe, generated right after the previous image in this same chat. Keep the SAME kitchen — same marble counter, same window lighting — and the SAME food identity, colors and texture as the previous image, so it reads as the same cooking session continuing. Use the ${c} for this step: if it is the same vessel as the previous image keep it identical; if this step moves the food to a different vessel (a pan, a wire rack, a plate), show that new vessel naturally. Change only what the step below describes.`;
 }
 
 function buildHeroContinuitySentence() {
