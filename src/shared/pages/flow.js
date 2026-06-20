@@ -823,16 +823,20 @@ export class FlowPage {
       try { await this.page.getByText(label, { exact: false }).first().click({ timeout: 3000 }); } catch (e) { Logger.debug(`[Flow] aspect ${label} not clicked: ${e.message}`); }
       // Image count = 1x (one image per prompt)
       try { await this.page.getByText('1x', { exact: true }).first().click({ timeout: 3000 }); } catch {}
-      // Model = Nano Banana Pro (open the model menu, pick Pro)
+      // Model = this.preferredModel (NOT hardcoded): the orchestrator may have
+      // fallen back to "Nano Banana 2" after Pro failed — forcing Pro here would
+      // undo that fallback on every retry's fresh project.
+      const model = this.preferredModel || 'Nano Banana Pro';
+      const modelRx = /nano banana 2/i.test(model) ? /Nano Banana 2/i : /Nano Banana Pro/i;
       try {
-        await this.page.getByText(/Nano Banana 2|Nano Banana Pro/i).first().click({ timeout: 3000 });
+        await this.page.getByText(/Nano Banana 2|Nano Banana Pro/i).first().click({ timeout: 3000 }); // open menu
         await this._delay(900);
-        await this.page.getByText(/Nano Banana Pro/i).last().click({ timeout: 3000 });
+        await this.page.getByText(modelRx).last().click({ timeout: 3000 });
       } catch (e) { Logger.debug(`[Flow] model select skipped: ${e.message}`); }
       // Save
       try { await this.page.getByRole('button', { name: /Enregistrer/i }).first().click({ timeout: 3000 }); } catch {}
       await this._delay(1200);
-      Logger.info(`[Flow] Agent defaults applied: Never, ${label}, 1x, Nano Banana Pro`);
+      Logger.info(`[Flow] Agent defaults applied: Never, ${label}, 1x, ${model}`);
     } catch (e) {
       Logger.warn(`[Flow] _applyAgentDefaults failed: ${e.message}`);
       try { await this.page.keyboard.press('Escape'); } catch {}
