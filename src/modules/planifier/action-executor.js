@@ -178,7 +178,20 @@ async function runPinterestSession(item, config) {
         };
       }
       Logger.info(`[Executor] Recipe status check: publish ✓`);
-      const imagePath = await _resolveImagePath(pickedPin.pin.imageUrl, item.site);
+      // A dead pin image (e.g. recipe regenerated → old pin URL 404s) must NOT
+      // crash the whole session. The human browse already happened; just skip
+      // the post and return browse-only.
+      let imagePath;
+      try {
+        imagePath = await _resolveImagePath(pickedPin.pin.imageUrl, item.site);
+      } catch (e) {
+        Logger.warn(`[Executor] Skipping post — pin image unavailable: ${e.message}`);
+        return {
+          ok: true, posted: false, skipped: true,
+          recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex,
+          reason: 'pin-image-unavailable', browseEvents: plan.events.length,
+        };
+      }
 
       // Board selection: use scraped Pinterest boards (preferred — found via
       // validator cache from prior warming or live-scrape) OR account.boards

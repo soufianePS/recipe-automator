@@ -578,9 +578,18 @@ export class PinterestPage {
    * Type a query in the search bar, press Enter, scroll results briefly.
    */
   async _performSearch(keyword) {
-    const searchInput = await this.page.$('input[name="searchBoxInput"], input[placeholder*="Search" i], input[placeholder*="Rechercher" i], input[aria-label*="Search" i], input[aria-label*="Rechercher" i], input[type="search"]');
+    // Pinterest now COLLAPSES the search bar into a button — the input doesn't
+    // exist in the DOM until you click the search trigger. Click it first.
+    let searchInput = await this.page.$('input[name="searchBoxInput"], input[data-test-id="search-box-input"]');
     if (!searchInput) {
-      Logger.warn(`[Pinterest] search input not found for "${keyword}" — page may not have search bar visible. URL: ${this.page.url()}`);
+      try {
+        const trigger = await this.page.$('[data-test-id="search-box-container"], button[aria-label="Search icon"], button[aria-label*="recherch" i]');
+        if (trigger) { await humanClick(this.page, trigger); await humanWait(this.page, 500, 1000); }
+      } catch {}
+      searchInput = await this.page.$('input[name="searchBoxInput"], input[data-test-id="search-box-input"], input[placeholder*="Search" i], input[placeholder*="Rechercher" i], input[aria-label*="Search" i], input[aria-label*="Rechercher" i], input[type="search"]');
+    }
+    if (!searchInput) {
+      Logger.warn(`[Pinterest] search input not found for "${keyword}" (after clicking trigger) — URL: ${this.page.url()}`);
       return;
     }
     await humanClick(this.page, searchInput);
