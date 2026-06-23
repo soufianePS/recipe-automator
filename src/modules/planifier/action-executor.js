@@ -19,7 +19,7 @@
 import { Logger } from '../../shared/utils/logger.js';
 import { Planifier } from './planifier.js';
 import { simulateSession } from './browse-simulator.js';
-import { pickNextEligiblePin, markPinPosted, readSitePool } from './pin-pool.js';
+import { pickNextEligiblePin, pickSpecificPin, pickOldestForRecycle, markPinPosted, readSitePool } from './pin-pool.js';
 import { DolphinAnty } from '../../shared/utils/dolphin-anty.js';
 import { PinterestPage } from '../../shared/pages/pinterest.js';
 import { StateManager, STATES } from '../../shared/utils/state-manager.js';
@@ -101,6 +101,39 @@ async function _connectDolphin(profileId) {
   return { browser, context, page, dolphin, profileId, cleanup };
 }
 
+/**
+ * Recycle helper (rules #4/#5) — generate a fresh EXTRA pin (beyond the 3 slots)
+ * for a recipe using a RANDOM Pinterest template, via the regen job pipeline
+ * (mode='extra'). The new pin is written to pin-history and surfaced into the
+ * pool by _attachExtraPins, so the normal posting flow then picks + posts it.
+ * Runs BEFORE the Dolphin connection, so the Flow/ChatGPT regen browser and the
+ * Dolphin browser never overlap.
+ */
+async function _regenExtraPin(recipe, config, serverCtx) {
+  const { enqueueRegen, processJob } = await import('./pin-regenerator.js');
+  const bgPath = join(PROJECT_ROOT, 'data', 'sites', recipe.site, 'backgrounds.json');
+  const data = JSON.parse(await readFile(bgPath, 'utf8'));
+  const templates = (data.pinterestTemplatesGenerator && data.pinterestTemplatesGenerator.length)
+    ? data.pinterestTemplatesGenerator
+    : (data.pinterestTemplatesScraper || []);
+  if (!templates.length) throw new Error('no Pinterest templates available to recycle with');
+  const tpl = templates[Math.floor(Math.random() * templates.length)];   // random template
+  const nextIndex = (recipe.pins?.length || 3);                          // after slots + existing extras
+  Logger.info(`[Executor] Recycle: regenerating extra pin for "${recipe.topic}" with random template "${tpl.name}"`);
+  const job = await enqueueRegen({
+    site: recipe.site,
+    rowIndex: recipe.rowIndex,
+    pinIndex: nextIndex,
+    templateName: tpl.name,
+    templateBase64: tpl.base64,
+    mode: 'extra',
+    slotLabel: 'extra',
+    fullTitle: recipe.topic,
+    recipeCategory: recipe.category || null,
+  });
+  await processJob(job.id, serverCtx, config);
+}
+
 // ── Action: Pinterest session (browse + optional post) ──────────
 
 /**
@@ -108,7 +141,7 @@ async function _connectDolphin(profileId) {
  * @param {object} item - plan item ({site, accountId, willPost, dolphinProfileId?})
  * @param {object} config - planifier config
  */
-async function runPinterestSession(item, config) {
+async function runPinterestSession(item, config, serverCtx = null) {
   const site = config.sites?.[item.site];
   if (!site) throw new Error(`Site ${item.site} not in planifier config`);
   const account = (site.pinterestAccounts || []).find(a => a.id === item.accountId);
@@ -120,10 +153,34 @@ async function runPinterestSession(item, config) {
   let pickedPin = null;
   let postFallbackReason = null;
   if (item.willPost) {
-    pickedPin = await pickNextEligiblePin(config, item.site, item.accountId);
-    if (!pickedPin) {
-      postFallbackReason = 'no-eligible-pin';
-      Logger.warn(`[Executor] No eligible pin for ${item.site}/${item.accountId} — running browse-only instead. Check: pool source tab, account assignment (Strat A hash), validation, pinSpreadDays eligibility.`);
+    if (item.targetPin) {
+      // Bulk "queue for Pinterest" targets a SPECIFIC pin chosen by the user.
+      pickedPin = await pickSpecificPin(config, item.site, item.targetPin.rowIndex, item.targetPin.pinIndex);
+      if (!pickedPin) {
+        postFallbackReason = 'target-pin-unavailable';
+        Logger.warn(`[Executor] targetPin row ${item.targetPin.rowIndex} pin#${item.targetPin.pinIndex} unavailable (not in pool / no image / already posted) — running browse-only.`);
+      }
+    } else {
+      pickedPin = await pickNextEligiblePin(config, item.site, item.accountId);
+      if (!pickedPin) {
+        // RULES #4 + #5: pool is dry (every article has all pins posted, or all
+        // available pins are within the gap window). Recycle the article that
+        // has gone the LONGEST without a new pin → regenerate a fresh EXTRA pin
+        // for it with a RANDOM template (evergreen reposting beyond 3 pins),
+        // then retry the pick so it gets posted this session.
+        const oldest = await pickOldestForRecycle(config, item.site, item.accountId);
+        if (oldest && serverCtx) {
+          try {
+            await _regenExtraPin(oldest, config, serverCtx);
+            pickedPin = await pickNextEligiblePin(config, item.site, item.accountId);
+            if (pickedPin) Logger.info(`[Executor] Recycled oldest article "${oldest.topic}" → fresh extra pin ready to post`);
+          } catch (e) { Logger.warn(`[Executor] recycle regen failed: ${e.message}`); }
+        }
+        if (!pickedPin) {
+          postFallbackReason = 'no-eligible-pin';
+          Logger.warn(`[Executor] No eligible pin for ${item.site}/${item.accountId} and nothing recyclable — running browse-only instead.`);
+        }
+      }
     }
   }
 
@@ -142,10 +199,14 @@ async function runPinterestSession(item, config) {
   // Load site's WP categories — used as primary search keywords with 1-to-1
   // mapping to Pinterest board names (search "Dinner" → save to board "Dinner").
   let categories = [];
+  let wpAuth = null; // Basic auth for WP REST — lets status/permalink checks see non-public posts
   try {
     const sitePath = join(PROJECT_ROOT, 'data', 'sites', item.site, 'settings.json');
     const ss = JSON.parse(await readFile(sitePath, 'utf8'));
     categories = (ss.wpCategories || '').split(',').map(s => s.trim()).filter(Boolean);
+    const wpUser = ss.wpUsername || ss.wpUser;
+    const wpPass = ss.wpAppPassword || ss.wpPassword;
+    if (wpUser && wpPass) wpAuth = 'Basic ' + Buffer.from(`${wpUser}:${wpPass}`).toString('base64');
     if (categories.length > 0) {
       Logger.info(`[Executor] Site categories (search + board mapping): ${categories.join(', ')}`);
     }
@@ -188,7 +249,7 @@ async function runPinterestSession(item, config) {
       Logger.info(`[Executor] Now posting pin: ${pickedPin.recipe.topic} / pin#${pickedPin.pin.pinIndex}`);
       // HARD GUARD: recipe must be PUBLISH on WP — pinning to drafts/futures
       // sends Pinterest traffic to a 404 or login wall, hurts domain trust.
-      const pubCheck = await _isRecipePublished(pickedPin.recipe.draftUrl);
+      const pubCheck = await _isRecipePublished(pickedPin.recipe.draftUrl, wpAuth);
       if (!pubCheck.ok) {
         Logger.warn(`[Executor] Skipping pin: ${pubCheck.reason}`);
         return {
@@ -248,8 +309,14 @@ async function runPinterestSession(item, config) {
       // Convert the WP admin edit URL into a public-facing redirect URL.
       // Pinterest links go to `<site>/?p=<postId>` which WP auto-redirects to
       // the canonical permalink (e.g. /classic-cobb-salad/).
-      const publicLink = await _toPublicLink(pickedPin.recipe.draftUrl, pickedPin.pin.imageUrl);
+      const publicLink = await _toPublicLink(pickedPin.recipe.draftUrl, pickedPin.pin.imageUrl, wpAuth);
       Logger.info(`[Executor] Pin link: ${publicLink}`);
+      // HARD GUARD #2: must resolve to a real PUBLIC link (not empty, not an
+      // admin/edit URL). Belt-and-suspenders with the published check above.
+      if (!publicLink || /\/wp-admin\//.test(publicLink) || /[?&]action=edit/.test(publicLink)) {
+        Logger.warn(`[Executor] Skipping pin: no valid public link resolved (${publicLink})`);
+        return { ok: true, posted: false, skipped: true, recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex, reason: 'no-public-link' };
+      }
       const result = await pinterest.createPin({
         imagePath,
         title: pickedPin.pin.title || pickedPin.recipe.topic,
@@ -314,7 +381,7 @@ const RECIPE_STATUS_TTL_MS = 5 * 60 * 1000;
  *   - { ok: true, status: 'unknown' }        → REST unreachable; permissive
  *                                              fail-open (don't block on infra)
  */
-export async function _isRecipePublished(draftUrl) {
+export async function _isRecipePublished(draftUrl, wpAuth = null) {
   if (!draftUrl) return { ok: false, status: 'no-url', reason: 'no draftUrl on pin' };
   let origin, postId;
   try {
@@ -333,20 +400,24 @@ export async function _isRecipePublished(draftUrl) {
       ? { ok: true, status: 'publish' }
       : { ok: false, status: cached.status, reason: `recipe status is "${cached.status}", not publish (cached)` };
   }
-  // Query the canonical /posts/{id} — returns status only for public posts.
-  // We use ?context=embed which works without auth and includes the status
-  // for posts the requester can see (publish = everyone; draft/future =
-  // requires auth). For non-authenticated reads, missing post = unpublished.
-  const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?_fields=status,id`;
+  // Query /posts/{id}?context=edit WITH auth so we get the TRUE status even for
+  // non-public posts (a draft returns 200 + status:"draft" when authenticated;
+  // unauthenticated it returns 401/403/404 which we treat as "not public").
+  const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?_fields=status,id${wpAuth ? '&context=edit' : ''}`;
   try {
-    const res = await fetch(restUrl, { signal: AbortSignal.timeout(8000) });
-    if (res.status === 404) {
-      // Post not visible to public → either trashed, draft, or future
+    const res = await fetch(restUrl, {
+      headers: wpAuth ? { Authorization: wpAuth } : {},
+      signal: AbortSignal.timeout(8000),
+    });
+    // 404/401/403 → post is NOT publicly visible (draft/future/private/trashed).
+    // FAIL CLOSED: skip the post rather than pin to a dead/draft link.
+    if (res.status === 404 || res.status === 401 || res.status === 403) {
       _recipeStatusCache.set(cacheKey, { status: 'not-public', at: Date.now() });
-      return { ok: false, status: 'not-public', reason: 'WP returned 404 (post is draft/future/trashed)' };
+      return { ok: false, status: 'not-public', reason: `WP returned ${res.status} (post not publicly visible: draft/future/private/trashed)` };
     }
     if (!res.ok) {
-      Logger.warn(`[Executor] recipe status check ${restUrl} → HTTP ${res.status}; fail-open`);
+      // Genuine infra error (5xx, etc.) — fail-open so a WP outage doesn't block everything.
+      Logger.warn(`[Executor] recipe status check ${restUrl} → HTTP ${res.status}; fail-open (infra)`);
       return { ok: true, status: 'unknown' };
     }
     const json = await res.json();
@@ -356,7 +427,7 @@ export async function _isRecipePublished(draftUrl) {
       ? { ok: true, status }
       : { ok: false, status, reason: `recipe status is "${status}", not publish` };
   } catch (e) {
-    Logger.warn(`[Executor] recipe status check failed for post ${postId}: ${e.message}; fail-open`);
+    Logger.warn(`[Executor] recipe status check failed for post ${postId}: ${e.message}; fail-open (infra)`);
     return { ok: true, status: 'unknown' };
   }
 }
@@ -373,7 +444,7 @@ export async function _isRecipePublished(draftUrl) {
  * @param {string} draftUrl - admin edit URL (contains ?post=ID)
  * @param {string} [imageUrl] - fallback for deriving the site host
  */
-async function _toPublicLink(draftUrl, imageUrl) {
+async function _toPublicLink(draftUrl, imageUrl, wpAuth = null) {
   if (!draftUrl) return imageUrl ? new URL(imageUrl).origin : '';
   let origin, postId;
   try {
@@ -390,7 +461,10 @@ async function _toPublicLink(draftUrl, imageUrl) {
 
   const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?_fields=link`;
   try {
-    const res = await fetch(restUrl, { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(restUrl, {
+      headers: wpAuth ? { Authorization: wpAuth } : {},
+      signal: AbortSignal.timeout(8000),
+    });
     if (res.ok) {
       const json = await res.json();
       if (json?.link && typeof json.link === 'string') {
@@ -611,7 +685,7 @@ export async function runPlanItem(date, itemId, serverCtx, options = {}) {
     if (item.type === 'create-recipe') {
       result = await runCreateRecipe(item, config, serverCtx);
     } else if (item.type === 'pinterest-session') {
-      result = await runPinterestSession(item, config);
+      result = await runPinterestSession(item, config, serverCtx);
     } else if (item.type === 'warming-session') {
       const { runWarmingSession } = await import('./warming-executor.js');
       result = await runWarmingSession(item, config);

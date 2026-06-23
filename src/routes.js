@@ -1210,6 +1210,63 @@ export function setupRoutes(app, ctx) {
     }
   });
 
+  // Bulk pin regeneration — enqueue many regen jobs and process them
+  // SEQUENTIALLY (one browser/engine at a time). Body:
+  //   { site, items: [{ rowIndex, pinIndex, templateIdx, templateList }] }
+  // Engine = settings.pinGenerator (chatgpt for leagueofcooking). UI polls
+  // /api/planifier/regen-jobs for progress.
+  app.post('/api/planifier/regenerate-pins-bulk', async (req, res) => {
+    try {
+      if (ctx.automationRunning) {
+        return res.status(409).json({ error: 'Other automation running — wait for it to finish' });
+      }
+      const { site, items } = req.body || {};
+      if (!site || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: 'site and non-empty items[] required' });
+      }
+      const { readFile: rf } = await import('fs/promises');
+      const { existsSync: ex } = await import('fs');
+      const { join: jp } = await import('path');
+      const path = jp(ctx.__dirname, '..', 'data', 'sites', site, 'backgrounds.json');
+      if (!ex(path)) return res.status(404).json({ error: 'backgrounds.json not found for this site' });
+      const data = JSON.parse(await rf(path, 'utf8'));
+      const { enqueueRegen, processJob } = await import('./modules/planifier/pin-regenerator.js');
+      const planCfg = await Planifier.getConfig();
+
+      const jobIds = [];
+      const errors = [];
+      for (const it of items) {
+        const { rowIndex, pinIndex, templateIdx, templateList } = it || {};
+        if (rowIndex == null || pinIndex == null || templateIdx == null) {
+          errors.push({ item: it, error: 'rowIndex, pinIndex, templateIdx required' });
+          continue;
+        }
+        const list = (templateList === 'scraper')
+          ? (data.pinterestTemplatesScraper || [])
+          : (data.pinterestTemplatesGenerator || []);
+        const tpl = list[templateIdx];
+        if (!tpl) { errors.push({ item: it, error: `template idx ${templateIdx} not found` }); continue; }
+        try {
+          const job = await enqueueRegen({ site, rowIndex, pinIndex, templateName: tpl.name, templateBase64: tpl.base64 });
+          jobIds.push(job.id);
+        } catch (e) { errors.push({ item: it, error: e.message }); }
+      }
+
+      // Process all queued jobs sequentially in the background.
+      (async () => {
+        for (const id of jobIds) {
+          try { const r = await processJob(id, ctx, planCfg); Logger.success(`[RegenBulk] job ${id} done: ${r?.newPinUrl || ''}`); }
+          catch (e) { Logger.error(`[RegenBulk] job ${id} failed: ${e.message}`); }
+        }
+        Logger.success(`[RegenBulk] processed ${jobIds.length} regen job(s)`);
+      })();
+
+      res.json({ ok: true, queued: jobIds.length, jobIds, errors });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Poll job status
   app.get('/api/planifier/regen-job/:id', async (req, res) => {
     try {
@@ -1275,6 +1332,250 @@ export function setupRoutes(app, ctx) {
       const { site, rowIndex } = req.params;
       await resetRecipeToPending(site, Number(rowIndex));
       res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST — BULK recreate (DRAFTS ONLY). For each selected row: confirm the WP
+  // post is a draft (live check), then hard-delete WP post+media + reset the
+  // sheet row to 'pending'. PUBLISHED / scheduled / private / trashed recipes
+  // are SKIPPED to protect live content + SEO. After deletions, kicks off one
+  // /api/start batch so the now-pending rows regenerate.
+  //   Body: { site, rowIndexes: [..] }
+  app.post('/api/planifier/recipes/recreate-bulk', async (req, res) => {
+    try {
+      if (ctx.automationRunning) {
+        return res.status(409).json({ error: 'Other automation running — wait for it to finish' });
+      }
+      const { site, rowIndexes } = req.body || {};
+      if (!site || !Array.isArray(rowIndexes) || rowIndexes.length === 0) {
+        return res.status(400).json({ error: 'site and non-empty rowIndexes[] required' });
+      }
+      const cfg = await Planifier.getConfig();
+      const allRecipes = await readAllRecipes(cfg);
+      const { fetchLiveWpStatus } = await import('./modules/planifier/pin-pool.js');
+      const PROTECTED = new Set(['publish', 'published', 'future', 'private', 'trash']);
+
+      const recreated = [];
+      const skipped = [];
+      for (const rowIndex of rowIndexes) {
+        const rec = allRecipes.find(r => r.site === site && Number(r.rowIndex) === Number(rowIndex));
+        if (!rec) { skipped.push({ rowIndex, reason: 'not found in sheet' }); continue; }
+        // Live WP status (drafts only). No draftUrl = nothing live to protect → allow.
+        let wp = (rec.wpStatus || '').toLowerCase();
+        if (rec.draftUrl) {
+          const live = await fetchLiveWpStatus(site, rec.draftUrl);
+          if (live) wp = String(live).toLowerCase();
+        }
+        if (wp && PROTECTED.has(wp)) {
+          skipped.push({ rowIndex, topic: rec.topic, reason: `WP status "${wp}" — drafts only` });
+          continue;
+        }
+        try {
+          const r = await deleteRecipeFromSheet(site, Number(rowIndex));
+          recreated.push({ rowIndex, topic: rec.topic, wpDeleted: r?.wpDeleted, mediaDeleted: r?.mediaDeleted });
+        } catch (e) {
+          skipped.push({ rowIndex, topic: rec.topic, reason: e.message });
+        }
+      }
+
+      // Trigger one batch regeneration of the now-pending rows.
+      let started = false;
+      if (recreated.length > 0) {
+        try {
+          const r = await fetch(`http://localhost:${app.locals.port || 3000}/api/start`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'generate' }),
+          }).then(r => r.json()).catch(() => null);
+          started = !!(r && r.ok);
+        } catch (e) { Logger.warn(`[RecreateBulk] auto-start failed: ${e.message}`); }
+      }
+
+      Logger.info(`[RecreateBulk] recreated ${recreated.length}, skipped ${skipped.length}, started=${started}`);
+      res.json({ ok: true, recreated, skipped, started });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST — BULK PUBLISH (gradual). Schedules selected DRAFT articles to go live
+  // a few per day at random times (WP `future` status), randomized order, with
+  // random gaps — never all at once. Checks existing scheduled (future) posts so
+  // a day isn't overloaded. Body: { site, rowIndexes, dryRun? }
+  //   dryRun:true → returns the computed schedule without touching WP.
+  app.post('/api/planifier/articles/publish-bulk', async (req, res) => {
+    try {
+      const { site, rowIndexes, dryRun } = req.body || {};
+      if (!site || !Array.isArray(rowIndexes) || rowIndexes.length === 0) {
+        return res.status(400).json({ error: 'site and non-empty rowIndexes[] required' });
+      }
+      const cfg = await Planifier.getConfig();
+      const rules = cfg.rules || {};
+      const perDayMin = Math.max(1, rules.publishPerDayMin ?? 2);
+      const perDayMax = Math.max(perDayMin, rules.publishPerDayMax ?? 3);
+      const aStart = rules.activeHourStart ?? 8;
+      const aEnd = rules.activeHourEnd ?? 22;
+
+      // WP creds
+      const { readFile: rf } = await import('fs/promises');
+      const { join: jp } = await import('path');
+      const ss = JSON.parse(await rf(jp(ctx.__dirname, '..', 'data', 'sites', site, 'settings.json'), 'utf8'));
+      const wpUrl = (ss.wpUrl || '').replace(/\/$/, '');
+      const auth = 'Basic ' + Buffer.from(`${ss.wpUsername || ss.wpUser}:${ss.wpAppPassword || ss.wpPassword}`).toString('base64');
+      if (!wpUrl) return res.status(400).json({ error: 'site has no wpUrl' });
+
+      // Resolve selected → DRAFT posts only (live-checked)
+      const { fetchLiveWpStatus } = await import('./modules/planifier/pin-pool.js');
+      const allRecipes = await readAllRecipes(cfg);
+      const targets = [];
+      const skipped = [];
+      for (const rowIndex of rowIndexes) {
+        const rec = allRecipes.find(r => r.site === site && Number(r.rowIndex) === Number(rowIndex));
+        if (!rec || !rec.draftUrl) { skipped.push({ rowIndex, reason: 'not found / no draft URL' }); continue; }
+        const postId = (() => { try { return new URL(rec.draftUrl).searchParams.get('post'); } catch { return null; } })();
+        if (!postId || !/^\d+$/.test(postId)) { skipped.push({ rowIndex, topic: rec.topic, reason: 'no post id' }); continue; }
+        const live = (await fetchLiveWpStatus(site, rec.draftUrl)) || '';
+        if (live !== 'draft' && live !== 'auto-draft') { skipped.push({ rowIndex, topic: rec.topic, reason: `status "${live}" — only drafts` }); continue; }
+        targets.push({ rowIndex, postId, topic: rec.topic });
+      }
+      if (targets.length === 0) return res.json({ ok: true, scheduled: [], skipped, note: 'no draft articles to publish' });
+
+      // Randomize publish order
+      for (let i = targets.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [targets[i], targets[j]] = [targets[j], targets[i]]; }
+
+      // Check existing scheduled posts → count per day so we don't overload a day
+      const existingByDay = {};
+      try {
+        const fr = await fetch(`${wpUrl}/wp-json/wp/v2/posts?status=future&per_page=100&_fields=date`, { headers: { Authorization: auth } });
+        if (fr.ok) { for (const p of (await fr.json())) { const d = (p.date || '').slice(0, 10); if (d) existingByDay[d] = (existingByDay[d] || 0) + 1; } }
+      } catch {}
+
+      // Build the schedule: spread across upcoming days, random times in active hours
+      const ymd = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      const pad = (n) => String(n).padStart(2, '0');
+      const localIso = (ms) => { const d = new Date(ms); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+      const randomTimes = (dayDate, count, afterMs) => {
+        const y = dayDate.getFullYear(), m = dayDate.getMonth(), d = dayDate.getDate();
+        let lo = new Date(y, m, d, aStart, 0, 0).getTime();
+        const hi = new Date(y, m, d, aEnd, 0, 0).getTime();
+        if (afterMs) lo = Math.max(lo, afterMs + 20 * 60000); // today: ≥20 min from now
+        if (lo >= hi) return [];
+        const span = hi - lo;
+        const out = [];
+        for (let i = 0; i < count; i++) out.push(lo + Math.random() * span);
+        out.sort((a, b) => a - b);
+        const minGap = Math.min(45 * 60000, Math.floor(span / (count + 1)));
+        for (let i = 1; i < out.length; i++) if (out[i] - out[i - 1] < minGap) out[i] = out[i - 1] + minGap;
+        return out.filter(t => t <= hi);
+      };
+
+      const now = Date.now();
+      const scheduled = [];
+      let idx = 0, day = 0;
+      while (idx < targets.length && day < 120) {
+        const dayDate = new Date(now + day * 86400000);
+        const dateKey = ymd(dayDate);
+        const rollPerDay = perDayMin + Math.floor(Math.random() * (perDayMax - perDayMin + 1));
+        const cap = rollPerDay - (existingByDay[dateKey] || 0);
+        if (cap <= 0) { day++; continue; }
+        const times = randomTimes(dayDate, cap, day === 0 ? now : null);
+        for (const t of times) { if (idx >= targets.length) break; scheduled.push({ ...targets[idx++], when: localIso(t), whenMs: t }); }
+        day++;
+      }
+      // Any leftover (e.g., active window already closed) → bump to next morning slots
+      while (idx < targets.length && day < 200) {
+        const dayDate = new Date(now + day * 86400000);
+        const times = randomTimes(dayDate, perDayMin, null);
+        for (const t of times) { if (idx >= targets.length) break; scheduled.push({ ...targets[idx++], when: localIso(t), whenMs: t }); }
+        day++;
+      }
+
+      if (dryRun) {
+        return res.json({ ok: true, dryRun: true, scheduled: scheduled.map(s => ({ rowIndex: s.rowIndex, topic: s.topic, when: s.when })), skipped });
+      }
+
+      // Apply: set each post to `future` with its scheduled local date (WP cron publishes it)
+      const applied = [];
+      for (const s of scheduled) {
+        try {
+          const r = await fetch(`${wpUrl}/wp-json/wp/v2/posts/${s.postId}`, {
+            method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'future', date: s.when }),
+          });
+          const j = await r.json().catch(() => ({}));
+          applied.push({ rowIndex: s.rowIndex, topic: s.topic, when: s.when, status: j.status || `http-${r.status}` });
+        } catch (e) { applied.push({ rowIndex: s.rowIndex, topic: s.topic, when: s.when, status: 'error: ' + e.message }); }
+      }
+      Logger.info(`[PublishBulk] ${applied.length} article(s) scheduled across days for ${site}; ${skipped.length} skipped`);
+      res.json({ ok: true, scheduled: applied, skipped });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST — BULK queue pins for Pinterest (scheduler-feed). Creates one paced
+  // `pinterest-session` plan item per selected pin, spread across upcoming days
+  // within active hours and spaced by the configured intra-account gap, each
+  // carrying targetPin:{rowIndex,pinIndex}. The planifier scheduler then posts
+  // them over time (safe pacing — no burst). Eligibility (recipe published) is
+  // enforced by the executor at post time.
+  //   Body: { site, accountId, items: [{ rowIndex, pinIndex }] }
+  app.post('/api/planifier/queue-pins-bulk', async (req, res) => {
+    try {
+      const { site, accountId, items } = req.body || {};
+      if (!site || !accountId || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: 'site, accountId and non-empty items[] required' });
+      }
+      const cfg = await Planifier.getConfig();
+      const account = (cfg.sites?.[site]?.pinterestAccounts || []).find(a => a.id === accountId);
+      if (!account) return res.status(400).json({ error: `account ${accountId} not found for ${site}` });
+      const dolphinProfileId = account.dolphinProfileId || null;
+      const rules = cfg.rules || {};
+      const horizonDays = Math.max(1, rules.horizonDays || 7);
+      const activeStart = rules.activeHourStart ?? 8;
+      const activeEnd = rules.activeHourEnd ?? 22;
+      const gapMin = Math.max(30, rules.minGapIntraAccount || 120);
+      const { savePlan } = await import('./modules/planifier/plan-storage.js');
+
+      const dateKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const now = Date.now();
+      let placed = 0;
+      const queued = [];
+      for (let dayOffset = 0; dayOffset < horizonDays && placed < items.length; dayOffset++) {
+        const day = new Date(now + dayOffset * 86400000);
+        const dateKey = dateKeyOf(day);
+        let plan = await Planifier.getPlan(dateKey);
+        if (!plan) plan = await Planifier.regeneratePlan(dateKey);
+        let cursor = new Date(day.getFullYear(), day.getMonth(), day.getDate(), activeStart, 0, 0).getTime();
+        if (dayOffset === 0) cursor = Math.max(cursor, now + 5 * 60000); // today: never in the past
+        const dayEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), activeEnd, 0, 0).getTime();
+        while (cursor <= dayEnd && placed < items.length) {
+          const it = items[placed];
+          const item = {
+            id: randomUUID(),
+            type: 'pinterest-session',
+            site,
+            accountId,
+            dolphinProfileId,
+            scheduledAt: new Date(cursor).toISOString(),
+            status: 'pending',
+            willPost: true,
+            browseOnly: false,
+            locked: true,
+            manuallyAdded: true,
+            targetPin: { rowIndex: Number(it.rowIndex), pinIndex: Number(it.pinIndex) },
+          };
+          plan.items.push(item);
+          queued.push({ date: dateKey, scheduledAt: item.scheduledAt, targetPin: item.targetPin });
+          placed++;
+          cursor += gapMin * 60000;
+        }
+        plan.items.sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+        await savePlan(dateKey, plan);
+      }
+
+      Logger.info(`[QueuePinsBulk] queued ${placed}/${items.length} pins for ${site}/${accountId} across ${horizonDays}d`);
+      res.json({ ok: true, queued: placed, notPlaced: items.length - placed, slots: queued });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

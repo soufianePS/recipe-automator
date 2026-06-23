@@ -1683,6 +1683,9 @@
       sessionsWithoutPostPct: '#plfRuleBrowse',
       missedSlotDropAfterMinutes: '#plfRuleMissed',
       horizonDays: '#plfRuleHorizon',
+      pinGapDays: '#plfRulePinGap',
+      publishPerDayMin: '#plfRulePubMin',
+      publishPerDayMax: '#plfRulePubMax',
     };
     for (const [key, sel] of Object.entries(rulesFields)) {
       const el = $(sel);
@@ -1751,6 +1754,9 @@
       '#plfRuleBrowse': r.sessionsWithoutPostPct,
       '#plfRuleMissed': r.missedSlotDropAfterMinutes,
       '#plfRuleHorizon': r.horizonDays,
+      '#plfRulePinGap': r.pinGapDays != null ? r.pinGapDays : 2,
+      '#plfRulePubMin': r.publishPerDayMin != null ? r.publishPerDayMin : 2,
+      '#plfRulePubMax': r.publishPerDayMax != null ? r.publishPerDayMax : 3,
     };
     for (const [sel, val] of Object.entries(map)) {
       const el = $(sel); if (el && val != null) el.value = val;
@@ -2531,6 +2537,8 @@
 
   // ── Recipes tab ──────────────────────────────────────────────
   let _recipesCache = null;
+  // Bulk selection: key "site-rowIndex" → recipe object
+  let _selectedRecipes = new Map();
 
   // Persist filter changes server-side (debounced 400ms)
   const _saveRecipesFilters = debounce(async () => {
@@ -2682,6 +2690,7 @@
 
     const header = `
       <div class="plf-rec-header">
+        <div style="text-align:center;"><input type="checkbox" class="plf-rec-select" id="plfRecSelectAll" onclick="plfToggleSelectAll(this)" title="Select all (filtered)"></div>
         <div>Row</div>
         <div>Recipe</div>
         <div>Status</div>
@@ -2732,8 +2741,11 @@
         `;
       }
 
+      const selKey = `${r.site}-${r.rowIndex}`;
+      const isSel = _selectedRecipes.has(selKey);
       return `
         <div class="plf-rec-row ${rowCls}" data-rec-key="${escapeHtml(r.site)}-${r.rowIndex}" onclick="plfToggleRecipeDetail('${escapeHtml(r.site)}-${r.rowIndex}', event)">
+          <div style="text-align:center;" onclick="event.stopPropagation()"><input type="checkbox" class="plf-rec-select" data-key="${escapeHtml(selKey)}" onchange="plfOnSelectChange('${escapeHtml(selKey)}', this.checked)" ${isSel ? 'checked' : ''}></div>
           <div class="rownum">${r.rowIndex}</div>
           <div class="topic">
             ${escapeHtml(r.topic || '(empty)')}
@@ -2755,6 +2767,8 @@
     }).join('');
 
     box.innerHTML = header + rowsHtml;
+    // Reflect current selection in the bulk bar after each render
+    if (typeof window.plfUpdateBulkBar === 'function') window.plfUpdateBulkBar();
   }
 
   function renderRecipeDetail(r) {
@@ -2968,8 +2982,15 @@
 
   function _updateRegenSubmitState() {
     const tmpl = document.querySelector('.plf-regen-thumb[data-kind="template"].selected');
-    const btn = $('#plfRegenSubmitBtn');
-    if (btn) btn.disabled = !tmpl;
+    // Single-pin modal: needs a template only
+    const single = $('#plfRegenSubmitBtn');
+    if (single) single.disabled = !tmpl;
+    // Bulk modal: needs a template AND ≥1 pin slot selected
+    const bulkBtn = document.getElementById('plfBulkRegenSubmitBtn');
+    if (bulkBtn) {
+      const slots = document.querySelectorAll('#plfBulkRegenSlots .plf-slot-btn.selected').length;
+      bulkBtn.disabled = !(tmpl && slots > 0);
+    }
   }
 
   window.plfRegenSubmit = async function (site, rowIndex, pinIndex) {
@@ -3049,6 +3070,195 @@
     } catch (e) {
       showToast('Delete failed: ' + e.message, 'error');
     }
+  };
+
+  // ── Bulk selection + actions (Recipes tab) ──────────────────
+  function _findRecipeByKey(key) {
+    if (!_recipesCache) return null;
+    return _recipesCache.recipes.find(r => `${r.site}-${r.rowIndex}` === key) || null;
+  }
+  function _groupSelectedBySite() {
+    const bySite = {};
+    for (const rec of _selectedRecipes.values()) (bySite[rec.site] = bySite[rec.site] || []).push(rec);
+    return bySite;
+  }
+  function _bulkSetStatus(msg) { const s = document.getElementById('plfBulkStatus'); if (s) s.textContent = msg || ''; }
+  function plfUpdateBulkBar() {
+    const bar = document.getElementById('plfBulkBar');
+    if (!bar) return;
+    const count = _selectedRecipes.size;
+    bar.style.display = count > 0 ? 'flex' : 'none';
+    const c = document.getElementById('plfBulkCount');
+    if (c) c.textContent = `${count} selected`;
+  }
+  window.plfUpdateBulkBar = plfUpdateBulkBar;
+
+  window.plfOnSelectChange = function (key, checked) {
+    if (checked) { const rec = _findRecipeByKey(key); if (rec) _selectedRecipes.set(key, rec); }
+    else _selectedRecipes.delete(key);
+    plfUpdateBulkBar();
+  };
+  window.plfToggleSelectAll = function (el) {
+    document.querySelectorAll('.plf-rec-select[data-key]').forEach(b => {
+      b.checked = el.checked;
+      const key = b.getAttribute('data-key');
+      if (el.checked) { const rec = _findRecipeByKey(key); if (rec) _selectedRecipes.set(key, rec); }
+      else _selectedRecipes.delete(key);
+    });
+    plfUpdateBulkBar();
+  };
+  window.plfClearSelection = function () {
+    _selectedRecipes.clear();
+    document.querySelectorAll('.plf-rec-select').forEach(b => { b.checked = false; });
+    plfUpdateBulkBar();
+  };
+
+  // 1) Bulk regenerate pins (ChatGPT) — opens a modal to pick WHICH pin slot(s)
+  //    (Pin 1/2/3) + a template, applied to all selected recipes. Templates are
+  //    per-site, so selection must be a single site.
+  window.plfBulkRegen = async function () {
+    if (_selectedRecipes.size === 0) return;
+    const sites = [...new Set([..._selectedRecipes.values()].map(r => r.site))];
+    if (sites.length > 1) { showToast('Bulk pin regen: select recipes from ONE site (templates are per-site).', 'error'); return; }
+    const site = sites[0];
+    const recipeCount = _selectedRecipes.size;
+    const existing = $('.plf-modal-backdrop'); if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.className = 'plf-modal-backdrop';
+    modal.innerHTML = `
+      <div class="plf-modal" style="width:min(820px,96vw);max-height:90vh;overflow-y:auto;" onclick="event.stopPropagation()">
+        <div class="plf-modal-title">🔄 Bulk Regenerate Pins (ChatGPT)</div>
+        <div class="plf-modal-sub">${recipeCount} recipe(s) · ${escapeHtml(site)}</div>
+
+        <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px;">Which pin(s) to regenerate</div>
+        <div id="plfBulkRegenSlots" style="display:flex;gap:8px;margin-bottom:18px;">
+          <button class="plf-slot-btn" data-slot="0" onclick="plfBulkRegenToggleSlot(this)">Pin 1</button>
+          <button class="plf-slot-btn" data-slot="1" onclick="plfBulkRegenToggleSlot(this)">Pin 2</button>
+          <button class="plf-slot-btn" data-slot="2" onclick="plfBulkRegenToggleSlot(this)">Pin 3</button>
+        </div>
+
+        <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Choose template (applied to the chosen pin(s) for all ${recipeCount} recipe(s))</div>
+        <div id="plfRegenTemplates" style="margin-bottom:18px;"><div style="color:#6a6a8e;font-size:12px;">Loading…</div></div>
+
+        <div id="plfBulkRegenStatus" style="display:none;padding:10px 14px;background:rgba(33,150,243,0.08);border:1px solid rgba(33,150,243,0.2);border-radius:8px;margin-bottom:14px;font-size:12px;color:#6ea8fe;"></div>
+
+        <div class="plf-modal-actions">
+          <span style="font-size:11px;color:#6a6a8e;">Runs sequentially in the background</span>
+          <div class="plf-modal-actions-right">
+            <button class="btn btn-outline-secondary" onclick="document.querySelector('.plf-modal-backdrop').remove()">Cancel</button>
+            <button class="btn btn-save" id="plfBulkRegenSubmitBtn" onclick="plfBulkRegenSubmit('${escapeHtml(site)}')" style="padding:9px 22px;font-size:12.5px;" disabled>✓ Regenerate</button>
+          </div>
+        </div>
+      </div>`;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+
+    try {
+      const r = await api('GET', `/api/planifier/regen-assets/${encodeURIComponent(site)}`);
+      const hasGen = !!(r.templatesGenerator && r.templatesGenerator.length);
+      window._bulkRegenTemplateList = hasGen ? 'generator' : 'scraper';
+      _renderRegenGallery($('#plfRegenTemplates'), hasGen ? r.templatesGenerator : r.templatesScraper, 'template');
+    } catch (e) { $('#plfRegenTemplates').innerHTML = `<div style="color:#ff6b6b;font-size:12px;">Failed: ${escapeHtml(e.message)}</div>`; }
+  };
+
+  window.plfBulkRegenToggleSlot = function (el) { el.classList.toggle('selected'); _updateRegenSubmitState(); };
+
+  window.plfBulkRegenSubmit = async function (site) {
+    const slots = [...document.querySelectorAll('#plfBulkRegenSlots .plf-slot-btn.selected')].map(b => Number(b.dataset.slot));
+    const tmplEl = document.querySelector('.plf-regen-thumb[data-kind="template"].selected');
+    if (!slots.length || !tmplEl) return;
+    const templateIdx = Number(tmplEl.dataset.idx);
+    const templateList = window._bulkRegenTemplateList || 'generator';
+    const recs = [..._selectedRecipes.values()].filter(r => r.site === site);
+    const items = [];
+    for (const rec of recs) for (const pinIndex of slots) items.push({ rowIndex: rec.rowIndex, pinIndex, templateIdx, templateList });
+    const statusEl = document.getElementById('plfBulkRegenStatus');
+    const btn = document.getElementById('plfBulkRegenSubmitBtn');
+    if (btn) btn.disabled = true;
+    if (statusEl) { statusEl.style.display = ''; statusEl.textContent = `⏳ Queuing ${items.length} regen job(s)…`; }
+    try {
+      const r = await api('POST', '/api/planifier/regenerate-pins-bulk', { site, items });
+      if (statusEl) statusEl.textContent = `🚀 Queued ${r.queued} job(s) — processing in background (pins update over the next few minutes; hit Refresh).`;
+      showToast(`Bulk regen: ${r.queued} pin(s) queued`, 'success');
+      plfClearSelection();
+      setTimeout(() => { document.querySelector('.plf-modal-backdrop')?.remove(); }, 2000);
+    } catch (e) {
+      if (statusEl) { statusEl.style.color = '#ff8585'; statusEl.textContent = '✗ ' + e.message; }
+      if (btn) btn.disabled = false;
+    }
+  };
+
+  // 2) Bulk queue pins for Pinterest (scheduler-feed) — PUBLISHED recipes' unposted pins only.
+  window.plfBulkQueuePins = async function () {
+    if (_selectedRecipes.size === 0) return;
+    const bySite = _groupSelectedBySite();
+    if (!confirm(`Queue pins for Pinterest for ${_selectedRecipes.size} recipe(s)?\n\nOnly PUBLISHED recipes' unposted pins are queued; they're spread across the upcoming schedule (safe pacing) and posted by the planifier.\nContinue?`)) return;
+    _bulkSetStatus('Queuing pins…');
+    let totalQueued = 0, skipped = 0;
+    try {
+      for (const [site, recs] of Object.entries(bySite)) {
+        const accts = state.config?.sites?.[site]?.pinterestAccounts || [];
+        const acct = accts.find(a => a.status === 'active') || accts.find(a => a.dolphinProfileId) || accts[0];
+        if (!acct) { skipped += recs.length; continue; }
+        const items = [];
+        for (const rec of recs) {
+          const wp = (rec.wpStatus || '').toLowerCase();
+          if (wp !== 'publish' && wp !== 'published') { skipped++; continue; }
+          for (const p of (rec.pins || [])) if (p.imageUrl && !p.postedAt) items.push({ rowIndex: rec.rowIndex, pinIndex: p.pinIndex });
+        }
+        if (items.length === 0) continue;
+        const r = await api('POST', '/api/planifier/queue-pins-bulk', { site, accountId: acct.id, items });
+        totalQueued += r.queued || 0;
+      }
+      _bulkSetStatus(`Queued ${totalQueued} pin(s)${skipped ? ` · ${skipped} non-published skipped` : ''}.`);
+      showToast(`Queued ${totalQueued} pin(s) for Pinterest`, totalQueued ? 'success' : 'error');
+      plfClearSelection();
+    } catch (e) { _bulkSetStatus(''); showToast('Bulk queue failed: ' + e.message, 'error'); }
+  };
+
+  // 4) Bulk publish (gradual) — schedule selected DRAFTS to go live a few/day at
+  //    random times (WP `future`), randomized order, checking existing scheduled.
+  window.plfBulkPublish = async function () {
+    if (_selectedRecipes.size === 0) return;
+    const bySite = _groupSelectedBySite();
+    if (!confirm(`Publish ${_selectedRecipes.size} draft article(s) GRADUALLY?\n\nThey'll be scheduled a few per day at random times (WordPress 'future' posts) — never all at once. Non-draft articles are skipped.\nContinue?`)) return;
+    _bulkSetStatus('Scheduling articles…');
+    let totalScheduled = 0, skipped = 0; const sample = [];
+    try {
+      for (const [site, recs] of Object.entries(bySite)) {
+        const rowIndexes = recs.map(r => r.rowIndex);
+        const r = await api('POST', '/api/planifier/articles/publish-bulk', { site, rowIndexes });
+        totalScheduled += (r.scheduled || []).length;
+        skipped += (r.skipped || []).length;
+        (r.scheduled || []).slice(0, 3).forEach(s => sample.push(`${(s.topic || '?').slice(0, 16)} → ${(s.when || '').slice(0, 16).replace('T', ' ')}`));
+      }
+      _bulkSetStatus(`Scheduled ${totalScheduled} article(s)${skipped ? ` · ${skipped} skipped` : ''}${sample.length ? ' · e.g. ' + sample.join(' · ') : ''}`);
+      showToast(`Bulk publish: ${totalScheduled} scheduled${skipped ? `, ${skipped} skipped` : ''}`, totalScheduled ? 'success' : 'error');
+      plfClearSelection();
+      plfLoadRecipes();
+    } catch (e) { _bulkSetStatus(''); showToast('Bulk publish failed: ' + e.message, 'error'); }
+  };
+
+  // 5) Bulk recreate (drafts only) — delete WP+media + reset→pending, then regenerate.
+  window.plfBulkRecreate = async function () {
+    if (_selectedRecipes.size === 0) return;
+    const bySite = _groupSelectedBySite();
+    if (!confirm(`⚠ RECREATE ${_selectedRecipes.size} recipe(s)?\n\nFor each DRAFT: the WordPress post + all media are PERMANENTLY DELETED and the recipe is regenerated from scratch.\nPUBLISHED / scheduled recipes are SKIPPED (protected).\n\nDestructive and irreversible. Continue?`)) return;
+    _bulkSetStatus('Recreating drafts…');
+    let recreated = 0, skipped = 0, started = false;
+    try {
+      for (const [site, recs] of Object.entries(bySite)) {
+        const rowIndexes = recs.map(r => r.rowIndex);
+        const r = await api('POST', '/api/planifier/recipes/recreate-bulk', { site, rowIndexes });
+        recreated += (r.recreated || []).length;
+        skipped += (r.skipped || []).length;
+        if (r.started) started = true;
+      }
+      _bulkSetStatus(`Recreated ${recreated} draft(s)${skipped ? ` · ${skipped} skipped` : ''}${started ? ' · regeneration started' : ''}.`);
+      showToast(`Recreate: ${recreated} draft(s) queued${skipped ? `, ${skipped} skipped` : ''}`, recreated ? 'success' : 'error');
+      plfClearSelection();
+      plfLoadRecipes();
+    } catch (e) { _bulkSetStatus(''); showToast('Bulk recreate failed: ' + e.message, 'error'); }
   };
 
   window.plfOpenAddRecipeModal = function () {

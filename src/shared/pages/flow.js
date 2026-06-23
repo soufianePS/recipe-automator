@@ -776,11 +776,11 @@ export class FlowPage {
       this._generatedNames.clear();
       Logger.info('[Flow] New project created');
 
-      // NEW Flow is Agent-only: model/aspect/count + confirm live in the Agent
-      // settings panel (the `tune` icon), PER PROJECT. The legacy inline model
-      // button is gone, so _setGenerationSettings is a no-op now. Apply our
-      // defaults here, once per project.
-      await this._applyAgentDefaults(aspectRatio);
+      // Agent mode burns credits AND has no inline model/aspect controls. Turn
+      // it OFF (classic / direct image mode), once per project. That restores the
+      // inline "Nano Banana Pro · aspect · 1x" settings button, which
+      // _setGenerationSettings (called next in _doGenerate) then configures.
+      await this._deselectAgent();
     }
 
     // Upload background to canvas if not already there
@@ -788,6 +788,58 @@ export class FlowPage {
       Logger.info(`[Flow] Uploading background to canvas: ${bgName}`);
       await this._uploadBgToCanvas(backgroundFilePath);
       this._bgFilesOnCanvas.add(bgName);
+    }
+  }
+
+  /**
+   * Deselect the "Agent" mode pill in the bottom composer so generations use the
+   * classic / direct image path (NO agent credit usage). The pill is a <button>
+   * whose trimmed text is exactly "Agent" with aria-pressed; pressed="true" = ON.
+   * Target by text + aria-pressed, NEVER by class (styled-component hashes like
+   * `sc-59223abb-3 bdRbOx`/`dmZGYv` change per build). Idempotent — no-op if off.
+   * When OFF, the inline "Nano Banana Pro · aspect · 1x" settings pill appears
+   * (configured by _setGenerationSettings) and the agent `tune`/instructions
+   * buttons disappear.
+   */
+  async _deselectAgent() {
+    const findPill = () => this.page.evaluate(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Agent');
+      if (!b) return { found: false };
+      const r = b.getBoundingClientRect();
+      if (r.width === 0) return { found: false };
+      return { found: true, pressed: b.getAttribute('aria-pressed'), x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    });
+    try {
+      // The composer (and its Agent pill) can render a moment AFTER the prompt
+      // input appears, and the right-side Agent assistant zone may briefly cover
+      // it. Poll for the pill; if it doesn't show, try closing that zone, then
+      // poll again.
+      let pos = { found: false };
+      for (let i = 0; i < 12; i++) {
+        pos = await findPill();
+        if (pos.found) break;
+        if (i === 5) {
+          // Halfway: try closing the right Agent assistant zone (X "close" icon, top-right)
+          await this.page.evaluate(() => {
+            const x = [...document.querySelectorAll('button')].find(b => {
+              const ic = (b.querySelector('i')?.textContent || '').trim();
+              const r = b.getBoundingClientRect();
+              return ic === 'close' && r.width > 0 && r.x > window.innerWidth * 0.6 && r.y < 200;
+            });
+            if (x) x.click();
+          }).catch(() => {});
+        }
+        await this._delay(800);
+      }
+      if (!pos.found) { Logger.warn('[Flow] Agent pill not found after polling — cannot confirm classic mode'); return; }
+      if (pos.pressed === 'false') { Logger.info('[Flow] Agent already OFF (classic image mode)'); return; }
+      await this.page.mouse.click(pos.x, pos.y);
+      await this._delay(1200);
+      const after = await findPill();
+      if (after.found && after.pressed === 'false') Logger.info('[Flow] Agent mode deselected → classic image mode (no agent credits)');
+      else Logger.warn(`[Flow] Clicked Agent pill but state=${after.pressed} (expected false)`);
+    } catch (e) {
+      Logger.warn(`[Flow] _deselectAgent failed: ${e.message}`);
     }
   }
 
@@ -1460,11 +1512,13 @@ export class FlowPage {
     }
     await this._delay(SETTINGS_TAB_DELAY);
 
-    // Set x1 via native mouse click
+    // Set 1 image/generation via native mouse click. The count tab for 1 renders
+    // as "1x" (the 2/3/4 tabs render as "x2"/"x3"/"x4"); accept either spelling.
     const x1Pos = await this.page.evaluate(() => {
       const tabs = document.querySelectorAll('button[role="tab"]');
       for (const tab of tabs) {
-        if ((tab.textContent || '').trim() === 'x1' && (tab.id || '').includes('trigger-1')) {
+        const txt = (tab.textContent || '').trim();
+        if ((txt === '1x' || txt === 'x1') && /trigger-1$/.test(tab.id || '')) {
           if (tab.getAttribute('data-state') !== 'active') {
             const r = tab.getBoundingClientRect();
             if (r.width > 0) return { x: r.x + r.width / 2, y: r.y + r.height / 2 };

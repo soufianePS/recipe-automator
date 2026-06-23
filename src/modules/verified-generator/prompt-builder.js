@@ -104,6 +104,12 @@ function buildCompositionSentence(comp) {
 // 1. STEP PROMPT (used for every recipe step + the serving step)
 // ─────────────────────────────────────────────────────────────────────
 
+// Appetite-appeal paragraph for the serving shot + hero — makes the dish look
+// irresistibly delicious with tempting, mouth-watering close-up detail.
+function buildAppetiteAppealParagraph() {
+  return `Appetite appeal: make this look irresistibly delicious and mouth-watering — the kind of photo that instantly makes the viewer hungry and want to taste it. Let the finished dish fill the frame generously so its tempting small details read clearly: gentle wisps of steam rising from the warm food, glossy sauce glistening as it catches the light, a luscious cheese pull or melt where it applies, a juicy tender interior, crispy golden edges, caramelized and seared surfaces, tiny glistening droplets of moisture, fresh herb flecks, and rich saturated color. Capture fine texture up close — the crumb, the sear, the sheen, the flake — so the food looks freshly served, warm, generous, and utterly crave-worthy.`;
+}
+
 export function buildStepPrompt(stepState, vgSettings, opts = {}) {
   const defaults = VERIFIED_GENERATOR_DEFAULTS;
   const isServingStep = opts.isLastStep || false;
@@ -149,9 +155,8 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
   // ── 5. Style anchors (all positive, no "NO X") ──
   let stylePara = `Style: warm rich colors with golden-brown for cooked items, vibrant greens for vegetables, glossy sauces. Sharp focus with visible texture — grain in rice, fibers in meat, bubbles in sauce, flakes in pastry. Food looks three-dimensional with depth and volume, moist and fresh. Casual home-cooked look with natural imperfections — asymmetric placement, slight unevenness, no sterile symmetry.`;
 
-  if (isServingStep) {
-    stylePara += ` This is the serving shot, so the portion looks generous and appetizing, with glossy sauce, melted cheese, crispy edges, and juicy interior all clearly visible — the kind of photo a reader would save and share.`;
-  }
+  // Serving shot gets a dedicated appetite-appeal paragraph (see return chain).
+  const appetitePara = isServingStep ? buildAppetiteAppealParagraph() : '';
 
   if (opts.firstStep) {
     stylePara += ` This is the FIRST cooking step — clearly a process shot showing active cooking (food in the pan or pot, mid-transformation), not a still-life of raw ingredients on a counter.`;
@@ -166,7 +171,7 @@ export function buildStepPrompt(stepState, vgSettings, opts = {}) {
   // ── 8. Critical constraints (only proven-effective negatives) ──
   const criticalPara = `Critical: only the ${container} sits on the marble counter — the surface around it is completely bare, with no stray berries, herbs, crumbs, droplets, slices, or scattered ingredients of any kind on the surface. All food is inside the ${container}. No text, no watermark, no logo.`;
 
-  return [opening, continuityPara, mainScene, identityPara, compositionPara, stylePara, referencePara, refRolesPara, criticalPara]
+  return [opening, continuityPara, mainScene, identityPara, compositionPara, stylePara, appetitePara, referencePara, refRolesPara, criticalPara]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -251,6 +256,9 @@ export function buildHeroPrompt(heroState, vgSettings, opts = {}) {
   // ── 6. Style anchors (positive) ──
   const stylePara = `Style: warm rich colors — golden-brown seared surfaces, deep rich sauces, bright fresh herbs. Sharp focus with visible texture: crispy edges, glossy sauce, melted cheese, caramelized surfaces, visible grain and fiber. Three-dimensional depth and volume — sauce pools naturally, toppings sit generously, nothing flat or sparse. Moisture is visible: sauce glistens, meat looks juicy, vegetables look fresh and crisp. The food is fully cooked, the dish is finished, and the image alone should make a reader want to cook this recipe. Slight imperfections that look home-cooked, never sterile or symmetric.`;
 
+  // ── 6b. Appetite appeal — make it look the most delicious of all ──
+  const appetitePara = buildAppetiteAppealParagraph();
+
   // ── 7. Reference image anchor ──
   const referencePara = `Background and lighting come from the uploaded reference image: preserve its marble surface exactly — same color, same veining, same grain, same texture, same edges. Match the reference lighting precisely: same direction, same softness, same warmth, same shadow shape. The hero looks like the same counter on the same day with the same window light.`;
 
@@ -260,7 +268,7 @@ export function buildHeroPrompt(heroState, vgSettings, opts = {}) {
   // ── 8. Critical constraints ──
   const criticalPara = `Critical: only the plate or serving dish is on the marble counter — the surface around it is completely bare. All food stays on or inside the plate; any garnish sits on the plate edge or directly next to the food on the plate, never scattered on the bare counter. No raw ingredients are visible, only the finished cooked dish. No text, no watermark, no logo.`;
 
-  return [opening, continuityPara, mainScene, identityPara, compositionPara, garnishPara, stylePara, referencePara, refRolesPara, criticalPara]
+  return [opening, continuityPara, mainScene, identityPara, compositionPara, garnishPara, stylePara, appetitePara, referencePara, refRolesPara, criticalPara]
     .filter(Boolean)
     .join('\n\n');
 }

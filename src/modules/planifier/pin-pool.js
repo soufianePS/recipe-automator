@@ -394,6 +394,40 @@ function computeEligibleAt(publishedAt, daysOffset) {
   return d.toISOString().slice(0, 10);
 }
 
+// Whole days from an ISO date/timestamp to a YYYY-MM-DD key. Returns Infinity
+// if unparseable/empty (treated as "long ago" so the gap never blocks).
+function _daysSince(iso, todayKey) {
+  if (!iso) return Infinity;
+  const a = new Date(String(iso).slice(0, 10) + 'T00:00:00');
+  const b = new Date(todayKey + 'T00:00:00');
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return Infinity;
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+/**
+ * RECYCLE selection (rules #4 + #5): when no fresh pin is eligible, find the
+ * article that has gone the LONGEST without a new pin (oldest last-posted date),
+ * while still respecting the gap. Returns that recipe (so the caller can
+ * regenerate a fresh extra pin for it) or null. Only considers published,
+ * account-assigned recipes that already have ≥1 posted pin.
+ */
+export async function pickOldestForRecycle(planifierConfig, siteName, accountId) {
+  const gapDays = Number(planifierConfig.rules?.pinGapDays ?? 2);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const pool = await readSitePool(siteName, planifierConfig);
+  let best = null, bestLast = null;
+  for (const recipe of pool) {
+    if (recipe.assignedAccountId !== accountId) continue;
+    const posted = recipe.pins.filter(p => p.postedAt).map(p => p.postedAt).sort();
+    if (posted.length === 0) continue;                 // never pinned → normal flow handles it
+    const last = posted[posted.length - 1];
+    if (_daysSince(last, todayKey) < gapDays) continue; // respect the gap
+    if (bestLast === null || last < bestLast) { best = recipe; bestLast = last; }
+  }
+  if (best) Logger.info(`[PinPool] Recycle pick: "${best.topic}" (last pin ${bestLast}) — longest without a new pin`);
+  return best;
+}
+
 /**
  * Read ALL recipes from a site's sheet (regardless of status / wp status).
  * Used by the Recipes management tab — shows everything: pending, processing,
@@ -676,25 +710,49 @@ export function summarizePool(pool) {
  *
  * Returns { recipe, pin, validation } or null.
  */
+/**
+ * Pick a SPECIFIC pin by recipe rowIndex + pinIndex — used by the bulk
+ * "queue for Pinterest" feature which targets the exact pins the user selected
+ * (vs pickNextEligiblePin which auto-picks by diversity). Returns
+ * { recipe, pin, validation:null } or null if not in the pool / no image /
+ * already posted. The "recipe must be published" guard is still enforced later
+ * by the executor's _isRecipePublished() check just before createPin.
+ */
+export async function pickSpecificPin(planifierConfig, siteName, rowIndex, pinIndex) {
+  const pool = await readSitePool(siteName, planifierConfig);
+  const recipe = pool.find(r => Number(r.rowIndex) === Number(rowIndex));
+  if (!recipe) { Logger.warn(`[PinPool] targetPin: recipe row ${rowIndex} not in pool`); return null; }
+  const pin = (recipe.pins || []).find(p => Number(p.pinIndex) === Number(pinIndex));
+  if (!pin) { Logger.warn(`[PinPool] targetPin: pin#${pinIndex} not found on row ${rowIndex}`); return null; }
+  if (!pin.imageUrl) { Logger.warn(`[PinPool] targetPin: pin#${pinIndex} row ${rowIndex} has no image`); return null; }
+  if (pin.postedAt) { Logger.warn(`[PinPool] targetPin: pin#${pinIndex} row ${rowIndex} already posted ${pin.postedAt}`); return null; }
+  return { recipe, pin, validation: null };
+}
+
 export async function pickNextEligiblePin(planifierConfig, siteName, accountId, options = {}) {
   const { validate = true, skipInvalid = false } = options;
   const pool = await readSitePool(siteName, planifierConfig);
   const todayKey = new Date().toISOString().slice(0, 10);
 
   // Build candidate list with computed sort key
+  const gapDays = Number(planifierConfig.rules?.pinGapDays ?? 2);
   const candidates = [];
   for (const recipe of pool) {
     if (recipe.assignedAccountId !== accountId) continue;
-    const postedCount = recipe.pins.filter(p => p.postedAt).length;
+    const postedPins = recipe.pins.filter(p => p.postedAt);
+    const postedCount = postedPins.length;
+    // ROLLING GAP (rule #2): if this article had a pin posted within the last
+    // gapDays, do NOT offer its next pin yet. Anchored to the LAST pin actually
+    // posted (not the recipe publish date), so two pins of one article are never
+    // posted close together — applies to the 3 original pins AND extra pins.
+    if (postedCount > 0 && gapDays > 0) {
+      const lastPosted = postedPins.map(p => p.postedAt).sort().pop();
+      if (_daysSince(lastPosted, todayKey) < gapDays) continue;
+    }
     for (const pin of recipe.pins) {
       if (pin.postedAt) continue;
       if (!pin.imageUrl) continue;
-      if (pin.eligibleAt && pin.eligibleAt > todayKey) continue;
-      candidates.push({
-        recipe,
-        pin,
-        postedCount,
-      });
+      candidates.push({ recipe, pin, postedCount });
     }
   }
   if (candidates.length === 0) return null;
@@ -715,7 +773,19 @@ export async function pickNextEligiblePin(planifierConfig, siteName, accountId, 
   //   2. In-memory cache from validateRecipe (24h TTL)
   //   3. Fresh fetch (writes back to sheet for next time)
   const checkedRecipes = new Map();
+  const liveStatusByRow = new Map();
   for (const c of candidates) {
+    // HARD RULE: only pin recipes that are LIVE-PUBLISHED on WordPress. Skip
+    // draft / future (scheduled) / private / pending / trashed so a pin never
+    // links to a non-public URL. Defense-in-depth with the post-time
+    // _isRecipePublished guard. live===null = transient WP error → let it fall
+    // through to that final guard rather than blocking the whole queue.
+    let live = liveStatusByRow.get(c.recipe.rowIndex);
+    if (live === undefined) { live = await fetchLiveWpStatus(siteName, c.recipe.draftUrl); liveStatusByRow.set(c.recipe.rowIndex, live); }
+    if (live && live !== 'publish') {
+      Logger.info(`[PinPool] Skipping ${c.recipe.topic} pin#${c.pin.pinIndex} — WP status "${live}" (must be published to pin)`);
+      continue;
+    }
     if (!validate) {
       return { recipe: c.recipe, pin: c.pin, validation: null };
     }

@@ -52,7 +52,18 @@ export const PLANIFIER_DEFAULTS = {
 
     // Humanization
     sessionsWithoutPostPct: 18,      // % of pinterest sessions that only browse
-    pinSpreadDaysFromRecipe: [0, 2, 5],  // pin #1 same day, #2 +2d, #3 +5d (±12h jitter)
+    pinSpreadDaysFromRecipe: [0, 2, 5],  // (legacy) initial eligibility offset per pin index
+    // Rolling gap (days) between consecutive pins of the SAME article. After a
+    // pin is posted for an article, its next pin waits this many days. This is
+    // anchored to the LAST pin actually posted (not the recipe publish date),
+    // so two pins of one article are never posted close together.
+    pinGapDays: 2,
+
+    // Bulk Publish — how many DRAFT articles to auto-publish/schedule per day
+    // (random count in this range each day). The rest are scheduled to later
+    // days as WP `future` posts at random times within active hours.
+    publishPerDayMin: 2,
+    publishPerDayMax: 3,
 
     // Plan generation horizon
     horizonDays: 7,

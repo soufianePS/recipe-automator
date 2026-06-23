@@ -973,22 +973,39 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const contextPaths = [];
     const refRoles = []; // parallel array used to build role labels in the prose prompt
 
-    // NEW Flow refactor: the BACKGROUND (passed separately to generate) is the
-    // ONLY standing reference. We do NOT attach previous steps / identity anchor
-    // / ingredients as refs anymore — visual continuity (same bowl, plating,
-    // food identity) comes from staying in the SAME Flow chat/project across all
-    // images of the recipe. EXCEPTION: at STEP 1 only, attach the Pinterest refs
-    // ONCE to inspire the dish's color palette / food-blog style; that style then
-    // carries through the chat. This removes the flaky ref-attach/clear logic.
+    // CLASSIC mode (Agent deselected) has NO conversational memory between
+    // generations, so we MUST re-attach prior images as references for visual
+    // continuity. Order matters: Flow's picker weights the LAST-attached ref most.
     if (idx === 0) {
+      // Step 1 has no previous step — anchor on Pinterest style (low weight) +
+      // the ingredients flat-lay (high, the immediately-preceding generated image).
       const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
       if (pinterestRefs.length > 0) {
         contextPaths.push(...pinterestRefs);
         refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's typical color palette and food-blog style. Do NOT copy plating or composition — this is the FIRST cooking step, the food is raw`);
-        Logger.info(`[Step 1] ${pinterestRefs.length} Pinterest refs attached ONCE for inspiration; later steps rely on chat continuity + background only`);
       }
+      const ingredientsImg = join(outputDir, FILENAMES.ingredients);
+      if (existsSync(ingredientsImg)) {
+        contextPaths.push(ingredientsImg);
+        refRoles.push(`The ingredients flat-lay for THIS recipe — keep the SAME ingredients, colors and kitchen surface`);
+      }
+      Logger.info(`[Step 1] Refs attached: ${contextPaths.length} (pinterest + ingredients)`);
+    } else {
+      // Steps 2+: attach up to the LAST 2 step images (older → newer = highest
+      // weight) so the dish identity, vessel, plating, surface and lighting
+      // carry forward without any chat memory.
+      const prevIdxs = [];
+      if (idx - 2 >= 0) prevIdxs.push(idx - 2);
+      prevIdxs.push(idx - 1);
+      for (const pIdx of prevIdxs) {
+        const p = this._findStepImage(state.steps, pIdx, outputDir);
+        if (p && existsSync(p)) {
+          contextPaths.push(p);
+          refRoles.push(`Previous cooking step image (step ${pIdx + 1}) — keep the SAME dish identity, bowl/vessel, plating, kitchen surface and lighting; only ADVANCE the cooking progress to this step`);
+        }
+      }
+      Logger.info(`[Step ${idx + 1}] Refs attached: ${contextPaths.length} previous step image(s)`);
     }
-    // idx > 0: no image refs — background only; continuity comes from the same Flow chat/project.
 
     // Now build the prompt with refRoles so the prose can label each ref explicitly
     const prompt = buildStepPrompt(visualStep, vgSettings, { isLastStep, foodIdentityCanon, refRoles, firstStep: idx === 0 });
@@ -1088,10 +1105,21 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const contextPaths = [];
     const refRoles = [];
 
-    // NEW Flow refactor: hero uses the BACKGROUND only (passed separately). No
-    // image refs — the hero is generated in the SAME Flow chat as all the steps,
-    // so continuity (same finished dish, plate, garnish, lighting) comes from the
-    // conversation context, not from re-attaching the last/mid step images.
+    // CLASSIC mode (no chat memory): the hero references ONLY the serving-plate
+    // image (the last cooking step — the finished, plated dish) plus the Pinterest
+    // style photos. Order low→high weight: Pinterest (style) → serving plate (high).
+    const heroPinterest = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+    if (heroPinterest.length > 0) {
+      contextPaths.push(...heroPinterest);
+      refRoles.push(`Pinterest reference photos of the finished dish — use for the dish's color palette, garnish and food-blog plating style`);
+    }
+    const servingIdx = state.steps.length - 1; // last step = serving / plated dish
+    const servingImg = servingIdx >= 0 ? this._findStepImage(state.steps, servingIdx, outputDir) : null;
+    if (servingImg && existsSync(servingImg)) {
+      contextPaths.push(servingImg);
+      refRoles.push(`The serving-plate image (final step) — the hero must show the SAME finished, plated dish: same plating, garnish, vessel and lighting, just reframed as the beauty hero shot`);
+    }
+    Logger.info(`[Hero] Refs attached: ${contextPaths.length} (pinterest + serving plate)`);
 
     // Now build the hero prompt with the refRoles labels embedded
     const prompt = buildHeroPrompt(heroState, vgSettings, { foodIdentityCanon, refRoles });

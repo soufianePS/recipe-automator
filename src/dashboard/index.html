@@ -1764,7 +1764,19 @@
                   <label>Pin spread (days from recipe)</label>
                   <input type="text" id="plfRulePinSpread" placeholder="0,2,5" />
                 </div>
-                <div class="plf-rule-hint">Pin spread example: "0,2,5" = pin #1 same day as recipe, pin #2 J+2, pin #3 J+5. Anti-burst signal for Pinterest.</div>
+                <div class="plf-rule-field">
+                  <label>Gap between same-article pins (days)</label>
+                  <input type="number" id="plfRulePinGap" min="0" max="30" placeholder="2" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Publish articles/day (min)</label>
+                  <input type="number" id="plfRulePubMin" min="1" max="20" placeholder="2" />
+                </div>
+                <div class="plf-rule-field">
+                  <label>Publish articles/day (max)</label>
+                  <input type="number" id="plfRulePubMax" min="1" max="20" placeholder="3" />
+                </div>
+                <div class="plf-rule-hint">Gap = days to wait after an article's last pin before posting its next pin (anchored to the last pin actually posted). Once an article has 3 pins, the daily flow recycles the oldest article with a fresh random-template pin. Pin spread "0,2,5" is the legacy initial-eligibility offset.</div>
               </div>
             </div>
           </div>
@@ -1953,6 +1965,16 @@
                 <button class="btn btn-secondary btn-sm" onclick="plfLoadRecipes()">Refresh</button>
                 <button class="btn btn-secondary btn-sm" onclick="plfOpenAddRecipeModal()" style="background:linear-gradient(135deg,#00c853,#00d68f);color:#003300;">+ Add Recipe</button>
               </div>
+            </div>
+            <!-- Bulk action toolbar (shown when ≥1 recipe selected) -->
+            <div id="plfBulkBar" class="plf-bulk-bar" style="display:none;">
+              <span id="plfBulkCount" class="plf-bulk-count">0 selected</span>
+              <button class="btn btn-sm" onclick="plfBulkRegen()" title="Regenerate pins (ChatGPT) for selected recipes">🔄 Regenerate pins</button>
+              <button class="btn btn-sm" onclick="plfBulkQueuePins()" title="Queue selected recipes' pins for Pinterest (spread across the schedule)">📌 Queue for Pinterest</button>
+              <button class="btn btn-sm" onclick="plfBulkPublish()" title="Publish selected DRAFT articles gradually — a few per day at random times (not all at once)">🗓 Publish (gradual)</button>
+              <button class="btn btn-sm plf-bulk-danger" onclick="plfBulkRecreate()" title="Delete + recreate selected DRAFTS (published recipes are skipped)">♻ Recreate (drafts)</button>
+              <button class="btn btn-secondary btn-sm" onclick="plfClearSelection()">Clear</button>
+              <span id="plfBulkStatus" class="plf-bulk-status"></span>
             </div>
             <div class="card-body" id="plfRecipesTable" style="padding:0;">
               <div style="padding:18px;color:#6a6a8e;font-size:13px;">Loading recipes…</div>
