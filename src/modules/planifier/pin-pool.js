@@ -88,6 +88,21 @@ const _liveWpStatusCache = new Map();   // "{siteName}|{postId}" → { status, a
 const LIVE_WP_STATUS_TTL_MS = 5 * 60 * 1000;
 
 /**
+ * Invalidate cached live WP statuses so the next recipes-list load re-fetches
+ * the true status immediately. Call after mutating posts (publish/schedule/
+ * recreate) so the dashboard reflects the change without waiting out the TTL.
+ * Pass (siteName, [postIds]) to clear specific posts, or no args to clear all.
+ */
+export function clearLiveWpStatusCache(siteName, postIds) {
+  if (!siteName) { _liveWpStatusCache.clear(); return; }
+  if (Array.isArray(postIds) && postIds.length) {
+    for (const id of postIds) _liveWpStatusCache.delete(`${siteName}|${id}`);
+  } else {
+    for (const k of [..._liveWpStatusCache.keys()]) if (k.startsWith(`${siteName}|`)) _liveWpStatusCache.delete(k);
+  }
+}
+
+/**
  * Fetch live WordPress post status (publish/draft/future/private/pending/trash)
  * using authenticated REST. Used by the recipes dashboard to show real status
  * regardless of what's cached in sheet col R. Cached 5 min per (site, postId).

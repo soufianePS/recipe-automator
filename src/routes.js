@@ -1391,6 +1391,7 @@ export function setupRoutes(app, ctx) {
         } catch (e) { Logger.warn(`[RecreateBulk] auto-start failed: ${e.message}`); }
       }
 
+      try { const { clearLiveWpStatusCache } = await import('./modules/planifier/pin-pool.js'); clearLiveWpStatusCache(site); } catch {}
       Logger.info(`[RecreateBulk] recreated ${recreated.length}, skipped ${skipped.length}, started=${started}`);
       res.json({ ok: true, recreated, skipped, started });
     } catch (e) {
@@ -1506,6 +1507,8 @@ export function setupRoutes(app, ctx) {
           applied.push({ rowIndex: s.rowIndex, topic: s.topic, when: s.when, status: j.status || `http-${r.status}` });
         } catch (e) { applied.push({ rowIndex: s.rowIndex, topic: s.topic, when: s.when, status: 'error: ' + e.message }); }
       }
+      // Bust the live-status cache so the Recipes tab immediately shows SCHEDULED
+      try { const { clearLiveWpStatusCache } = await import('./modules/planifier/pin-pool.js'); clearLiveWpStatusCache(site, scheduled.map(s => Number(s.postId))); } catch {}
       Logger.info(`[PublishBulk] ${applied.length} article(s) scheduled across days for ${site}; ${skipped.length} skipped`);
       res.json({ ok: true, scheduled: applied, skipped });
     } catch (e) {
