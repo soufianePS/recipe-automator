@@ -55,13 +55,20 @@ function buildCanonSentence(canon, stageHint = '') {
   return s;
 }
 
+// Reference-roles paragraph. CRITICAL: in Flow the BACKGROUND/surface image is
+// always attached FIRST (reference #1), then these context refs follow in order.
+// So the background must be counted as (1) and the context refs numbered from (2)
+// — otherwise Flow maps role (1) onto the background and every role is shifted by
+// one (refs not respected). The LAST attached reference is the strongest signal
+// in Flow, so it is flagged explicitly.
 function buildRefRolesParagraph(refRoles) {
   if (!Array.isArray(refRoles) || refRoles.length === 0) return '';
-  if (refRoles.length === 1) {
-    return `One reference image is attached: ${refRoles[0]}.`;
-  }
-  const numbered = refRoles.map((role, i) => `(${i + 1}) ${role}`);
-  return `${refRoles.length} reference images are attached, in order from first to last attached: ${numbered.join('; ')}. Use each reference for its specific purpose only — do not blend the roles.`;
+  const total = refRoles.length + 1;                                  // +1 = background, attached first
+  const numbered = refRoles.map((role, i) => `(${i + 2}) ${role}`);   // context refs start at (2)
+  const lastNote = refRoles.length >= 1
+    ? ` Reference (${total}) — the LAST attached image — is the single most important one to match closely.`
+    : '';
+  return `${total} reference images are attached, in this exact order from first to last attached: (1) the background/surface reference described above — use it ONLY for the counter surface and window lighting, never for the food; ${numbered.join('; ')}.${lastNote} Look at every attached reference and match it closely; use each strictly for its stated purpose and do not blend the roles.`;
 }
 
 // Explicit continuity header for follow-up images in the SAME Flow chat.

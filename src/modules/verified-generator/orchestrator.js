@@ -991,6 +991,17 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
       Logger.info(`[Step 1] Refs attached: ${contextPaths.length} (pinterest + ingredients)`);
     } else {
+      // SERVING step (the LAST step) is the finished plated dish — also attach
+      // Pinterest style refs FIRST (low weight) so its plating/palette/garnish
+      // matches the food-blog look, exactly like the hero. Earlier steps skip
+      // Pinterest (the food is still mid-cook).
+      if (isLastStep) {
+        const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+        if (pinterestRefs.length > 0) {
+          contextPaths.push(...pinterestRefs);
+          refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's plating style, color palette and garnish; this is the finished, plated serving shot`);
+        }
+      }
       // Steps 2+: attach up to the LAST 2 step images (older → newer = highest
       // weight) so the dish identity, vessel, plating, surface and lighting
       // carry forward without any chat memory.
@@ -1004,7 +1015,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
           refRoles.push(`Previous cooking step image (step ${pIdx + 1}) — keep the SAME dish identity, bowl/vessel, plating, kitchen surface and lighting; only ADVANCE the cooking progress to this step`);
         }
       }
-      Logger.info(`[Step ${idx + 1}] Refs attached: ${contextPaths.length} previous step image(s)`);
+      Logger.info(`[Step ${idx + 1}${isLastStep ? ' / serving' : ''}] Refs attached: ${contextPaths.length}${isLastStep ? ' (pinterest + last steps)' : ' previous step image(s)'}`);
     }
 
     // Now build the prompt with refRoles so the prose can label each ref explicitly
