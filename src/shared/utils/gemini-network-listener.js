@@ -113,6 +113,29 @@ function parseChunks(body) {
  * text + any image URLs found. Returns:
  *   { text: string|null, images: string[], chatId: string|null, responseId: string|null }
  */
+/**
+ * Recursively find the longest string in a parsed payload that looks like the
+ * recipe JSON — resilient to Gemini moving the text to a path we don't hardcode
+ * (the fixed payload[4]/payload[26] paths go stale when Gemini changes format).
+ * Looks for big strings containing recipe-JSON markers.
+ */
+function deepFindRecipeString(node, best = { t: '' }, depth = 0) {
+  if (depth > 40 || node == null) return best.t;
+  if (typeof node === 'string') {
+    if (node.length > best.t.length && node.length > 200) {
+      const trimmed = node.trim();
+      if (/"post_title"|"visual_plan"|"pinterest_pins"|"recipe"\s*:/.test(node) ||
+          (trimmed.startsWith('{') && node.length > 500)) {
+        best.t = node;
+      }
+    }
+    return best.t;
+  }
+  if (Array.isArray(node)) { for (const v of node) deepFindRecipeString(v, best, depth + 1); return best.t; }
+  if (typeof node === 'object') { for (const v of Object.values(node)) deepFindRecipeString(v, best, depth + 1); return best.t; }
+  return best.t;
+}
+
 function extractFromChunks(chunks) {
   let text = null;
   let chatId = null;
@@ -164,6 +187,13 @@ function extractFromChunks(chunks) {
         const c3 = payload?.[4]?.[0]?.[1]?.[0];
         if (typeof c3 === 'string') candidates.push({ src: 'convText', t: c3 });
       } catch {}
+      // Path-agnostic fallback: deep-scan the whole payload for the recipe JSON
+      // (handles Gemini moving the text — the cause of "no text at known paths"
+      // + truncated 1999-char captures while the real 16KB JSON sat elsewhere).
+      try {
+        const deep = deepFindRecipeString(payload);
+        if (deep) candidates.push({ src: 'deepScan', t: deep });
+      } catch {}
 
       // Pick the longest candidate that looks like JSON (starts with { or [).
       // Fall back to longest text overall.
@@ -180,7 +210,10 @@ function extractFromChunks(chunks) {
           if (!best || c.t.length > best.t.length) best = c;
         }
       }
-      if (best && best.t.length > 0) text = best.t;
+      // Keep the LONGEST text seen across all chunks — Gemini streams cumulative
+      // text, so a later chunk can be SHORTER (metadata) and must not clobber the
+      // full recipe captured by an earlier/longer chunk.
+      if (best && best.t.length > 0 && (text == null || best.t.length > text.length)) text = best.t;
 
       // Image URLs in image-gen StreamGenerate responses live at:
       //   payload[4][0][12][7][0][0][i][3][3]   for i = 0,1,2... (one per variation)
@@ -224,6 +257,33 @@ function collectImageUrls(node, sink, depth = 0) {
   if (typeof node === 'object') {
     for (const v of Object.values(node)) collectImageUrls(v, sink, depth + 1);
   }
+}
+
+/**
+ * Heuristic: does `text` contain a COMPLETE JSON value (balanced braces)?
+ * Used to avoid settling on a mid-stream truncated recipe — we keep waiting
+ * until the model's running text closes its top-level { } / [ ]. Tolerates a
+ * ```json / ```python fence wrapper and leading prose.
+ */
+function looksCompleteJson(text) {
+  if (!text) return false;
+  let s = String(text).trim();
+  const fence = s.match(/```(?:json|python)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  const o = s.indexOf('{'), a = s.indexOf('[');
+  let start = (o === -1) ? a : (a === -1 ? o : Math.min(o, a));
+  if (start === -1) return false;
+  s = s.slice(start);
+  let depth = 0, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (inStr) { if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') { depth--; if (depth === 0) return true; }
+  }
+  return false; // never balanced → still streaming / truncated
 }
 
 /**
@@ -319,7 +379,7 @@ export function attachGeminiListener(page) {
      * Resolves with a snapshot { text, images, chatId, responseId, ... }.
      * Rejects on timeout.
      */
-    async waitForResponse({ timeout = 600000, quietMs = 4000, minTextLen = 1 } = {}) {
+    async waitForResponse({ timeout = 600000, quietMs = 4000, minTextLen = 1, awaitJsonComplete = false } = {}) {
       const start = Date.now();
       // Wait for first text
       await new Promise((resolve, reject) => {
@@ -339,8 +399,25 @@ export function attachGeminiListener(page) {
         }
         updateWaiters.push(w);
       });
-      // Now wait for stream to go quiet
-      while (Date.now() - state.lastUpdateMs < quietMs) {
+      // Settle: wait for the stream to go quiet AND (when awaitJsonComplete) for
+      // the captured text to be a COMPLETE JSON. A mid-stream pause >quietMs used
+      // to settle early and return a TRUNCATED recipe — now we keep waiting until
+      // the braces balance, or until the stream has been silent for HARD_QUIET
+      // (real truncation → accept what we have; parser salvage handles the rest).
+      const HARD_QUIET = Math.max(quietMs * 4, 15000);
+      let warnedIncomplete = false;
+      while (true) {
+        const sinceUpdate = Date.now() - state.lastUpdateMs;
+        const quiet = sinceUpdate >= quietMs;
+        const complete = !awaitJsonComplete || looksCompleteJson(state.text);
+        if (quiet && complete) break;
+        if (sinceUpdate >= HARD_QUIET) {
+          if (awaitJsonComplete && !complete && !warnedIncomplete) {
+            Logger.warn(`[GeminiNet] stream silent ${(sinceUpdate / 1000).toFixed(0)}s but JSON still incomplete (len ${state.text?.length || 0}) — accepting + letting parser salvage`);
+            warnedIncomplete = true;
+          }
+          break;
+        }
         if (Date.now() - start > timeout) {
           throw new Error(`[GeminiNet] response never settled within ${timeout}ms (last text len: ${state.text?.length || 0})`);
         }

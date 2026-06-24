@@ -339,7 +339,10 @@ export class GeminiChatPage {
       // already done and the DOM-stability path below extracts it reliably —
       // no point hanging 10 minutes (that was the old silent-failure mode).
       try {
-        const snap = await listener.waitForResponse({ timeout: 120000, quietMs: 4000, minTextLen: 50 });
+        // awaitJsonComplete: don't settle on a mid-stream pause — wait until the
+        // recipe JSON's braces actually balance (prevents truncated captures that
+        // then fail JSON parsing). Only meaningful when we expect JSON.
+        const snap = await listener.waitForResponse({ timeout: 120000, quietMs: 4000, minTextLen: 50, awaitJsonComplete: !!expectJSON });
         responseText = snap.text || '';
         Logger.success(`[Gemini] Sniffed ${responseText.length} chars (chunks: ${snap.rawChunks}, bodies: ${snap.bodiesSeen})`);
       } catch (snifferError) {

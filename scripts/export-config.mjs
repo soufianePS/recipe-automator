@@ -23,8 +23,18 @@ const OUT = join(ROOT, 'config-bundle');
 const FILES = [
   'data/google-credentials.json',          // → Multi-Site (Google Sheet access)
   'data/planifier/config.json',            // → Dolphin token + Telegram + Planifier config
-  'data/sites/leagueofcooking/settings.json', // → WordPress + site settings
 ];
+
+// Include EVERY site's settings.json (each one resolves that site's sheet tab +
+// WP credentials). Missing even one means that site reads the wrong tab on the
+// other PC → wrong recipe counts / 401s.
+import { readdirSync } from 'fs';
+try {
+  for (const site of readdirSync(join(ROOT, 'data', 'sites'))) {
+    const rel = `data/sites/${site}/settings.json`;
+    if (existsSync(join(ROOT, rel))) FILES.push(rel);
+  }
+} catch {}
 
 let copied = 0;
 const missing = [];

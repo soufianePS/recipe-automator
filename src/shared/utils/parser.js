@@ -135,6 +135,35 @@ export const Parser = {
     return null;
   },
 
+  /**
+   * Last-resort salvage for a TRUNCATED JSON (stream cut off mid-recipe):
+   * close any unterminated string, drop a dangling trailing comma, fill a
+   * dangling "key": with null, and append the missing }/] in LIFO order so the
+   * partial object becomes parseable. Recovers most of a cut-off recipe.
+   */
+  _autoClose(raw) {
+    let s = String(raw);
+    const stack = [];
+    let inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) { if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{') stack.push('}');
+      else if (c === '[') stack.push(']');
+      else if (c === '}' || c === ']') stack.pop();
+    }
+    let res = s;
+    if (inStr) res += '"';                 // close unterminated string
+    res = res.replace(/\s+$/, '');         // trim trailing whitespace
+    res = res.replace(/,$/, '');           // drop dangling comma
+    if (/:$/.test(res)) res += ' null';    // key with no value yet
+    res = res.replace(/,$/, '');
+    while (stack.length) res += stack.pop(); // append missing closers (LIFO)
+    return res;
+  },
+
   /** Walks back from `from` and returns the index of the last balanced } or ]. */
   _findLastBalancedBrace(s, from) {
     let depth = 0, lastBalanced = -1;
@@ -179,6 +208,18 @@ export const Parser = {
           const m = t.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
           return m ? m[1].trim() : null;
         }
+      },
+      {
+        // Truncated tail: grab from the FIRST opening brace to END of text (no
+        // closing required). Lets _autoClose salvage a recipe whose stream was
+        // cut off mid-array (the greedy regex above stops at the last complete
+        // '}' and drops the partial steps; this keeps them).
+        label: 'Truncated tail',
+        extract: (t) => {
+          const io = t.indexOf('{'), ia = t.indexOf('[');
+          const i = (io === -1) ? ia : (ia === -1 ? io : Math.min(io, ia));
+          return i === -1 ? null : t.slice(i).trim();
+        }
       }
     ];
 
@@ -204,6 +245,14 @@ export const Parser = {
         if (recovered) {
           Logger.warn(`${label} recovered after JSON fix-up`);
           return recovered;
+        }
+        // Last resort: the JSON is likely TRUNCATED (stream cut off). Auto-close
+        // the open braces/strings and retry — salvages a partial recipe instead
+        // of failing the whole run.
+        const salvaged = this._recoverJSON(this._autoClose(this._cleanJSON(candidate)));
+        if (salvaged) {
+          Logger.warn(`${label} salvaged after auto-closing a truncated JSON`);
+          return salvaged;
         }
         Logger.warn(`${label} recovery failed: ${e.message}`);
       }
