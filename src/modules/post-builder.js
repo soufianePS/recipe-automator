@@ -15,30 +15,54 @@ import { Logger } from '../shared/utils/logger.js';
  * + some browsers/clients don't follow the redirect cleanly).
  */
 const _canonicalLinkCache = new Map();
+
+function _extractPostId(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const u = new URL(rawUrl);
+    const postId = u.searchParams.get('p') || u.searchParams.get('post');
+    return postId && /^\d+$/.test(postId) ? postId : null;
+  } catch {
+    const m = String(rawUrl).match(/[?&](?:p|post)=(\d+)/);
+    return m ? m[1] : null;
+  }
+}
+
 async function _resolveCanonical(rawUrl, settings) {
   if (!rawUrl) return rawUrl;
   let origin, postId;
   try {
     const u = new URL(rawUrl);
     origin = u.origin;
-    postId = u.searchParams.get('p');
+    postId = _extractPostId(rawUrl);
   } catch { return rawUrl; }
   if (!postId || !/^\d+$/.test(postId)) return rawUrl;
   const cacheKey = `${origin}|${postId}`;
   if (_canonicalLinkCache.has(cacheKey)) return _canonicalLinkCache.get(cacheKey);
   try {
-    const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?_fields=link`;
-    const res = await fetch(restUrl, { signal: AbortSignal.timeout(8000) });
+    const restUrl = `${origin}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=link,status`;
+    const headers = {};
+    if (settings?.wpUsername && settings?.wpAppPassword) {
+      headers.Authorization = 'Basic ' + Buffer.from(`${settings.wpUsername}:${settings.wpAppPassword}`).toString('base64');
+    }
+    const res = await fetch(restUrl, { headers, signal: AbortSignal.timeout(8000) });
     if (res.ok) {
       const json = await res.json();
-      if (json?.link) {
+      if (json?.status === 'publish' && json?.link && !/[?&]p=\d+/.test(json.link)) {
         _canonicalLinkCache.set(cacheKey, json.link);
         return json.link;
       }
+      _canonicalLinkCache.set(cacheKey, null);
+      return null;
     }
   } catch {}
   _canonicalLinkCache.set(cacheKey, rawUrl);
   return rawUrl;
+}
+
+function convertMarkdownLinks(html) {
+  if (!html) return html;
+  return html.replace(/\[([^\]<]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>');
 }
 
 /**
@@ -61,25 +85,32 @@ async function _resolveCanonical(rawUrl, settings) {
  */
 async function sanitizeInternalLinks(html, settings) {
   if (!html || !settings?.wpUrl) return html;
-  let result = html;
+  let result = convertMarkdownLinks(html);
   const host = settings.wpUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
 
-  // ── Pass 1: resolve ?p=ID anchors to canonical ───────────────
-  const anchorRegex = /<a\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi;
+  // ── Pass 1: resolve ?p=ID / wp-admin edit anchors to canonical ──
+  const fullAnchorRegex = /<a\b([^>]*?)href=["']([^"']+)["']([^>]*)>([\s\S]*?)<\/a>/gi;
   const replacements = [];
   let m;
-  while ((m = anchorRegex.exec(result)) !== null) {
+  while ((m = fullAnchorRegex.exec(result)) !== null) {
     const fullMatch = m[0];
     const href = m[2];
-    if (!href.includes(`${host}/?p=`) && !href.match(/\?p=\d+/)) continue;
-    replacements.push({ original: fullMatch, href, prefix: m[1] || '', suffix: m[3] || '' });
+    if (
+      !href.includes(`${host}/?p=`) &&
+      !href.includes(`${host}/wp-admin/post.php`) &&
+      !href.match(/[?&](?:p|post)=\d+/)
+    ) continue;
+    replacements.push({ original: fullMatch, href, prefix: m[1] || '', suffix: m[3] || '', inner: m[4] || '' });
   }
   for (const r of replacements) {
     const canonical = await _resolveCanonical(r.href, settings);
-    if (canonical && canonical !== r.href) {
-      const newAnchor = `<a${r.prefix}href="${canonical}"${r.suffix}>`;
+    if (canonical === null) {
+      result = result.split(r.original).join(r.inner);
+      Logger.info(`[LinkSanitize] removed draft/private internal link: ${r.href}`);
+    } else if (canonical && canonical !== r.href) {
+      const newAnchor = `<a${r.prefix}href="${canonical}"${r.suffix}>${r.inner}</a>`;
       result = result.split(r.original).join(newAnchor);
-      Logger.info(`[LinkSanitize] ?p=ID → ${canonical}`);
+      Logger.info(`[LinkSanitize] internal link canonicalized: ${canonical}`);
     }
   }
 
@@ -98,18 +129,22 @@ async function sanitizeInternalLinks(html, settings) {
   let wrapped = 0;
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 1) continue;  // code/pre block — leave untouched
-    parts[i] = parts[i].replace(urlRegex, (match, url) => {
-      if (isAsset(url)) return url;
-      // Resolve ?p=ID inline if present
-      if (/\?p=\d+/.test(url)) {
-        // Best-effort: leave as-is, pass 1 already handled anchor variants
-        // For plain text ?p= links we wrap them and let pass 1 catch them
-        // next time. Keep simple — async resolution inside a regex callback
-        // is awkward; the visible link still works via WP redirect.
+    const urls = [...new Set([...parts[i].matchAll(urlRegex)].map(mm => mm[1]))];
+    for (const url of urls) {
+      if (isAsset(url)) continue;
+      let href = url;
+      if (/[?&](?:p|post)=\d+/.test(url) || url.includes('/wp-admin/post.php')) {
+        const canonical = await _resolveCanonical(url, settings);
+        if (canonical === null) {
+          parts[i] = parts[i].split(url).join('');
+          Logger.info(`[LinkSanitize] removed plain draft/private URL: ${url}`);
+          continue;
+        }
+        href = canonical || url;
       }
       wrapped++;
-      return `<a href="${url}">${url}</a>`;
-    });
+      parts[i] = parts[i].split(url).join(`<a href="${href}">${href}</a>`);
+    }
   }
   if (wrapped > 0) {
     Logger.info(`[LinkSanitize] wrapped ${wrapped} plain-text URL(s) as <a>`);
@@ -667,6 +702,7 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   }
 
   // Auto-link related recipe mentions that ChatGPT left as plain text
+  html = convertMarkdownLinks(html);
   const relatedPosts = state._relatedPosts || [];
   if (relatedPosts.length > 0) {
     html = autoLinkRelatedRecipes(html, relatedPosts);

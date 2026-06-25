@@ -3184,6 +3184,203 @@
     plfUpdateBulkBar();
   };
 
+  function _internalLinkSiteOptions() {
+    const sites = Object.entries(state.config?.sites || {})
+      .filter(([name, site]) => !name.startsWith('_') && site?.active !== false)
+      .map(([name]) => name);
+    if (!sites.length) return '<option value="">No active sites</option>';
+    return sites.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+  }
+
+  function _renderInternalLinkSummary(job) {
+    const s = job?.summary || {};
+    const byAction = s.byAction || {};
+    const actionRows = Object.entries(byAction).map(([k, v]) => `
+      <div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+        <span>${escapeHtml(k.replace(/_/g, ' '))}</span><strong>${v}</strong>
+      </div>
+    `).join('');
+    return `
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0;">
+        <div class="stat-card blue" style="padding:12px;"><div class="stat-label">Posts scanned</div><div class="stat-value" style="font-size:22px;">${s.postsScanned || job?.progress?.scanned || 0}</div></div>
+        <div class="stat-card orange" style="padding:12px;"><div class="stat-label">Posts affected</div><div class="stat-value" style="font-size:22px;">${s.postsWithIssues || 0}</div></div>
+        <div class="stat-card purple" style="padding:12px;"><div class="stat-label">Links found</div><div class="stat-value" style="font-size:22px;">${s.issuesFound || 0}</div></div>
+        <div class="stat-card green" style="padding:12px;"><div class="stat-label">Corrected</div><div class="stat-value" style="font-size:22px;">${s.corrected || 0}</div></div>
+      </div>
+      ${actionRows ? `<div style="font-size:12px;color:#c8c8e8;margin-bottom:12px;">${actionRows}</div>` : ''}
+    `;
+  }
+
+  function _renderInternalLinkFindings(job) {
+    const findings = job?.findings || [];
+    if (!findings.length) {
+      return '<div style="padding:14px;border:1px solid rgba(0,214,143,0.25);background:rgba(0,214,143,0.07);border-radius:8px;color:#9ff2d5;font-size:12px;">No internal link problems found.</div>';
+    }
+    const rows = findings.slice(0, 80).map(f => `
+      <tr>
+        <td style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.06);vertical-align:top;">
+          <div style="font-weight:700;color:#fff;">${escapeHtml(f.postTitle || ('Post ' + f.postId))}</div>
+          <div style="font-size:11px;color:#6a6a8e;">ID ${f.postId} · ${escapeHtml(f.postStatus || '')}</div>
+        </td>
+        <td style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.06);vertical-align:top;">
+          <span style="font-size:11px;color:#b8a4ff;font-weight:700;">${escapeHtml((f.action || '').replace(/_/g, ' '))}</span>
+          <div style="font-size:11px;color:#9a9ab8;">target: ${escapeHtml(f.target?.status || 'url')}</div>
+        </td>
+        <td style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.06);vertical-align:top;max-width:260px;word-break:break-word;">
+          <div style="font-size:11px;color:#ffb3b3;">${escapeHtml(f.from || '')}</div>
+        </td>
+        <td style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.06);vertical-align:top;max-width:260px;word-break:break-word;">
+          <div style="font-size:11px;color:#9ff2d5;">${escapeHtml(f.to || '')}</div>
+        </td>
+      </tr>
+    `).join('');
+    const more = findings.length > 80 ? `<div style="padding:8px;color:#9a9ab8;font-size:11px;">Showing first 80 of ${findings.length} finding(s).</div>` : '';
+    return `
+      <div style="max-height:340px;overflow:auto;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead style="position:sticky;top:0;background:#15152b;">
+            <tr>
+              <th style="text-align:left;padding:8px;color:#9a9ab8;">Post</th>
+              <th style="text-align:left;padding:8px;color:#9a9ab8;">Action</th>
+              <th style="text-align:left;padding:8px;color:#9a9ab8;">Before</th>
+              <th style="text-align:left;padding:8px;color:#9a9ab8;">After</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${more}
+    `;
+  }
+
+  function _renderInternalLinkProgress(job) {
+    const p = job?.progress || {};
+    const total = p.total || 0;
+    const scanned = p.scanned || 0;
+    const pct = total ? Math.min(100, Math.round(scanned / total * 100)) : (job?.status === 'done' ? 100 : 8);
+    const statusLabel = job?.status || 'queued';
+    return `
+      <div style="margin:12px 0;">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#9a9ab8;margin-bottom:6px;">
+          <span>${escapeHtml(statusLabel)}${p.current ? ' · ' + escapeHtml(p.current) : ''}</span>
+          <span>${scanned}/${total || '?'}</span>
+        </div>
+        <div style="height:12px;background:#0e0e22;border-radius:999px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#7c4dff,#00d68f);transition:width .35s;"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function _pollInternalLinkJob(jobId) {
+    const box = document.getElementById('plfInternalLinksBody');
+    if (!box) return;
+    try {
+      const r = await api('GET', `/api/planifier/internal-links/job/${encodeURIComponent(jobId)}`);
+      const job = r.job;
+      window._plfInternalLinkJobId = job.id;
+      box.innerHTML = `
+        ${_renderInternalLinkProgress(job)}
+        ${_renderInternalLinkSummary(job)}
+        ${_renderInternalLinkFindings(job)}
+      `;
+      const applyBtn = document.getElementById('plfInternalLinksApplyBtn');
+      const scanBtn = document.getElementById('plfInternalLinksScanBtn');
+      if (scanBtn && !['queued', 'in_progress', 'applying'].includes(job.status)) scanBtn.disabled = false;
+      if (applyBtn) {
+        applyBtn.disabled = !(job.status === 'done' && (job.findings || []).length > 0);
+        applyBtn.textContent = job.status === 'applied' ? 'Applied' : 'Apply Corrections';
+      }
+      if (['queued', 'in_progress', 'applying'].includes(job.status)) {
+        setTimeout(() => _pollInternalLinkJob(jobId), 2000);
+      } else if (job.status === 'applied') {
+        showToast(`Internal links corrected: ${job.summary?.corrected || 0}`, 'success');
+      } else if (job.status === 'failed') {
+        showToast('Internal link job failed: ' + (job.error || 'unknown error'), 'error');
+      }
+    } catch (e) {
+      box.innerHTML = `<div style="color:#ff8585;font-size:12px;">Poll failed: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  window.plfOpenInternalLinksModal = function () {
+    const existing = $('.plf-modal-backdrop'); if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.className = 'plf-modal-backdrop';
+    modal.innerHTML = `
+      <div class="plf-modal" style="width:min(980px,96vw);max-height:92vh;overflow-y:auto;" onclick="event.stopPropagation()">
+        <div class="plf-modal-title">Internal Links Audit</div>
+        <div class="plf-modal-sub">Scan WordPress posts for internal ?p=ID, admin edit links, raw URLs, and markdown links. Scan is read-only until you click Apply.</div>
+        <div class="plf-modal-fields" style="grid-template-columns:1fr 1fr 1fr;">
+          <div class="plf-rule-field">
+            <label>Site</label>
+            <select id="plfInternalLinksSite">${_internalLinkSiteOptions()}</select>
+          </div>
+          <div class="plf-rule-field">
+            <label>Posts to scan</label>
+            <input id="plfInternalLinksMax" type="number" min="1" max="500" value="100" />
+          </div>
+          <div class="plf-rule-field">
+            <label>Status</label>
+            <select id="plfInternalLinksScope">
+              <option value="publish">Published only</option>
+              <option value="publish,draft">Published + drafts</option>
+              <option value="publish,draft,future">Published + drafts + scheduled</option>
+            </select>
+          </div>
+        </div>
+        <div id="plfInternalLinksBody" style="margin-top:12px;color:#9a9ab8;font-size:12px;">
+          Click Scan to preview corrections. Existing posts are not changed during scan.
+        </div>
+        <div class="plf-modal-actions">
+          <span style="font-size:11px;color:#6a6a8e;">Draft/private targets are unlinked, published targets become public permalinks.</span>
+          <div class="plf-modal-actions-right">
+            <button class="btn btn-outline-secondary" onclick="document.querySelector('.plf-modal-backdrop').remove()">Close</button>
+            <button class="btn btn-secondary" id="plfInternalLinksScanBtn" onclick="plfStartInternalLinksScan()">Scan</button>
+            <button class="btn btn-save" id="plfInternalLinksApplyBtn" onclick="plfApplyInternalLinks()" disabled>Apply Corrections</button>
+          </div>
+        </div>
+      </div>`;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  };
+
+  window.plfStartInternalLinksScan = async function () {
+    const site = document.getElementById('plfInternalLinksSite')?.value;
+    const maxPosts = Number(document.getElementById('plfInternalLinksMax')?.value || 100);
+    const statuses = String(document.getElementById('plfInternalLinksScope')?.value || 'publish').split(',');
+    const body = document.getElementById('plfInternalLinksBody');
+    const scanBtn = document.getElementById('plfInternalLinksScanBtn');
+    const applyBtn = document.getElementById('plfInternalLinksApplyBtn');
+    if (!site) return showToast('Pick a site first', 'error');
+    if (scanBtn) scanBtn.disabled = true;
+    if (applyBtn) applyBtn.disabled = true;
+    if (body) body.innerHTML = '<div style="padding:14px;color:#6ea8fe;">Starting scan...</div>';
+    try {
+      const r = await api('POST', '/api/planifier/internal-links/scan', { site, statuses, maxPosts });
+      window._plfInternalLinkJobId = r.job.id;
+      _pollInternalLinkJob(r.job.id);
+    } catch (e) {
+      if (scanBtn) scanBtn.disabled = false;
+      if (body) body.innerHTML = `<div style="color:#ff8585;font-size:12px;">Scan failed: ${escapeHtml(e.message)}</div>`;
+    }
+  };
+
+  window.plfApplyInternalLinks = async function () {
+    const jobId = window._plfInternalLinkJobId;
+    if (!jobId) return;
+    if (!confirm('Apply these internal link corrections to WordPress posts now?')) return;
+    const applyBtn = document.getElementById('plfInternalLinksApplyBtn');
+    if (applyBtn) applyBtn.disabled = true;
+    try {
+      const r = await api('POST', '/api/planifier/internal-links/apply', { jobId });
+      _pollInternalLinkJob(r.job.id);
+    } catch (e) {
+      showToast('Apply failed: ' + e.message, 'error');
+      if (applyBtn) applyBtn.disabled = false;
+    }
+  };
+
   // 1) Bulk regenerate pins (ChatGPT) — opens a modal to pick WHICH pin slot(s)
   //    (Pin 1/2/3) + a template, applied to all selected recipes. Templates are
   //    per-site, so selection must be a single site.

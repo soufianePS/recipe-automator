@@ -20,6 +20,7 @@ import { readAllPools, summarizePool, markPinPosted, unmarkPinPosted, pickNextEl
 import { validateRecipe, clearValidationCache } from './modules/planifier/recipe-validator.js';
 import { simulateSession, simulateMany } from './modules/planifier/browse-simulator.js';
 import { runPlanItem } from './modules/planifier/action-executor.js';
+import { startInternalLinkScan, getInternalLinkJob, startInternalLinkApply } from './modules/planifier/internal-link-auditor.js';
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
@@ -745,6 +746,31 @@ export function setupRoutes(app, ctx) {
       await Planifier.clearHistory();
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Internal link maintenance: scan first, then apply only after UI confirmation.
+  app.post('/api/planifier/internal-links/scan', async (req, res) => {
+    try {
+      const { site, statuses, maxPosts } = req.body || {};
+      const job = await startInternalLinkScan({ site, statuses, maxPosts });
+      res.json({ ok: true, job });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.get('/api/planifier/internal-links/job/:jobId', async (req, res) => {
+    try {
+      const job = getInternalLinkJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ ok: true, job });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/planifier/internal-links/apply', async (req, res) => {
+    try {
+      const { jobId } = req.body || {};
+      const job = await startInternalLinkApply({ jobId });
+      res.json({ ok: true, job });
+    } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
   // ── Boards validator — cached pre-flight check per account ─────
