@@ -167,7 +167,8 @@ export async function updateSheet(state, settings) {
           imageUrl: pin.wpImageUrl || '',
           description: pin.description || '',
           title: pin.title || '',
-          tags: (pin.description || '').match(/#\w+/g)?.join(' ') || ''
+          tags: (pin.description || '').match(/#\w+/g)?.join(' ')
+            || (Array.isArray(pin.keywords) ? pin.keywords.map(k => `#${String(k).toLowerCase().replace(/[^a-z0-9]+/g, '')}`).join(' ') : '')
         }))
       };
       await SheetsAPI.markDone(effectiveSettings, state.sheetRowIndex, state.draftUrl || '', pinData);

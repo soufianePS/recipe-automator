@@ -42,6 +42,96 @@ function toTitleCase(str) {
   }).join(' ');
 }
 
+function parseManualKeywords(value) {
+  return String(value || '')
+    .split(/[,;\n]+/)
+    .map(k => k.trim())
+    .filter(Boolean)
+    .filter((k, i, arr) => arr.findIndex(x => x.toLowerCase() === k.toLowerCase()) === i)
+    .slice(0, 12);
+}
+
+function mergeKeywords(existing, manualKeywords, limit = 8) {
+  const current = Array.isArray(existing)
+    ? existing
+    : String(existing || '').split(/[,;\n]+/);
+  return [...current, ...manualKeywords]
+    .map(k => String(k || '').trim())
+    .filter(Boolean)
+    .filter((k, i, arr) => arr.findIndex(x => x.toLowerCase() === k.toLowerCase()) === i)
+    .slice(0, limit);
+}
+
+function ensureSeoObject(seo, fallbackTitle, manualKeywords, limit = 8) {
+  const out = (seo && typeof seo === 'object') ? { ...seo } : {};
+  out.filename = out.filename || '';
+  out.alt_text = out.alt_text || fallbackTitle || '';
+  out.title = out.title || fallbackTitle || out.alt_text || '';
+  out.description = out.description || `${fallbackTitle || out.title || 'Recipe image'} featuring ${manualKeywords.slice(0, 3).join(', ')}.`;
+  out.keywords = mergeKeywords(out.keywords, manualKeywords, limit);
+  return out;
+}
+
+function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
+  const base = String(pin.description || '').trim();
+  const keywords = manualKeywords.slice(index, index + 3).concat(manualKeywords).slice(0, 4);
+  const keywordSentence = keywords.length
+    ? `Save this ${recipeTitle} idea when you want ${keywords.join(', ')}.`
+    : `Save this ${recipeTitle} idea for your next baking day.`;
+  const titleSentence = pin.title ? `${pin.title} is a useful recipe to keep on hand.` : '';
+  const hashtags = mergeKeywords([], manualKeywords, 8)
+    .map(k => `#${k.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 35)}`)
+    .filter(tag => tag.length > 1)
+    .slice(0, 8);
+  const fallbackTags = ['#easyrecipes', '#recipeideas', '#pinterestrecipes', '#foodblog', '#homemaderecipes'];
+  const tagLine = [...hashtags, ...fallbackTags]
+    .filter((tag, i, arr) => arr.indexOf(tag) === i)
+    .slice(0, 8)
+    .join(' ');
+
+  let description = [base, titleSentence, keywordSentence]
+    .filter(Boolean)
+    .join(' ');
+  if (description.length < 450) {
+    description += ` It works for planning desserts, holiday menus, family baking, and simple make-ahead treats. The notes in the full post help with timing, texture, storage, and serving so you can make it without guessing.`;
+  }
+  if (!description.includes('#')) description += ` ${tagLine}`;
+  return description.slice(0, 650);
+}
+
+function applyManualSeoKeywords(recipe, pinterestPins, manualKeywords) {
+  if (!manualKeywords.length) return { recipe, pinterestPins };
+  const primary = manualKeywords[0];
+  const title = recipe.post_title || recipe.title || 'Recipe';
+
+  recipe.focus_keyword = recipe.focus_keyword || primary;
+  if (!String(recipe.focus_keyword || '').toLowerCase().includes(primary.toLowerCase())) {
+    recipe.focus_keyword = `${primary}, ${recipe.focus_keyword}`.replace(/,\s*$/, '');
+  }
+  recipe.meta_title = recipe.meta_title || `${title} - ${primary}`;
+  recipe.meta_description = recipe.meta_description || `${title} made with ${manualKeywords.slice(0, 3).join(', ')}.`;
+  if (recipe.meta_description.length > 155) {
+    recipe.meta_description = recipe.meta_description.slice(0, 152).replace(/\s+\S*$/, '') + '...';
+  }
+
+  recipe.hero_seo = ensureSeoObject(recipe.hero_seo, title, manualKeywords);
+  recipe.ingredients_seo = ensureSeoObject(recipe.ingredients_seo, `${title} ingredients`, manualKeywords);
+  if (Array.isArray(recipe.steps)) {
+    recipe.steps = recipe.steps.map((step, i) => ({
+      ...step,
+      seo: ensureSeoObject(step.seo, step.title || `${title} step ${i + 1}`, manualKeywords.slice(i).concat(manualKeywords), 6),
+    }));
+  }
+  recipe.pinterest_pins = (pinterestPins || []).map((pin, i) => ({
+    ...pin,
+    title: pin.title || `${title} - ${manualKeywords[Math.min(i, manualKeywords.length - 1)] || primary}`,
+    description: expandPinterestDescription(pin, title, manualKeywords, i),
+    keywords: mergeKeywords(pin.keywords, manualKeywords, 8),
+    seo: ensureSeoObject(pin.seo, pin.title || `${title} pin ${i + 1}`, manualKeywords, 8),
+  }));
+  return { recipe, pinterestPins: recipe.pinterest_pins };
+}
+
 export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
   constructor(browser, context, serverCtx) {
     super(browser, context, serverCtx);
@@ -457,6 +547,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       status: STATES.SELECTING_BACKGROUND,
       recipeTitle: pending.topic,
       sheetRowIndex: pending.rowIndex,
+      seoKeywords: pending.seoKeywords || '',
       sheetSettings: {
         sheetTabName: sheetSettings.sheetTabName,
         statusColumn: sheetSettings.statusColumn
@@ -466,6 +557,9 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       // and the recipe project keeps accumulating images until Pin 3 → context crash.
       pinterestProjectReady: false
     });
+    if (pending.seoKeywords) {
+      Logger.info(`[SEO] Manual keywords from sheet Z: ${pending.seoKeywords}`);
+    }
     // Clear prepared files cache for new recipe
     this._preparedFiles = new Map();
 
@@ -526,11 +620,16 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     // Build intro/conclusion template instructions
     let templateInstructions = '';
+    const manualSeoKeywords = parseManualKeywords(state.seoKeywords);
 
     // If we successfully scraped Pinterest refs and they were attached to the AI,
     // tell it to actually use them when writing visual prompt fields.
     if (pinterestRefPaths.length > 0) {
       templateInstructions += `\n\nVISUAL REFERENCE IMAGES (CRITICAL): ${pinterestRefPaths.length} Pinterest food photographs of "${state.recipeTitle}" are attached to this message. Use them as the canonical visual reference when writing every visual field — hero_prompt, hero_image, ingredients_image, every step's image_prompt, every step's food_state. Match the actual plating style, garnishes, glaze color, container type, and lighting feel you SEE in those photos. Do not invent a different visual style. If a photo shows a glossy mahogany glaze, write that — do not write "creamy white sauce" or some other invented look.`;
+    }
+    if (manualSeoKeywords.length > 0) {
+      templateInstructions += `\n\nMANUAL SEO KEYWORDS FROM SHEET COLUMN Z (CRITICAL):\n${manualSeoKeywords.map(k => `- ${k}`).join('\n')}\nUse these exact keyword phrases naturally in the blog SEO, focus_keyword, meta_title, meta_description, image SEO metadata, Pinterest pin titles, Pinterest pin descriptions, Pinterest image metadata, and Pinterest hashtags where appropriate. Do not keyword-stuff. Pinterest pin descriptions must be longer than normal: 450-650 characters each, 3-5 short sentences, with 5-8 hashtags at the end. Each pin must use a different mix of the manual keywords.`;
+      Logger.info(`[SEO] Injecting ${manualSeoKeywords.length} manual keyword(s) into recipe prompt`);
     }
     const introTemplates = settings.introTemplates || [];
     const conclusionTemplates = settings.conclusionTemplates || [];
@@ -833,19 +932,26 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         prompt: '',
         seo: {
           filename: stepSeo.filename || FILENAMES.stepDefault(i),
-          alt_text: stepSeo.alt_text || recipeStep.title || vs.title || `Step ${i + 1}`
+          alt_text: stepSeo.alt_text || recipeStep.title || vs.title || `Step ${i + 1}`,
+          title: stepSeo.title || recipeStep.title || vs.title || `Step ${i + 1}`,
+          description: stepSeo.description || recipeStep.description || vs.food_state || '',
+          keywords: stepSeo.keywords || []
         },
         base64: null, wpImageId: null, wpImageUrl: null
       };
     });
 
     // Normalize pinterest_pins
-    const pinterestPins = (rawPins || []).map((pin, i) => ({
+    let pinterestPins = (rawPins || []).map((pin, i) => ({
       title: pin.title || `Pin ${i + 1}`,
       description: pin.description || '',
       image_prompt: pin.image_prompt || pin.prompt || '',
+      keywords: pin.keywords || [],
+      seo: pin.seo || null,
       base64: null, wpImageId: null, wpImageUrl: null
     }));
+    ({ recipe, pinterestPins } = applyManualSeoKeywords(recipe, pinterestPins, manualSeoKeywords));
+    recipe.pinterest_pins = pinterestPins;
 
     await StateManager.updateState({
       status: STATES.CREATING_FOLDERS,

@@ -79,15 +79,17 @@ export const SheetsAPI = {
     const dataStartIndex = (parseInt(startRow) || 2) - 2;
     const topicIdx = this._colToIndex(topicColumn || 'A');
     const statusIdx = this._colToIndex(statusColumn || 'B');
+    const seoKeywordsIdx = this._colToIndex(settings.seoKeywordsColumn || 'Z');
 
     for (let i = dataStartIndex; i < allRows.length; i++) {
       const rowIndex = i + 2;
       const row = allRows[i];
       const topic = row[topicIdx]?.trim();
       const status = row[statusIdx]?.trim()?.toLowerCase();
+      const seoKeywords = row[seoKeywordsIdx]?.trim() || '';
 
       if (topic && (!status || status === 'pending')) {
-        return { topic, rowIndex };
+        return { topic, rowIndex, seoKeywords };
       }
     }
     return null;
@@ -103,6 +105,7 @@ export const SheetsAPI = {
     const dataStartIndex = (parseInt(startRow) || 2) - 2;
     const topicIdx = this._colToIndex(topicColumn || 'A');
     const statusIdx = this._colToIndex(statusColumn || 'B');
+    const seoKeywordsIdx = this._colToIndex(settings.seoKeywordsColumn || 'Z');
     const pending = [];
 
     for (let i = dataStartIndex; i < allRows.length; i++) {
@@ -110,9 +113,10 @@ export const SheetsAPI = {
       const row = allRows[i];
       const topic = row[topicIdx]?.trim();
       const status = row[statusIdx]?.trim()?.toLowerCase();
+      const seoKeywords = row[seoKeywordsIdx]?.trim() || '';
 
       if (topic && (!status || status === 'pending')) {
-        pending.push({ topic, rowIndex });
+        pending.push({ topic, rowIndex, seoKeywords });
       }
     }
     return pending;

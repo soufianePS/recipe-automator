@@ -1481,9 +1481,10 @@ export class BaseOrchestrator {
       const pin = updatedPins[i];
       const filename = `${state.recipeJSON?.slug || 'recipe'}-pin-${i + 1}-${suffix}.jpg`;
       const seoData = {
-        alt_text: pin.title,
-        title: pin.title,
-        description: pin.description
+        alt_text: pin.seo?.alt_text || pin.title,
+        title: pin.seo?.title || pin.title,
+        description: pin.seo?.description || pin.description,
+        keywords: Array.isArray(pin.keywords) ? pin.keywords.join(', ') : (pin.keywords || '')
       };
 
       const media = await WordPressAPI.uploadImage(settings, base64, filename, seoData, state.recipeJSON);
