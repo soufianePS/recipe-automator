@@ -281,15 +281,24 @@ async function runPinterestSession(item, config, serverCtx = null) {
       // Board selection: use scraped Pinterest boards (preferred — found via
       // validator cache from prior warming or live-scrape) OR account.boards
       // fallback. Match category → board via substring.
-      const { getEffectiveBoards, findBoardForCategory } = await import('./boards-validator.js');
+      const { getEffectiveBoards, resolveBoardForCategory } = await import('./boards-validator.js');
       const { boards: effBoards, source: bSource } = await getEffectiveBoards(item.site, item.accountId, boards);
       let boardName = null;
       if (effBoards.length === 0) {
         Logger.warn(`[Executor] ⚠ account ${item.accountId} has NO boards (no scraped cache, no manual config). Pinterest defaults to last-used board (e.g. "breakfast"). Run a warming session OR add boards manually.`);
       } else if (pickedPin.recipe.category) {
-        const match = findBoardForCategory(effBoards, pickedPin.recipe.category);
-        boardName = match || effBoards[Math.floor(Math.random() * effBoards.length)];
-        Logger.info(`[Executor] Board: "${boardName}" (category="${pickedPin.recipe.category}", source=${bSource}, matched=${!!match})`);
+        const resolved = resolveBoardForCategory(effBoards, pickedPin.recipe.category, account.categoryBoardMap || {});
+        if (!resolved?.boardName) {
+          Logger.warn(`[Executor] Skipping pin: no Pinterest board mapped for category "${pickedPin.recipe.category}"`);
+          return {
+            ok: true, posted: false, skipped: true,
+            recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex,
+            reason: 'no-category-board-mapping', category: pickedPin.recipe.category,
+            availableBoards: effBoards,
+          };
+        }
+        boardName = resolved.boardName;
+        Logger.info(`[Executor] Board: "${boardName}" (category="${pickedPin.recipe.category}", boardsSource=${bSource}, mapping=${resolved.source})`);
       } else {
         boardName = effBoards[Math.floor(Math.random() * effBoards.length)];
         Logger.info(`[Executor] Board: "${boardName}" (random — recipe has no category, source=${bSource})`);

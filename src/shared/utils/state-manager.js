@@ -139,6 +139,7 @@ function defaultSettings() {
     pinterestPinCount: 3,
     pinterestTemplateFolderGenerator: '',
     pinterestTemplateFolderScraper: '',
+    pinterestTemplateRotationIndex: { generator: 0, scraper: 0 },
     pinterestAspectRatio: 'PORTRAIT',
     pinterestPromptPrefix: 'Recreate the EXACT same layout, style, text placement, and design from the first uploaded reference image (the Pinterest template). Use the food from the other uploaded reference images (hero and step photos). Recipe: "@title". Website: @website. Ingredients list as text: @ingredients. If the template shows ingredients text, use this list. If the template shows a website name, use "@website". ',
     pinterestPromptSuffix: ' Pinterest pin style, vertical format, eye-catching, high quality food photography, text overlay matching the template style.',

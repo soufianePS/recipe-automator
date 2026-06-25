@@ -119,6 +119,7 @@ async function _loadSiteCategories(siteId) {
 async function _runCategoryCycle(pinterest, page, category, opts = {}) {
   const closeupsTarget = randInt(opts.closeupsMin || CLOSEUPS_PER_CYCLE_MIN, opts.closeupsMax || CLOSEUPS_PER_CYCLE_MAX);
   const savesTarget = randInt(opts.savesMin || SAVES_PER_CYCLE_MIN, opts.savesMax || SAVES_PER_CYCLE_MAX);
+  const targetBoard = opts.boardName || category;
   let savesDone = 0;
   let closeupsDone = 0;
 
@@ -167,11 +168,11 @@ async function _runCategoryCycle(pinterest, page, category, opts = {}) {
       // Maybe save to the category's board
       if (savesDone < savesTarget && Math.random() < 0.85) {
         try {
-          await pinterest._tryClickSave(category);
+          await pinterest._tryClickSave(targetBoard);
           savesDone++;
-          Logger.info(`[Warming] Saved a pin to board "${category}"`);
+          Logger.info(`[Warming] Saved a pin to board "${targetBoard}"`);
         } catch (e) {
-          Logger.warn(`[Warming] save to "${category}" failed: ${e.message}`);
+          Logger.warn(`[Warming] save to "${targetBoard}" failed: ${e.message}`);
         }
       }
 
@@ -225,6 +226,7 @@ export async function runWarmingSession(item, config) {
   const startedAt = Date.now();
   const { page, cleanup } = await _connectDolphin(Number(profileId));
   const cycleResults = [];
+  const categoryBoardNames = {};
 
   try {
     const pinterest = new PinterestPage(page);
@@ -234,8 +236,12 @@ export async function runWarmingSession(item, config) {
     // Pre-flight: validate that each category has a matching Pinterest board.
     // Cached 24h so we don't re-scrape every session.
     try {
-      const { ensureValidation } = await import('./boards-validator.js');
+      const { ensureValidation, resolveBoardForCategory } = await import('./boards-validator.js');
       const val = await ensureValidation(page, item.site, item.accountId, categories);
+      for (const cat of categories) {
+        const resolved = resolveBoardForCategory(val.boards || [], cat, account.categoryBoardMap || {});
+        if (resolved?.boardName) categoryBoardNames[cat] = resolved.boardName;
+      }
       if (val.missing.length > 0) {
         Logger.warn(`[Warming] Missing Pinterest boards for categories: ${val.missing.join(', ')} — saves to those categories will use Pinterest default board.`);
       } else if (val.present.length > 0) {
@@ -258,7 +264,7 @@ export async function runWarmingSession(item, config) {
         Logger.info(`[Warming] Time budget reached (${elapsedMin.toFixed(1)}min) — stopping cycles early`);
         break;
       }
-      const result = await _runCategoryCycle(pinterest, page, cat);
+      const result = await _runCategoryCycle(pinterest, page, cat, { boardName: categoryBoardNames[cat] || cat });
       cycleResults.push(result);
     }
 

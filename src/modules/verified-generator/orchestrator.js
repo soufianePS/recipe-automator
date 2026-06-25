@@ -979,7 +979,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     if (idx === 0) {
       // Step 1 has no previous step — anchor on Pinterest style (low weight) +
       // the ingredients flat-lay (high, the immediately-preceding generated image).
-      const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+      const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
       if (pinterestRefs.length > 0) {
         contextPaths.push(...pinterestRefs);
         refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's typical color palette and food-blog style. Do NOT copy plating or composition — this is the FIRST cooking step, the food is raw`);
@@ -996,7 +996,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       // matches the food-blog look, exactly like the hero. Earlier steps skip
       // Pinterest (the food is still mid-cook).
       if (isLastStep) {
-        const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+        const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
         if (pinterestRefs.length > 0) {
           contextPaths.push(...pinterestRefs);
           refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's plating style, color palette and garnish; this is the finished, plated serving shot`);
@@ -1119,7 +1119,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // CLASSIC mode (no chat memory): the hero references ONLY the serving-plate
     // image (the last cooking step — the finished, plated dish) plus the Pinterest
     // style photos. Order low→high weight: Pinterest (style) → serving plate (high).
-    const heroPinterest = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 2);
+    const heroPinterest = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
     if (heroPinterest.length > 0) {
       contextPaths.push(...heroPinterest);
       refRoles.push(`Pinterest reference photos of the finished dish — use for the dish's color palette, garnish and food-blog plating style`);
@@ -1194,15 +1194,18 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const dashboardTemplates = await StateManager.getPinterestTemplates(pinMode);
 
     let originalTemplatePath;
+    const rotation = settings.pinterestTemplateRotationIndex || {};
+    const rotationStart = Number(rotation[pinMode] || 0);
 
     if (dashboardTemplates.length > 0) {
-      const picked = dashboardTemplates[pendingIdx % dashboardTemplates.length];
+      const templateIdx = (rotationStart + pendingIdx) % dashboardTemplates.length;
+      const picked = dashboardTemplates[templateIdx];
       const tmpDir = join(__dirname, '..', '..', '..', 'data', 'tmp');
       mkdirSync(tmpDir, { recursive: true });
       const ext = picked.name?.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
       originalTemplatePath = join(tmpDir, `pin-template-src-${Date.now()}-${pendingIdx}.${ext}`);
       writeFileSync(originalTemplatePath, Buffer.from(picked.base64, 'base64'));
-      Logger.info(`Using dashboard template: ${picked.name}`);
+      Logger.info(`Using dashboard template ${templateIdx + 1}/${dashboardTemplates.length}: ${picked.name}`);
     } else {
       const legacyFolder = isScraper
         ? settings.pinterestTemplateFolderScraper
@@ -1216,8 +1219,9 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       if (!templateImages.length) {
         throw new Error(`No template images found in: ${legacyFolder}`);
       }
-      originalTemplatePath = templateImages[pendingIdx % templateImages.length];
-      Logger.info(`Using legacy folder template: ${basename(originalTemplatePath)}`);
+      const templateIdx = (rotationStart + pendingIdx) % templateImages.length;
+      originalTemplatePath = templateImages[templateIdx];
+      Logger.info(`Using legacy folder template ${templateIdx + 1}/${templateImages.length}: ${basename(originalTemplatePath)}`);
     }
 
     const templatePath = this._prepareFile(originalTemplatePath, `pin-${pendingIdx + 1}`);
@@ -1318,6 +1322,27 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     updatedPins[pendingIdx] = { ...updatedPins[pendingIdx], base64: true };
     await StateManager.updateState({ pinterestPins: updatedPins });
     Logger.success(`Pinterest pin ${pendingIdx + 1} image generated (verified)`);
+
+    const allDone = updatedPins.every(p => p.base64);
+    if (allDone) {
+      const templateCount = dashboardTemplates.length > 0
+        ? dashboardTemplates.length
+        : (() => {
+            const legacyFolder = isScraper ? settings.pinterestTemplateFolderScraper : settings.pinterestTemplateFolderGenerator;
+            if (!legacyFolder || !existsSync(legacyFolder)) return 0;
+            return StateManager.listImagesInFolder(legacyFolder).length;
+          })();
+      if (templateCount > 0) {
+        const nextIndex = (rotationStart + updatedPins.length) % templateCount;
+        await StateManager.saveSettings({
+          pinterestTemplateRotationIndex: {
+            ...(settings.pinterestTemplateRotationIndex || {}),
+            [pinMode]: nextIndex,
+          }
+        });
+        Logger.info(`[Pinterest] Template rotation ${pinMode}: ${rotationStart} -> ${nextIndex} (${updatedPins.length} pin(s), ${templateCount} template(s))`);
+      }
+    }
   }
 
   /**

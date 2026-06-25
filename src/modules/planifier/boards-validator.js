@@ -84,37 +84,68 @@ export async function scrapeBoardNames(page) {
     })();
     if (username) Logger.info(`[Boards] detected username: ${username}`);
 
-    // Click the "Created" / "Saved" tab if visible (sometimes default tab is wrong)
-    try {
-      await page.evaluate(() => {
-        const candidates = [
-          'div[data-test-id="created-tab"]',
-          'button[role="tab"]',
-          'a[href$="/_created/"]',
-          'a[href$="/_saved/"]',
-        ];
-        for (const sel of candidates) {
-          const el = document.querySelector(sel);
-          if (el && /created|saved|boards|cr.{2}.{1,3}|enregistr/i.test(el.textContent || '')) {
-            el.click();
-            return;
-          }
+    // Force the Saved tab. /me/ often lands on Created, which shows pins
+    // instead of boards and makes the validator report bogus names.
+    if (username && !page.url().includes('/_saved/')) {
+      await page.goto(`https://www.pinterest.com/${username}/_saved/`, { waitUntil: 'domcontentloaded', timeout: 25000 });
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(6000);
+      Logger.info(`[Boards] opened Saved tab: ${page.url()}`);
+    }
+
+    // Pinterest virtualizes board cards. If we scroll before reading, top boards
+    // can disappear from the DOM. Capture the first visible set immediately.
+    const preScrollNames = await page.evaluate((username) => {
+      const seen = new Set();
+      const cleanName = (name) => String(name || '')
+        .replace(/\s*,\s*\d[\d.,kKmM]*\s+Pins?.*$/i, '')
+        .replace(/\s+Create\s*$/i, '')
+        .trim();
+      const add = (name) => {
+        const cleaned = cleanName(name);
+        if (cleaned && !/^all pins$/i.test(cleaned) && !/^board suggestions?$/i.test(cleaned) && !/^suggestion$/i.test(cleaned)) {
+          seen.add(cleaned);
         }
-      });
-      await page.waitForTimeout(1500);
-    } catch {}
+      };
+
+      if (username) {
+        const pattern = new RegExp(`/${username}/([^/?#]+)/?$`, 'i');
+        for (const a of document.querySelectorAll(`a[href*="/${username}/" i]`)) {
+          const href = a.getAttribute('href') || '';
+          const m = href.match(pattern);
+          if (!m) continue;
+          const slug = m[1];
+          if (['_saved', '_created', '_following', 'followers', 'pins', 'activity'].includes(slug)) continue;
+          const aria = a.getAttribute('aria-label') || '';
+          const text = (a.textContent || '').trim();
+          add(aria.replace(/^(Open|View|Go to)\s+(board|tableau)\s+/i, '').trim() || text || slug.replace(/-/g, ' '));
+        }
+      }
+
+      const text = document.body.innerText || '';
+      const matches = [...text.matchAll(/([^\n,][^\n,]{2,100}?)\s*(?:,\s*|\n+)\s*[\d.,kKmM]+\s+Pins?\b/g)];
+      for (const m of matches) add(m[1]);
+      return [...seen];
+    }, username);
 
     // Scroll a bit to trigger lazy load of board cards
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       try { await page.mouse.wheel(0, 700); } catch {}
       await page.waitForTimeout(700);
     }
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2500);
 
     // Run multiple extraction strategies inside the page context
     const result = await page.evaluate((username) => {
       const seen = new Set();
       const trace = {};
+      const cleanName = (name) => String(name || '')
+        .replace(/\s*,\s*\d[\d.,kKmM]*\s+Pins?.*$/i, '')
+        .replace(/\s+Create\s*$/i, '')
+        .trim();
+      const meaningfulNames = () => [...seen]
+        .map(cleanName)
+        .filter(name => name && !/^all pins$/i.test(name) && !/^board suggestions?$/i.test(name) && !/^suggestion$/i.test(name));
 
       // ── Strategy 1: data-test-id selectors (Pinterest internal) ──
       const tidSelectors = [
@@ -159,8 +190,8 @@ export async function scrapeBoardNames(page) {
       // Most reliable cross-redesign — Pinterest's URL scheme is stable.
       if (username) {
         const pattern = new RegExp(`/${username}/([^/?#]+)/?$`, 'i');
-        const links = document.querySelectorAll(`a[href*="/${username}/"]`);
-        trace[`a[href*="/${username}/"]`] = links.length;
+        const links = document.querySelectorAll(`a[href*="/${username}/" i]`);
+        trace[`a[href*="/${username}/" i]`] = links.length;
         for (const a of links) {
           const href = a.getAttribute('href') || '';
           const m = href.match(pattern);
@@ -192,13 +223,30 @@ export async function scrapeBoardNames(page) {
         }
       }
 
-      return { names: [...seen], trace };
+      // Strategy 5: text fallback. Some Pinterest builds render board titles as
+      // plain text before links/selectors are stable. Board cards appear as:
+      //   Board Name, 55 Pins, 5h
+      if (meaningfulNames().length === 0) {
+        const text = document.body.innerText || '';
+        const matches = [...text.matchAll(/([^\n,][^\n,]{2,100}?)\s*(?:,\s*|\n+)\s*[\d.,kKmM]+\s+Pins?\b/g)];
+        trace['text board/pin pattern'] = matches.length;
+        for (const m of matches) {
+          const name = (m[1] || '').trim();
+          if (name && !/^all pins$/i.test(name) && !/^board suggestions?$/i.test(name)) seen.add(name);
+        }
+      }
+
+      return {
+        names: meaningfulNames(),
+        trace
+      };
     }, username);
 
     // Log what worked for debugging
     Logger.info(`[Boards] selector trace: ${JSON.stringify(result.trace)}`);
-    Logger.info(`[Boards] found ${result.names.length} board(s): ${result.names.slice(0, 10).join(', ')}${result.names.length > 10 ? '...' : ''}`);
-    return result.names;
+    const names = [...new Set([...preScrollNames, ...result.names])];
+    Logger.info(`[Boards] found ${names.length} board(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? '...' : ''}`);
+    return names;
   } catch (e) {
     Logger.warn(`[Boards] scrape failed: ${e.message}`);
     return [];
@@ -223,6 +271,46 @@ export function findBoardForCategory(boards, category) {
     }
   }
   return null;
+}
+
+/**
+ * Resolve the board to use for a recipe category.
+ * Priority:
+ *   1. Manual categoryBoardMap entry on the Pinterest account
+ *   2. Automatic substring match against known board names
+ * Returns { boardName, source, matched } or null.
+ */
+export function resolveBoardForCategory(boards, category, categoryBoardMap = {}) {
+  if (!category) return null;
+  const lowerCat = String(category).toLowerCase().trim();
+  if (!lowerCat) return null;
+
+  if (categoryBoardMap && typeof categoryBoardMap === 'object') {
+    const manualEntry = Object.entries(categoryBoardMap)
+      .find(([cat, board]) => String(cat || '').toLowerCase().trim() === lowerCat && String(board || '').trim());
+    if (manualEntry) {
+      return { boardName: String(manualEntry[1]).trim(), source: 'manual-map', matched: true };
+    }
+  }
+
+  const auto = findBoardForCategory(boards, category);
+  if (auto) return { boardName: auto, source: 'auto-match', matched: true };
+  return null;
+}
+
+export function buildCategoryBoardMapping(categories, boards, categoryBoardMap = {}) {
+  return (categories || []).map(category => {
+    const resolved = resolveBoardForCategory(boards || [], category, categoryBoardMap);
+    const auto = findBoardForCategory(boards || [], category);
+    return {
+      category,
+      board: resolved?.boardName || '',
+      source: resolved?.source || 'missing',
+      autoBoard: auto || '',
+      hasManual: resolved?.source === 'manual-map',
+      ok: !!resolved?.boardName,
+    };
+  });
 }
 
 /**

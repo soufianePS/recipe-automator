@@ -175,6 +175,7 @@ export async function updateSheet(state, settings) {
     }
   } catch (e) {
     Logger.error(`Sheet update failed: ${e.message}`);
+    throw e;
   }
 
   await StateManager.updateState({ status: STATES.COMPLETED });

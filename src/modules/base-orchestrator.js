@@ -1266,15 +1266,18 @@ export class BaseOrchestrator {
 
     let templatePath;
     let templateLabel;
+    const rotation = settings.pinterestTemplateRotationIndex || {};
+    const rotationStart = Number(rotation[pinMode] || 0);
 
     if (dashboardTemplates.length > 0) {
-      const picked = dashboardTemplates[pendingIdx % dashboardTemplates.length];
+      const templateIdx = (rotationStart + pendingIdx) % dashboardTemplates.length;
+      const picked = dashboardTemplates[templateIdx];
       const tmpDir = join(__dirname, '..', '..', 'data', 'tmp');
       mkdirSync(tmpDir, { recursive: true });
       const ext = picked.name?.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
       templatePath = join(tmpDir, `pin-template-${Date.now()}-${pendingIdx}.${ext}`);
       writeFileSync(templatePath, Buffer.from(picked.base64, 'base64'));
-      templateLabel = picked.name || `template-${pendingIdx + 1}`;
+      templateLabel = `${picked.name || `template-${pendingIdx + 1}`} (${templateIdx + 1}/${dashboardTemplates.length})`;
     } else {
       const legacyFolder = isScraper
         ? settings.pinterestTemplateFolderScraper
@@ -1288,8 +1291,9 @@ export class BaseOrchestrator {
       if (!templateImages.length) {
         throw new Error(`No template images found in: ${legacyFolder}`);
       }
-      templatePath = templateImages[pendingIdx % templateImages.length];
-      templateLabel = basename(templatePath);
+      const templateIdx = (rotationStart + pendingIdx) % templateImages.length;
+      templatePath = templateImages[templateIdx];
+      templateLabel = `${basename(templatePath)} (${templateIdx + 1}/${templateImages.length})`;
     }
 
     Logger.info(`Using template: ${templateLabel}`);
@@ -1416,6 +1420,23 @@ export class BaseOrchestrator {
     // Check if all pins are done
     const allDone = updatedPins.every(p => p.base64);
     if (allDone) {
+      const templateCount = dashboardTemplates.length > 0
+        ? dashboardTemplates.length
+        : (() => {
+            const legacyFolder = isScraper ? settings.pinterestTemplateFolderScraper : settings.pinterestTemplateFolderGenerator;
+            if (!legacyFolder || !existsSync(legacyFolder)) return 0;
+            return StateManager.listImagesInFolder(legacyFolder).length;
+          })();
+      if (templateCount > 0) {
+        const nextIndex = (rotationStart + updatedPins.length) % templateCount;
+        await StateManager.saveSettings({
+          pinterestTemplateRotationIndex: {
+            ...(settings.pinterestTemplateRotationIndex || {}),
+            [pinMode]: nextIndex,
+          }
+        });
+        Logger.info(`[Pinterest] Template rotation ${pinMode}: ${rotationStart} -> ${nextIndex} (${updatedPins.length} pin(s), ${templateCount} template(s))`);
+      }
       await StateManager.updateState({ status: STATES.UPLOADING_PINS });
       Logger.success('All Pinterest pin images generated!');
     }

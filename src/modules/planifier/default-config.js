@@ -157,6 +157,7 @@ export const PLANIFIER_DEFAULTS = {
           pinsPerDayMin: 2,
           pinsPerDayMax: 3,
           boards: [],                 // string[] of board names (Pinterest picks first matching)
+          categoryBoardMap: {},        // { [wpCategory]: pinterestBoardName } manual override
         },
         {
           id: 'acc2',
@@ -167,6 +168,7 @@ export const PLANIFIER_DEFAULTS = {
           pinsPerDayMin: 0,
           pinsPerDayMax: 0,
           boards: [],
+          categoryBoardMap: {},
         },
       ],
     },

@@ -341,9 +341,9 @@
       // Fetch all validations in parallel
       const results = await Promise.all(pairs.map(async p => {
         try {
-          const r = await api('GET', `/api/planifier/boards-validation/${encodeURIComponent(p.site)}/${encodeURIComponent(p.accountId)}`);
-          return { ...p, validation: r.validation };
-        } catch { return { ...p, validation: null }; }
+          const r = await api('GET', `/api/planifier/board-mapping/${encodeURIComponent(p.site)}/${encodeURIComponent(p.accountId)}`);
+          return { ...p, ...r };
+        } catch { return { ...p, validation: null, boards: [], mappings: [] }; }
       }));
       // Render cards
       grid.innerHTML = results.map(r => _renderBoardsValCard(r)).join('');
@@ -356,6 +356,8 @@
     const { site, displayName, accountId, accountStatus, validation } = r;
     const runBtn = `<button class="btn btn-secondary btn-small boards-val-run-btn" data-site="${escapeHtml(site)}" data-account="${escapeHtml(accountId)}" type="button" title="Launch Dolphin + scrape Pinterest profile now (~30-60s)">↻ Run now</button>`;
     if (!validation) {
+      const boards = r.boards || [];
+      const mappings = r.mappings || [];
       return `
         <div class="boards-val-card boards-val-unchecked">
           <div class="boards-val-head">
@@ -366,6 +368,7 @@
           <div class="boards-val-body" style="color:var(--text-muted);font-size:12px;">
             Will run automatically the next time a warming or Pinterest session fires for this account.
           </div>
+          ${mappings.length > 0 ? _renderBoardMappingEditor(site, accountId, mappings, boards) : ''}
           <div style="margin-top:8px;">${runBtn}</div>
         </div>
       `;
@@ -373,6 +376,8 @@
     const present = validation.present || [];
     const missing = validation.missing || [];
     const extras  = validation.extras || [];
+    const boards = r.boards || validation.boards || [];
+    const mappings = r.mappings || [];
     const total = present.length + missing.length;
     const ratio = total > 0 ? Math.round((present.length / total) * 100) : 0;
     const status = missing.length === 0 ? 'ok' : (present.length === 0 ? 'bad' : 'warn');
@@ -385,6 +390,7 @@
           <span class="boards-val-badge ${status}">${present.length}/${total} ok</span>
         </div>
         <div class="boards-val-meta">Status: <code>${escapeHtml(accountStatus)}</code> · last check: ${escapeHtml(ageDisplay)}</div>
+        ${mappings.length > 0 ? _renderBoardMappingEditor(site, accountId, mappings, boards) : ''}
         ${missing.length > 0 ? `
           <div class="boards-val-row missing">
             <span class="boards-val-row-label">⚠ Missing boards:</span>
@@ -409,6 +415,39 @@
           </div>
         ` : ''}
         <div style="margin-top:6px;display:flex;justify-content:flex-end;">${runBtn}</div>
+      </div>
+    `;
+  }
+
+  function _renderBoardMappingEditor(site, accountId, mappings, boards) {
+    return `
+      <div class="boards-map" data-site="${escapeHtml(site)}" data-account="${escapeHtml(accountId)}" style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:10px;">
+        <div style="font-size:11px;color:#9a9ab8;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Category to board mapping</div>
+        ${mappings.map(m => _renderBoardMapRow(m, boards)).join('')}
+        <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+          <button class="btn btn-primary btn-small boards-map-save-btn" type="button">Save mapping</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function _renderBoardMapRow(m, boards) {
+    const selectedBoard = m.board || '';
+    const boardOptions = [''].concat(boards || []);
+    if (selectedBoard && !boardOptions.includes(selectedBoard)) boardOptions.push(selectedBoard);
+    const opts = boardOptions.map(b => {
+      const label = b ? b : '— Select board —';
+      return `<option value="${escapeHtml(b)}"${b === selectedBoard ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+    const sourceLabel = m.source === 'manual-map' ? 'manual' : (m.source === 'auto-match' ? 'auto' : 'missing');
+    const statusColor = m.ok ? '#00d68f' : '#ffb86b';
+    return `
+      <div class="boards-map-row" data-category="${escapeHtml(m.category)}" style="display:grid;grid-template-columns:minmax(90px,130px) 1fr auto;gap:8px;align-items:center;margin-top:6px;">
+        <div style="font-size:12px;color:#e0e4f0;font-weight:700;">${escapeHtml(m.category)}</div>
+        <select class="boards-map-select" style="min-width:0;background:rgba(8,8,18,.65);border:1px solid rgba(255,255,255,.08);color:#e0e4f0;border-radius:6px;padding:6px 8px;font-size:12px;">
+          ${opts}
+        </select>
+        <span style="font-size:10px;color:${statusColor};text-transform:uppercase;font-weight:700;">${escapeHtml(sourceLabel)}</span>
       </div>
     `;
   }
@@ -453,6 +492,35 @@
         _showToast('Validation failed: ' + err.message, true);
         runBtn.disabled = false;
         runBtn.textContent = original;
+      }
+      return;
+    }
+    const mapSaveBtn = e.target.closest('.boards-map-save-btn');
+    if (mapSaveBtn) {
+      e.preventDefault();
+      const box = mapSaveBtn.closest('.boards-map');
+      if (!box) return;
+      const site = box.dataset.site;
+      const acc = box.dataset.account;
+      const categoryBoardMap = {};
+      $$('.boards-map-row', box).forEach(row => {
+        const category = row.dataset.category;
+        const board = $('.boards-map-select', row)?.value || '';
+        if (category && board) categoryBoardMap[category] = board;
+      });
+      const original = mapSaveBtn.textContent;
+      mapSaveBtn.disabled = true;
+      mapSaveBtn.textContent = 'Saving...';
+      try {
+        await api('POST', `/api/planifier/board-mapping/${encodeURIComponent(site)}/${encodeURIComponent(acc)}`, { categoryBoardMap });
+        const account = (state.config?.sites?.[site]?.pinterestAccounts || []).find(a => a.id === acc);
+        if (account) account.categoryBoardMap = categoryBoardMap;
+        _showToast(`Board mapping saved for ${site}/${acc}`);
+        await plfLoadBoardsValidation();
+      } catch (err) {
+        _showToast('Mapping save failed: ' + err.message, true);
+        mapSaveBtn.disabled = false;
+        mapSaveBtn.textContent = original;
       }
       return;
     }
@@ -1622,6 +1690,7 @@
       pinsPerDayMin: 0,
       pinsPerDayMax: 0,
       boards: [],
+      categoryBoardMap: {},
       createdAt: new Date().toISOString(),
       autoProgress: true,
       warmingBoard: 'I Like It',
@@ -1653,11 +1722,12 @@
       site.pinDistribution = $('.plf-site-strategy', card).value;
       const tabSel = $('.plf-site-sheetTab', card);
       if (tabSel) site.sheetTab = tabSel.value || '';
-      site.pinterestAccounts = $$('.plf-account-card', card).map(ac => {
+      site.pinterestAccounts = $$('.plf-account-card', card).map((ac, idx) => {
         const createdInput = $('.plf-acc-createdat', ac);
         const dateVal = createdInput?.value || '';
         // Convert YYYY-MM-DD to ISO datetime (midnight UTC) for consistent storage
         const createdAt = dateVal ? new Date(dateVal + 'T00:00:00.000Z').toISOString() : null;
+        const previous = site.pinterestAccounts?.[idx] || {};
         return {
           id: $('.plf-acc-id', ac).value.trim() || 'acc',
           dolphinProfileId: $('.plf-acc-dolphin', ac).value || null,
@@ -1665,6 +1735,7 @@
           pinsPerDayMin: Number($('.plf-acc-pmin', ac).value) || 0,
           pinsPerDayMax: Number($('.plf-acc-pmax', ac).value) || 0,
           boards: $('.plf-acc-boards', ac).value.split(',').map(s => s.trim()).filter(Boolean),
+          categoryBoardMap: previous.categoryBoardMap || {},
           createdAt,
           autoProgress: $('.plf-acc-autoprogress', ac)?.checked ?? true,
           warmingBoard: ($('.plf-acc-warmingboard', ac)?.value || '').trim() || 'I Like It',

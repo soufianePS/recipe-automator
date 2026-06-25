@@ -439,10 +439,23 @@ export function setupRoutes(app, ctx) {
         startRow: settings.generatorStartRow || settings.startRow || 2
       };
 
-      // Load ALL pending rows upfront (batch mode — skip on error)
-      const pendingRows = await SheetsAPI.findAllPendingRows(sheetSettings);
+      // Load pending rows upfront (batch mode - skip on error). Optional
+      // rowIndexes lets us run a controlled one-row smoke test from the UI/API.
+      let pendingRows = await SheetsAPI.findAllPendingRows(sheetSettings);
+      const requestedRowIndexes = Array.isArray(req.body?.rowIndexes)
+        ? req.body.rowIndexes.map(Number).filter(Number.isFinite)
+        : [];
+      if (requestedRowIndexes.length) {
+        const allowedRows = new Set(requestedRowIndexes);
+        pendingRows = pendingRows.filter(row => allowedRows.has(Number(row.rowIndex)));
+      }
       if (!pendingRows.length) {
-        return res.json({ ok: false, error: 'No pending recipes found in the sheet.' });
+        return res.json({
+          ok: false,
+          error: requestedRowIndexes.length
+            ? `No pending recipes found for row(s): ${requestedRowIndexes.join(', ')}.`
+            : 'No pending recipes found in the sheet.'
+        });
       }
 
       Logger.info(`=== Starting Recipe Automator: ${pendingRows.length} recipes queued ===`);
@@ -742,6 +755,62 @@ export function setupRoutes(app, ctx) {
       const { readValidation } = await import('./modules/planifier/boards-validator.js');
       const v = await readValidation(req.params.site, req.params.accountId);
       res.json({ ok: true, validation: v });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/planifier/board-mapping/:site/:accountId', async (req, res) => {
+    try {
+      const { site, accountId } = req.params;
+      const config = await Planifier.getConfig();
+      const siteCfg = config.sites?.[site];
+      if (!siteCfg) return res.status(400).json({ error: `Site ${site} not in planifier config` });
+      const account = (siteCfg.pinterestAccounts || []).find(a => a.id === accountId);
+      if (!account) return res.status(400).json({ error: `Account ${accountId} not found` });
+
+      const settings = JSON.parse(await readFile(join(process.cwd(), 'data', 'sites', site, 'settings.json'), 'utf8'));
+      const categories = (settings.wpCategories || '').split(',').map(s => s.trim()).filter(Boolean);
+      const { readValidation, buildCategoryBoardMapping } = await import('./modules/planifier/boards-validator.js');
+      const validation = await readValidation(site, accountId);
+      const boards = validation?.boards?.length ? validation.boards : (account.boards || []);
+      const categoryBoardMap = account.categoryBoardMap || {};
+      res.json({
+        ok: true,
+        site,
+        accountId,
+        categories,
+        boards,
+        categoryBoardMap,
+        mappings: buildCategoryBoardMapping(categories, boards, categoryBoardMap),
+        validation,
+        boardsSource: validation?.boards?.length ? 'cached-scrape' : ((account.boards || []).length ? 'manual-config' : 'none'),
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/planifier/board-mapping/:site/:accountId', async (req, res) => {
+    try {
+      const { site, accountId } = req.params;
+      const config = await Planifier.getConfig();
+      const siteCfg = config.sites?.[site];
+      if (!siteCfg) return res.status(400).json({ error: `Site ${site} not in planifier config` });
+      const account = (siteCfg.pinterestAccounts || []).find(a => a.id === accountId);
+      if (!account) return res.status(400).json({ error: `Account ${accountId} not found` });
+
+      const settings = JSON.parse(await readFile(join(process.cwd(), 'data', 'sites', site, 'settings.json'), 'utf8'));
+      const categories = (settings.wpCategories || '').split(',').map(s => s.trim()).filter(Boolean);
+      const allowed = new Set(categories.map(c => c.toLowerCase()));
+      const incoming = req.body?.categoryBoardMap || {};
+      const clean = {};
+      for (const [category, board] of Object.entries(incoming)) {
+        const cat = String(category || '').trim();
+        const val = String(board || '').trim();
+        if (!cat || !allowed.has(cat.toLowerCase()) || !val) continue;
+        const canonical = categories.find(c => c.toLowerCase() === cat.toLowerCase()) || cat;
+        clean[canonical] = val;
+      }
+      account.categoryBoardMap = clean;
+      const saved = await Planifier.saveConfig(config);
+      res.json({ ok: true, categoryBoardMap: clean, config: saved });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
