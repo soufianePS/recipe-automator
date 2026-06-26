@@ -404,7 +404,7 @@ export function attachGeminiListener(page) {
       // to settle early and return a TRUNCATED recipe — now we keep waiting until
       // the braces balance, or until the stream has been silent for HARD_QUIET
       // (real truncation → accept what we have; parser salvage handles the rest).
-      const HARD_QUIET = Math.max(quietMs * 4, 15000);
+      const HARD_QUIET = Math.max(quietMs * 15, 60000);
       let warnedIncomplete = false;
       while (true) {
         const sinceUpdate = Date.now() - state.lastUpdateMs;
@@ -413,8 +413,11 @@ export function attachGeminiListener(page) {
         if (quiet && complete) break;
         if (sinceUpdate >= HARD_QUIET) {
           if (awaitJsonComplete && !complete && !warnedIncomplete) {
-            Logger.warn(`[GeminiNet] stream silent ${(sinceUpdate / 1000).toFixed(0)}s but JSON still incomplete (len ${state.text?.length || 0}) — accepting + letting parser salvage`);
+            Logger.warn(`[GeminiNet] stream silent ${(sinceUpdate / 1000).toFixed(0)}s but JSON still incomplete (len ${state.text?.length || 0}) - falling back to DOM extraction`);
             warnedIncomplete = true;
+          }
+          if (awaitJsonComplete && !complete) {
+            throw new Error(`[GeminiNet] incomplete JSON after ${(sinceUpdate / 1000).toFixed(0)}s silence (len ${state.text?.length || 0})`);
           }
           break;
         }
