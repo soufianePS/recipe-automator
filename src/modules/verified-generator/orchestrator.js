@@ -764,8 +764,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     // If we successfully scraped Pinterest refs and they were attached to the AI,
     // tell it to actually use them when writing visual prompt fields.
-    if (pinterestRefPaths.length > 0) {
+    // Gemini is currently text-only here: attaching images to the large recipe
+    // JSON prompt can trigger Gemini UI error 1155 on slower/limited sessions.
+    if (!useGemini && pinterestRefPaths.length > 0) {
       templateInstructions += `\n\nVISUAL REFERENCE IMAGES (CRITICAL): ${pinterestRefPaths.length} Pinterest food photographs of "${state.recipeTitle}" are attached to this message. Use them as the canonical visual reference when writing every visual field — hero_prompt, hero_image, ingredients_image, every step's image_prompt, every step's food_state. Match the actual plating style, garnishes, glaze color, container type, and lighting feel you SEE in those photos. Do not invent a different visual style. If a photo shows a glossy mahogany glaze, write that — do not write "creamy white sauce" or some other invented look.`;
+    } else if (useGemini && pinterestRefPaths.length > 0) {
+      Logger.info(`[Gemini] Recipe prompt will be text-only; skipping ${pinterestRefPaths.length} Pinterest reference image(s) to avoid Gemini UI 1155/truncated JSON`);
     }
     if (manualSeoKeywords.length > 0) {
       templateInstructions += `\n\nMANUAL SEO KEYWORDS FROM SHEET COLUMN Z (CRITICAL - EXACT PHRASES):\n${manualSeoKeywords.map(k => `- ${k}`).join('\n')}\nYou MUST use these exact phrases, preserving spelling and word order. Do not rewrite, singularize, pluralize, or paraphrase them.\nRequired placement rules:\n1. recipe.focus_keyword MUST start with the first keyword phrase exactly.\n2. recipe.meta_title and recipe.meta_description MUST include the first keyword phrase exactly.\n3. recipe.intro MUST include at least the first 2 keyword phrases exactly, naturally inside sentences.\n4. recipe.conclusion MUST include at least 2 different keyword phrases exactly.\n5. hero_seo.description, ingredients_seo.description, and each step.seo.description MUST include 1-3 exact keyword phrases.\n6. Every pinterest_pins[].description MUST be 500-700 characters, 3-5 short sentences, include 2-4 exact keyword phrases, then 5-8 hashtags at the end.\n7. Each pinterest_pins[] item MUST have its own distinct angle: different title, different description emphasis, and different image_prompt composition.\n8. Every pinterest_pins[].seo.description MUST include 2-4 exact keyword phrases.\n9. Distribute keyword phrases across blog text, image SEO metadata, and Pinterest metadata without keyword stuffing.`;
@@ -836,11 +840,9 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     const aiChat = useGemini ? this._geminiChat : this.chatgpt;
 
     // Attach Pinterest reference images BEFORE sending the recipe prompt.
-    // The chat (ChatGPT or Gemini) then describes hero_prompt / step image_prompt
-    // / food_state grounded on the actual visual style of real food blogs for
-    // this dish (instead of inventing). Both ChatGPTPage and GeminiChatPage
-    // expose .attachFiles() with the same signature.
-    if (pinterestRefPaths.length > 0 && typeof aiChat.attachFiles === 'function') {
+    // For now, this is ChatGPT-only. Gemini gets text-only because image refs
+    // in the huge JSON prompt have caused Gemini UI 1155/truncated responses.
+    if (!useGemini && pinterestRefPaths.length > 0 && typeof aiChat.attachFiles === 'function') {
       try {
         await aiChat.attachFiles(pinterestRefPaths);
       } catch (e) {
@@ -850,6 +852,14 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     const response = await aiChat.sendPromptAndGetResponse(prompt, true);
     if (!response.success) throw new Error(`${useGemini ? 'Gemini' : 'ChatGPT'} failed: ${response.error}`);
+    if (!useGemini && typeof aiChat.deleteCurrentChat === 'function') {
+      try {
+        Logger.info('[ChatGPT] Recipe JSON response captured; deleting chat from history');
+        await aiChat.deleteCurrentChat();
+      } catch (e) {
+        Logger.warn(`[ChatGPT] Recipe chat cleanup failed (non-fatal): ${e.message}`);
+      }
+    }
 
     // ── Parse the response: clear separation between recipe, visual_plan, pinterest_pins ──
     const data = response.data;
