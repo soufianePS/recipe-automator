@@ -743,16 +743,32 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // ── Choose AI provider: ChatGPT or Gemini browser ──
     const aiProvider = vgSettings.aiProvider || settings.aiProvider || 'chatgpt';
     const useGemini = aiProvider === 'gemini';
+    let recipeAiChat = null;
+    let recipeChatContextToClose = null;
 
     if (useGemini) {
       Logger.step('Gemini', `Generating recipe + visual plan for: ${state.recipeTitle}`);
       if (!this._geminiChat) this._geminiChat = new GeminiChatPage(null, this.context);
       await this._geminiChat.init();
+      recipeAiChat = this._geminiChat;
     } else {
       Logger.step('ChatGPT', `Generating recipe + visual plan for: ${state.recipeTitle}`);
-      const gptUrl = vgSettings.chatGptUrl || settings.generatorGptUrl || null;
+      const cfg = settings.chatgptPin || {};
+      const profilePath = (cfg.profilePath || '').trim()
+        || join(__dirname, '..', '..', '..', 'data', 'chatgpt-pin-profile');
+      const { chromium } = await import('playwright');
+      const { ChatGPTPage } = await import('../../shared/pages/chatgpt.js');
+      Logger.info(`[ChatGPT] launching dedicated recipe/profile context: ${profilePath}`);
+      recipeChatContextToClose = await chromium.launchPersistentContext(profilePath, {
+        headless: false,
+        viewport: null,
+        args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
+        ignoreDefaultArgs: ['--enable-automation'],
+      });
+      recipeAiChat = new ChatGPTPage(recipeChatContextToClose.browser(), recipeChatContextToClose);
+      const gptUrl = vgSettings.chatGptUrl || settings.generatorGptUrl || cfg.gptUrl || null;
       const isCustomGpt = gptUrl && !gptUrl.match(/^https?:\/\/(chat\.openai\.com|chatgpt\.com)\/?$/);
-      await this.chatgpt.init(isCustomGpt ? gptUrl : null);
+      await recipeAiChat.init(isCustomGpt ? gptUrl : null);
     }
 
     // ── Build prompt from VG's own template ──
@@ -837,7 +853,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       .replace(/\{\{section_structure\}\}/g, structureInstructions || '')
       .replace(/\{\{template_instructions\}\}/g, templateInstructions);
 
-    const aiChat = useGemini ? this._geminiChat : this.chatgpt;
+    const aiChat = recipeAiChat;
 
     // Attach Pinterest reference images BEFORE sending the recipe prompt.
     // For now, this is ChatGPT-only. Gemini gets text-only because image refs
@@ -964,11 +980,30 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       try {
         const qualityResult = await checkContentQuality(recipe, settings);
         if (!qualityResult.passed && qualityResult.fixPrompts.length > 0) {
-          const aiChat = useGemini ? this._geminiChat : this.chatgpt;
+          const aiChat = recipeAiChat;
           recipe = await applyContentFixes(recipe, qualityResult.fixPrompts, aiChat);
+          if (!useGemini && typeof aiChat?.deleteCurrentChat === 'function') {
+            try {
+              Logger.info('[ChatGPT] Content quality fixes complete; deleting cleanup chat from history');
+              await aiChat.deleteCurrentChat();
+            } catch (e) {
+              Logger.warn(`[ChatGPT] Quality cleanup chat delete failed (non-fatal): ${e.message}`);
+            }
+          }
         }
       } catch (e) {
         Logger.warn(`[Quality] Content quality check failed (non-fatal): ${e.message}`);
+      }
+    }
+
+    if (recipeChatContextToClose) {
+      try {
+        await recipeChatContextToClose.close();
+        Logger.info('[ChatGPT] Dedicated recipe/profile context closed');
+      } catch (e) {
+        Logger.warn(`[ChatGPT] Failed to close dedicated recipe/profile context (non-fatal): ${e.message}`);
+      } finally {
+        recipeChatContextToClose = null;
       }
     }
 
