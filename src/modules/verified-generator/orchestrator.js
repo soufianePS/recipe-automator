@@ -175,9 +175,22 @@ function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
 }
 
 function applyManualSeoKeywords(recipe, pinterestPins, manualKeywords) {
-  if (!manualKeywords.length) return { recipe, pinterestPins };
-  const primary = manualKeywords[0];
   const title = recipe.post_title || recipe.title || 'Recipe';
+  const pinterestKeywords = manualKeywords.length
+    ? manualKeywords
+    : [recipe.focus_keyword || title].filter(Boolean);
+  if (!manualKeywords.length) {
+    return {
+      recipe,
+      pinterestPins: (pinterestPins || []).map((pin, i) => ({
+        ...pin,
+        description: expandPinterestDescription(pin, title, pinterestKeywords, i),
+        seo: pin.seo || null,
+      })),
+    };
+  }
+
+  const primary = manualKeywords[0];
 
   recipe.focus_keyword = recipe.focus_keyword || primary;
   if (!String(recipe.focus_keyword || '').toLowerCase().includes(primary.toLowerCase())) {

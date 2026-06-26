@@ -422,10 +422,10 @@ Output ONLY the description text itself, no preamble, no labels, no quotes.`;
         const PICKER_OPTIONS = ['auto', '1:1', '3:4', '9:16', '4:3', '16:9'];
         const isPickerSelectable = PICKER_OPTIONS.includes(aspectRatio.toLowerCase());
 
-        const promptTemplate = cfg.promptTemplate || prompt;
-        let fullPrompt = promptTemplate.includes('@prompt')
-          ? promptTemplate.replace(/@prompt/g, prompt)
-          : `${promptTemplate}\n\n--- PIN-SPECIFIC INSTRUCTIONS ---\n${prompt}`;
+        const promptTemplate = (cfg.promptTemplate || '').trim();
+        let fullPrompt = promptTemplate
+          ? (promptTemplate.includes('@prompt') ? promptTemplate.replace(/@prompt/g, prompt) : promptTemplate)
+          : prompt;
         // Resolve wrapper placeholders so @title / @website / @pin_title are
         // replaced with real values in the chatgptPin.promptTemplate too.
         const wrapperVars = {

@@ -168,10 +168,10 @@ export class BaseOrchestrator {
       const isPickerSelectable = PICKER_OPTIONS.includes(aspectRatio.toLowerCase());
 
       // Build the ChatGPT prompt — combines the user-configured template with the pin-specific prompt.
-      const promptTemplate = cfg.promptTemplate || prompt;
-      let fullPrompt = promptTemplate.includes('@prompt')
-        ? promptTemplate.replace(/@prompt/g, prompt)
-        : `${promptTemplate}\n\n--- PIN-SPECIFIC INSTRUCTIONS ---\n${prompt}`;
+      const promptTemplate = (cfg.promptTemplate || '').trim();
+      let fullPrompt = promptTemplate
+        ? (promptTemplate.includes('@prompt') ? promptTemplate.replace(/@prompt/g, prompt) : promptTemplate)
+        : prompt;
       // Resolve user-template placeholders (@title, @website, @pin_title, etc.).
       // The inner prompt was already resolved by the caller; here we also resolve
       // the wrapper template so chatgptPin.promptTemplate gets actual values.
