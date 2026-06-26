@@ -1210,9 +1210,11 @@ export class BaseOrchestrator {
     const settings = await StateManager.getSettings();
     const result = await buildAndPublishPost(state, settings, WordPressAPI, Logger);
     // Next: generate Pinterest pins if enabled, otherwise go straight to sheet update
-    const nextStatus = (settings.pinterestEnabled && state.pinterestPins?.length > 0)
+    const pinCount = state.pinterestPins?.length || 0;
+    const nextStatus = (settings.pinterestEnabled && pinCount > 0)
       ? STATES.GENERATING_PINS
       : STATES.UPDATING_SHEET;
+    Logger.info(`[Pinterest] Post-publish route: pinterestEnabled=${!!settings.pinterestEnabled}, pinCount=${pinCount}, next=${nextStatus}`);
     await StateManager.updateState({
       status: nextStatus,
       articleHTML: result.html,

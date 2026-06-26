@@ -44,7 +44,7 @@ function toTitleCase(str) {
 
 function parseManualKeywords(value) {
   return String(value || '')
-    .split(/[,;\n]+/)
+    .split(/[,;\n\t]+/)
     .map(k => k.trim())
     .filter(Boolean)
     .filter((k, i, arr) => arr.findIndex(x => x.toLowerCase() === k.toLowerCase()) === i)
@@ -54,7 +54,7 @@ function parseManualKeywords(value) {
 function mergeKeywords(existing, manualKeywords, limit = 8) {
   const current = Array.isArray(existing)
     ? existing
-    : String(existing || '').split(/[,;\n]+/);
+    : String(existing || '').split(/[,;\n\t]+/);
   return [...current, ...manualKeywords]
     .map(k => String(k || '').trim())
     .filter(Boolean)
@@ -62,23 +62,79 @@ function mergeKeywords(existing, manualKeywords, limit = 8) {
     .slice(0, limit);
 }
 
+function keywordWindow(keywords, start = 0, count = 3) {
+  const list = (keywords || []).map(k => String(k || '').trim()).filter(Boolean);
+  if (!list.length) return [];
+  const out = [];
+  for (let i = 0; i < list.length && out.length < count; i++) {
+    out.push(list[(start + i) % list.length]);
+  }
+  return out;
+}
+
+function textIncludesPhrase(text, phrase) {
+  return String(text || '').toLowerCase().includes(String(phrase || '').toLowerCase());
+}
+
+function appendKeywordSentence(text, keywords, { prefix = 'SEO focus', maxKeywords = 3, maxLength = 0 } = {}) {
+  const base = String(text || '').trim();
+  const phrases = (keywords || [])
+    .map(k => String(k || '').trim())
+    .filter(Boolean)
+    .filter(k => !textIncludesPhrase(base, k))
+    .slice(0, maxKeywords);
+  if (!phrases.length) return base;
+  let out = `${base}${base ? ' ' : ''}${prefix}: ${phrases.join(', ')}.`;
+  if (maxLength && out.length > maxLength) {
+    const required = `${prefix}: ${phrases[0]}.`;
+    const room = Math.max(0, maxLength - required.length - 1);
+    const trimmedBase = base.slice(0, room).replace(/\s+\S*$/, '').trim();
+    out = `${trimmedBase}${trimmedBase ? ' ' : ''}${required}`.slice(0, maxLength);
+  }
+  return out;
+}
+
 function ensureSeoObject(seo, fallbackTitle, manualKeywords, limit = 8) {
   const out = (seo && typeof seo === 'object') ? { ...seo } : {};
   out.filename = out.filename || '';
-  out.alt_text = out.alt_text || fallbackTitle || '';
-  out.title = out.title || fallbackTitle || out.alt_text || '';
-  out.description = out.description || `${fallbackTitle || out.title || 'Recipe image'} featuring ${manualKeywords.slice(0, 3).join(', ')}.`;
+  out.alt_text = appendKeywordSentence(out.alt_text || fallbackTitle || '', manualKeywords, {
+    prefix: 'Recipe focus',
+    maxKeywords: 1,
+    maxLength: 160
+  });
+  out.title = appendKeywordSentence(out.title || fallbackTitle || out.alt_text || '', manualKeywords, {
+    prefix: 'SEO',
+    maxKeywords: 1,
+    maxLength: 120
+  });
+  out.description = appendKeywordSentence(
+    out.description || `${fallbackTitle || out.title || 'Recipe image'} featuring ${manualKeywords.slice(0, 3).join(', ')}.`,
+    manualKeywords,
+    { prefix: 'Related search phrases', maxKeywords: Math.min(3, limit) }
+  );
   out.keywords = mergeKeywords(out.keywords, manualKeywords, limit);
   return out;
 }
 
+function trimPinterestBody(text, maxLength) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return normalized.slice(0, Math.max(0, maxLength)).replace(/\s+\S*$/, '').replace(/[,\s]+$/, '').trim();
+}
+
 function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
   const base = String(pin.description || '').trim();
-  const keywords = manualKeywords.slice(index, index + 3).concat(manualKeywords).slice(0, 4);
+  const keywords = keywordWindow(manualKeywords, index * 3, 4);
+  const primaryKeyword = manualKeywords[0] || keywords[0] || '';
   const keywordSentence = keywords.length
     ? `Save this ${recipeTitle} idea when you want ${keywords.join(', ')}.`
     : `Save this ${recipeTitle} idea for your next baking day.`;
   const titleSentence = pin.title ? `${pin.title} is a useful recipe to keep on hand.` : '';
+  const angles = [
+    `This pin focuses on the finished look, cozy serving idea, and the reason this recipe belongs in your saved meal inspiration.`,
+    `This pin highlights the flavor, texture, and why the recipe is worth trying when you want a reliable homemade result.`,
+    `This pin is written for planning, shopping, and quick recipe discovery, with practical details that make the full post easy to use.`,
+  ];
   const hashtags = mergeKeywords([], manualKeywords, 8)
     .map(k => `#${k.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 35)}`)
     .filter(tag => tag.length > 1)
@@ -89,14 +145,33 @@ function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
     .slice(0, 8)
     .join(' ');
 
-  let description = [base, titleSentence, keywordSentence]
+  let body = [keywordSentence, base, titleSentence, angles[index % angles.length]]
     .filter(Boolean)
     .join(' ');
-  if (description.length < 450) {
-    description += ` It works for planning desserts, holiday menus, family baking, and simple make-ahead treats. The notes in the full post help with timing, texture, storage, and serving so you can make it without guessing.`;
+  if (primaryKeyword && !textIncludesPhrase(body, primaryKeyword)) {
+    body = `${keywordSentence} ${body}`.trim();
   }
-  if (!description.includes('#')) description += ` ${tagLine}`;
-  return description.slice(0, 650);
+
+  const expanders = [
+    `The full recipe explains the timing, texture cues, storage tips, and serving details so readers can decide quickly if it fits their table.`,
+    `It gives Pinterest users a clear reason to click through instead of saving another generic idea, while keeping the description natural.`,
+    `Use it for seasonal baking plans, weeknight inspiration, holiday menus, or saving a recipe that feels specific instead of copied.`,
+  ];
+  let expanderIndex = index % expanders.length;
+  while (body.length < 520) {
+    body = `${body} ${expanders[expanderIndex % expanders.length]}`.trim();
+    expanderIndex++;
+  }
+
+  const tags = tagLine ? ` ${tagLine}` : '';
+  const maxBodyLength = Math.max(0, 700 - tags.length);
+  body = trimPinterestBody(body, maxBodyLength);
+  let description = `${body}${tags}`.trim();
+  if (description.length > 700) {
+    body = trimPinterestBody(body, Math.max(0, 700 - tags.length));
+    description = `${body}${tags}`.trim();
+  }
+  return description;
 }
 
 function applyManualSeoKeywords(recipe, pinterestPins, manualKeywords) {
@@ -108,18 +183,36 @@ function applyManualSeoKeywords(recipe, pinterestPins, manualKeywords) {
   if (!String(recipe.focus_keyword || '').toLowerCase().includes(primary.toLowerCase())) {
     recipe.focus_keyword = `${primary}, ${recipe.focus_keyword}`.replace(/,\s*$/, '');
   }
-  recipe.meta_title = recipe.meta_title || `${title} - ${primary}`;
-  recipe.meta_description = recipe.meta_description || `${title} made with ${manualKeywords.slice(0, 3).join(', ')}.`;
-  if (recipe.meta_description.length > 155) {
-    recipe.meta_description = recipe.meta_description.slice(0, 152).replace(/\s+\S*$/, '') + '...';
-  }
+  recipe.meta_title = appendKeywordSentence(recipe.meta_title || `${title} - ${primary}`, [primary], {
+    prefix: 'SEO',
+    maxKeywords: 1,
+    maxLength: 70
+  });
+  recipe.meta_description = appendKeywordSentence(
+    recipe.meta_description || `${title} made with ${manualKeywords.slice(0, 3).join(', ')}.`,
+    [primary],
+    { prefix: 'Search focus', maxKeywords: 1, maxLength: 155 }
+  );
+  recipe.intro = appendKeywordSentence(recipe.intro, manualKeywords.slice(0, 2), {
+    prefix: 'This recipe is especially useful for',
+    maxKeywords: 3
+  });
+  recipe.conclusion = appendKeywordSentence(recipe.conclusion, keywordWindow(manualKeywords, 3, 4), {
+    prefix: 'Readers also use it for',
+    maxKeywords: 4
+  });
+  recipe.recipe_card_description = appendKeywordSentence(recipe.recipe_card_description, [primary], {
+    prefix: 'Search focus',
+    maxKeywords: 1,
+    maxLength: 480
+  });
 
-  recipe.hero_seo = ensureSeoObject(recipe.hero_seo, title, manualKeywords);
-  recipe.ingredients_seo = ensureSeoObject(recipe.ingredients_seo, `${title} ingredients`, manualKeywords);
+  recipe.hero_seo = ensureSeoObject(recipe.hero_seo, title, keywordWindow(manualKeywords, 0, 4));
+  recipe.ingredients_seo = ensureSeoObject(recipe.ingredients_seo, `${title} ingredients`, keywordWindow(manualKeywords, 3, 4));
   if (Array.isArray(recipe.steps)) {
     recipe.steps = recipe.steps.map((step, i) => ({
       ...step,
-      seo: ensureSeoObject(step.seo, step.title || `${title} step ${i + 1}`, manualKeywords.slice(i).concat(manualKeywords), 6),
+      seo: ensureSeoObject(step.seo, step.title || `${title} step ${i + 1}`, keywordWindow(manualKeywords, i + 5, 4), 6),
     }));
   }
   recipe.pinterest_pins = (pinterestPins || []).map((pin, i) => ({
@@ -130,6 +223,53 @@ function applyManualSeoKeywords(recipe, pinterestPins, manualKeywords) {
     seo: ensureSeoObject(pin.seo, pin.title || `${title} pin ${i + 1}`, manualKeywords, 8),
   }));
   return { recipe, pinterestPins: recipe.pinterest_pins };
+}
+
+function _normalizeStepText(step) {
+  if (typeof step === 'string') return { title: '', description: step };
+  return step && typeof step === 'object' ? step : {};
+}
+
+function _synthesizeVisualStep(recipeStep, index, vgSettings) {
+  const step = _normalizeStepText(recipeStep);
+  const title = step.title || step.name || `Step ${index + 1}`;
+  const description = step.description || step.text || step.instructions || title;
+  const cameraAngles = ['45-degree angle', 'top-down', 'slight overhead (30-degree)', '45-degree angle'];
+  return {
+    step_id: index + 1,
+    title,
+    container: vgSettings?.defaultContainer || 'white ceramic bowl',
+    camera_angle: cameraAngles[index % cameraAngles.length],
+    visible_ingredients: [],
+    forbidden_ingredients: [],
+    food_state: description,
+    shape_change: false,
+    composition: {
+      subject_placement: 'center, fills 60% of frame width',
+      subject_orientation: 'natural recipe-prep orientation for this step',
+      secondary_elements: [],
+      negative_space: 'clean background surface with no loose food outside the container',
+    },
+    continuity: {
+      uses_previous_image: index > 0,
+      reason: index > 0 ? 'continues the same recipe process from the previous step' : 'first visual cooking step',
+    },
+  };
+}
+
+function ensureVisualStepCoverage(rawVisualPlan, recipeSteps, vgSettings) {
+  if (!rawVisualPlan) return rawVisualPlan;
+  if (!Array.isArray(rawVisualPlan.visual_steps)) rawVisualPlan.visual_steps = [];
+  const normalizedRecipeSteps = Array.isArray(recipeSteps) ? recipeSteps : [];
+  const before = rawVisualPlan.visual_steps.length;
+  const target = Math.max(before, normalizedRecipeSteps.length, vgSettings?.minVisualSteps || 0);
+  for (let i = before; i < target; i++) {
+    rawVisualPlan.visual_steps.push(_synthesizeVisualStep(normalizedRecipeSteps[i], i, vgSettings));
+  }
+  if (rawVisualPlan.visual_steps.length > before) {
+    Logger.warn(`[VerifiedGen] Visual plan had ${before} step(s), recipe has ${normalizedRecipeSteps.length}; synthesized ${rawVisualPlan.visual_steps.length - before} missing visual step(s) so Flow/WP stay complete.`);
+  }
+  return rawVisualPlan;
 }
 
 export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
@@ -628,7 +768,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       templateInstructions += `\n\nVISUAL REFERENCE IMAGES (CRITICAL): ${pinterestRefPaths.length} Pinterest food photographs of "${state.recipeTitle}" are attached to this message. Use them as the canonical visual reference when writing every visual field — hero_prompt, hero_image, ingredients_image, every step's image_prompt, every step's food_state. Match the actual plating style, garnishes, glaze color, container type, and lighting feel you SEE in those photos. Do not invent a different visual style. If a photo shows a glossy mahogany glaze, write that — do not write "creamy white sauce" or some other invented look.`;
     }
     if (manualSeoKeywords.length > 0) {
-      templateInstructions += `\n\nMANUAL SEO KEYWORDS FROM SHEET COLUMN Z (CRITICAL):\n${manualSeoKeywords.map(k => `- ${k}`).join('\n')}\nUse these exact keyword phrases naturally in the blog SEO, focus_keyword, meta_title, meta_description, image SEO metadata, Pinterest pin titles, Pinterest pin descriptions, Pinterest image metadata, and Pinterest hashtags where appropriate. Do not keyword-stuff. Pinterest pin descriptions must be longer than normal: 450-650 characters each, 3-5 short sentences, with 5-8 hashtags at the end. Each pin must use a different mix of the manual keywords.`;
+      templateInstructions += `\n\nMANUAL SEO KEYWORDS FROM SHEET COLUMN Z (CRITICAL - EXACT PHRASES):\n${manualSeoKeywords.map(k => `- ${k}`).join('\n')}\nYou MUST use these exact phrases, preserving spelling and word order. Do not rewrite, singularize, pluralize, or paraphrase them.\nRequired placement rules:\n1. recipe.focus_keyword MUST start with the first keyword phrase exactly.\n2. recipe.meta_title and recipe.meta_description MUST include the first keyword phrase exactly.\n3. recipe.intro MUST include at least the first 2 keyword phrases exactly, naturally inside sentences.\n4. recipe.conclusion MUST include at least 2 different keyword phrases exactly.\n5. hero_seo.description, ingredients_seo.description, and each step.seo.description MUST include 1-3 exact keyword phrases.\n6. Every pinterest_pins[].description MUST be 500-700 characters, 3-5 short sentences, include 2-4 exact keyword phrases, then 5-8 hashtags at the end.\n7. Each pinterest_pins[] item MUST have its own distinct angle: different title, different description emphasis, and different image_prompt composition.\n8. Every pinterest_pins[].seo.description MUST include 2-4 exact keyword phrases.\n9. Distribute keyword phrases across blog text, image SEO metadata, and Pinterest metadata without keyword stuffing.`;
       Logger.info(`[SEO] Injecting ${manualSeoKeywords.length} manual keyword(s) into recipe prompt`);
     }
     const introTemplates = settings.introTemplates || [];
@@ -889,7 +1029,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
     }
 
+    const rawVisualCount = Array.isArray(rawVisualPlan?.visual_steps) ? rawVisualPlan.visual_steps.length : 0;
+    const recipeStepCount = Array.isArray(recipe.steps) ? recipe.steps.length : 0;
+    Logger.info(`[VerifiedGen] Count check before visual validation: recipe.steps=${recipeStepCount}, visual_plan.visual_steps=${rawVisualCount}, pinterest_pins=${(rawPins || []).length}`);
+    ensureVisualStepCoverage(rawVisualPlan, recipe.steps, vgSettings);
     const visualPlan = validateVisualPlan(rawVisualPlan, vgSettings);
+    Logger.info(`[VerifiedGen] Count check after visual validation: recipe.steps=${recipeStepCount}, visual_plan.visual_steps=${visualPlan.visual_steps.length}`);
 
     // ── Identity-anchor Pinterest scrape ──
     // If the visual plan has a food_identity_canon, scrape ONE additional Pinterest
@@ -920,8 +1065,8 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     }
 
     // Build steps array: merge recipe step descriptions + visual plan titles + SEO
-    const recipeSteps = recipe.steps || [];
-    const steps = visualPlan.visual_steps.map((vs, i) => {
+    const recipeSteps = (recipe.steps || []).map(_normalizeStepText);
+    let steps = visualPlan.visual_steps.map((vs, i) => {
       const recipeStep = recipeSteps[i] || {};
       const stepSeo = recipeStep.seo || {};
       return {
@@ -952,6 +1097,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     }));
     ({ recipe, pinterestPins } = applyManualSeoKeywords(recipe, pinterestPins, manualSeoKeywords));
     recipe.pinterest_pins = pinterestPins;
+    if (manualSeoKeywords.length) {
+      steps = steps.map((step, i) => ({
+        ...step,
+        seo: ensureSeoObject(step.seo, step.title || `Step ${i + 1}`, keywordWindow(manualSeoKeywords, i + 5, 4), 6)
+      }));
+    }
 
     await StateManager.updateState({
       status: STATES.CREATING_FOLDERS,
@@ -1085,7 +1236,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     if (idx === 0) {
       // Step 1 has no previous step — anchor on Pinterest style (low weight) +
       // the ingredients flat-lay (high, the immediately-preceding generated image).
-      const pinterestRefs = (state.vgPinterestRefs || []).filter(p => p && existsSync(p)).slice(0, 1);
+      const pinterestRefs = [];
       if (pinterestRefs.length > 0) {
         contextPaths.push(...pinterestRefs);
         refRoles.push(`Pinterest reference photos of the finished dish — use ONLY for the dish's typical color palette and food-blog style. Do NOT copy plating or composition — this is the FIRST cooking step, the food is raw`);
@@ -1095,7 +1246,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         contextPaths.push(ingredientsImg);
         refRoles.push(`The ingredients flat-lay for THIS recipe — keep the SAME ingredients, colors and kitchen surface`);
       }
-      Logger.info(`[Step 1] Refs attached: ${contextPaths.length} (pinterest + ingredients)`);
+      Logger.info(`[Step 1] Refs attached: ${contextPaths.length} (ingredients only)`);
     } else {
       // SERVING step (the LAST step) is the finished plated dish — also attach
       // Pinterest style refs FIRST (low weight) so its plating/palette/garnish

@@ -134,6 +134,30 @@ export class FlowPage {
     this._snifferActive = false; // whether we're currently listening
   }
 
+  _cacheGeneratedName(filePath, pickerName) {
+    if (!filePath || !pickerName) return;
+    this._generatedNames.set(filePath, pickerName);
+    this._generatedNames.set(basename(filePath), pickerName);
+  }
+
+  _getCachedGeneratedName(filePath) {
+    if (!filePath) return null;
+    return this._generatedNames.get(filePath) || this._generatedNames.get(basename(filePath)) || null;
+  }
+
+  _compactPromptForFlow(prompt, maxChars = 1800) {
+    const text = String(prompt || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= maxChars) return text;
+
+    let compact = text.slice(0, maxChars);
+    const sentenceEnd = Math.max(compact.lastIndexOf('. '), compact.lastIndexOf('; '), compact.lastIndexOf(', '));
+    if (sentenceEnd > 900) compact = compact.slice(0, sentenceEnd + 1);
+    compact = compact.trim();
+
+    Logger.warn(`[Flow] Prompt compacted for composer reliability: ${text.length} -> ${compact.length} chars`);
+    return compact;
+  }
+
   /**
    * Start listening for image responses from Google's CDN.
    * Call before clicking Create — images are captured automatically.
@@ -340,6 +364,8 @@ export class FlowPage {
   // ═══════════════════════════════════════════════════════════
 
   async _doGenerate(prompt, backgroundFilePath, contextFilePaths, aspectRatio, outputPath) {
+    const flowPrompt = this._compactPromptForFlow(prompt);
+
     // ─── Single-project approach ───
     // Reuse one project for all images in a recipe.
     // Background uploaded once, context images already on canvas from prior generations.
@@ -357,7 +383,14 @@ export class FlowPage {
     // 2b. Clear any leftover refs from previous generation in this project
     //     Without this, refs accumulate across generations (e.g. Pinterest pins)
     //     and Flow may use stale refs instead of the intended ones.
-    await this._clearAllPromptRefs();
+    const refsCleared = await this._clearAllPromptRefs();
+    if (!refsCleared) {
+      Logger.warn('[Flow] Starting generation with leftover refs still present; output may use stale references');
+    }
+
+    // Keep the composer empty while attaching refs. Flow often refuses image
+    // refs after text is already present; prompt text is appended after refs.
+    await this._clearPromptText();
 
     // 3. Attach background as FIRST ref — this is critical for Pinterest templates
     //    where the prompt says "first uploaded reference image".
@@ -366,19 +399,21 @@ export class FlowPage {
     const bgName = basename(backgroundFilePath);
     const bgNameNoExt = bgName.split('.')[0];
     Logger.info(`[Flow] Attaching background from picker: ${bgName}`);
+    let bgAttached = false;
+    let promptRefsBeforeBg = await this._getPromptRefs();
 
     if (bgNameNoExt.length < 6) {
       // Short filenames (e.g. "1.jpg", "2.jpg") — fuzzy picker matching is unreliable.
       // The file is already on canvas from _ensureProject(), so try exact picker match first.
       // If that fails, paste via clipboard (which also uploads to canvas, but ensures correct ref).
       Logger.info(`[Flow] Short filename "${bgName}" — trying exact picker match`);
-      let bgAttached = await this._attachFromPicker(bgName);
+      bgAttached = await this._attachFromPicker(bgName);
       if (!bgAttached) {
         Logger.info(`[Flow] Picker failed for "${bgName}", pasting via clipboard`);
-        await this._uploadFile(backgroundFilePath);
+        bgAttached = await this._uploadFile(backgroundFilePath);
       }
     } else {
-      let bgAttached = await this._attachFromPicker(bgName);
+      bgAttached = await this._attachFromPicker(bgName);
       if (!bgAttached) {
         // Re-upload to canvas and try again (file may have been pushed off picker)
         Logger.warn(`[Flow] Background not found in picker, re-uploading: ${bgName}`);
@@ -387,9 +422,20 @@ export class FlowPage {
         if (!bgAttached) {
           // Last resort: paste via clipboard directly into prompt
           Logger.warn(`[Flow] Picker still failed, pasting via clipboard: ${bgName}`);
-          await this._uploadFile(backgroundFilePath);
+          bgAttached = await this._uploadFile(backgroundFilePath);
         }
       }
+    }
+    bgAttached = await this._confirmPromptRefAttached(promptRefsBeforeBg.length, bgName, 'background');
+    if (!bgAttached) {
+      Logger.warn(`[Flow] Background click did not add a prompt ref, forcing clipboard/upload fallback: ${bgName}`);
+      bgAttached = await this._uploadFile(backgroundFilePath);
+      bgAttached = await this._confirmPromptRefAttached(promptRefsBeforeBg.length, bgName, 'background-fallback');
+    }
+    if (bgAttached) Logger.info(`[Flow] Background ref attached and verified: ${bgName}`);
+    else Logger.warn(`[Flow] Background ref FAILED after verification: ${bgName}`);
+    if (!bgAttached) {
+      throw new Error(`Background reference failed to attach: ${bgName}`);
     }
 
     // 4. Attach context images from picker
@@ -398,11 +444,15 @@ export class FlowPage {
     // skip the picker attempt entirely (3 scroll attempts × ~4s = wasted time) and
     // upload to canvas first. Picker auto-filters already-attached files anyway, so
     // an optimistic picker probe just times out.
+    let contextAttachedCount = 0;
+    let contextRequestedCount = 0;
     for (const ctxPath of contextFilePaths) {
       if (!existsSync(ctxPath)) continue;
+      contextRequestedCount++;
       const ctxName = basename(ctxPath);
-      const cachedName = this._generatedNames.get(ctxPath);
+      const cachedName = this._getCachedGeneratedName(ctxPath);
       let ctxAttached = false;
+      const refsBeforeCtx = await this._getPromptRefs();
 
       if (cachedName) {
         // Known to be on canvas in this session — try picker first
@@ -414,15 +464,37 @@ export class FlowPage {
         Logger.info(`[Flow] Context not in session cache, uploading to canvas: ${ctxName}`);
         await this._uploadBgToCanvas(ctxPath);
         ctxAttached = await this._attachFromPicker(ctxName);
-        if (ctxAttached) this._generatedNames.set(ctxPath, ctxName);
+        if (ctxAttached) this._cacheGeneratedName(ctxPath, ctxName);
       }
 
-      if (!ctxAttached) {
+      let ctxVerified = ctxAttached
+        ? await this._confirmPromptRefAttached(refsBeforeCtx.length, cachedName || ctxName, 'context')
+        : false;
+
+      if (!ctxVerified && cachedName && cachedName !== ctxName) {
+        Logger.warn(`[Flow] Cached picker click did not add prompt ref, trying basename: ${ctxName}`);
+        ctxAttached = await this._attachFromPicker(ctxName);
+        ctxVerified = ctxAttached
+          ? await this._confirmPromptRefAttached(refsBeforeCtx.length, ctxName, 'context-basename')
+          : false;
+      }
+
+      if (!ctxVerified) {
         // Last resort: paste via clipboard
         Logger.warn(`[Flow] Picker failed for context, pasting via clipboard: ${ctxName}`);
-        await this._uploadFile(ctxPath);
+        ctxAttached = await this._uploadFile(ctxPath);
+        ctxVerified = ctxAttached
+          ? await this._confirmPromptRefAttached(refsBeforeCtx.length, ctxName, 'context-fallback')
+          : false;
+        if (ctxVerified) this._cacheGeneratedName(ctxPath, ctxName);
       }
+
+      if (ctxVerified) contextAttachedCount++;
+      else Logger.warn(`[Flow] Context ref FAILED: ${ctxName}`);
     }
+    Logger.info(`[Flow] Reference attach summary: background=${bgAttached ? 'ok' : 'failed'}, context=${contextAttachedCount}/${contextRequestedCount}`);
+
+    await this._insertPromptTextPreservingRefs(flowPrompt);
 
     // 6. Snapshot SRCs AFTER all uploads (background + context) so that
     //    uploaded reference images are in the "before" set and won't be
@@ -430,16 +502,7 @@ export class FlowPage {
     const srcsBeforeGen = new Set(await this._getAllImgSrcs());
 
     // 7. Type prompt — verify it was actually typed
-    await this._typePrompt(prompt);
-    const promptVerified = await this.page.evaluate((css) => {
-      const el = document.querySelector(css);
-      return el ? (el.textContent || '').trim().length : 0;
-    }, PROMPT_INPUT_CSS);
-    Logger.info(`[Flow] Prompt length in input: ${promptVerified} chars`);
-    if (promptVerified < 10) {
-      Logger.warn('[Flow] Prompt may not have been typed correctly, retrying...');
-      await this._typePrompt(prompt);
-    }
+    await this._assertPromptReady(1 + contextRequestedCount, 10, 'pre-create');
 
     // 8. Screenshot before Create (debug)
     await this._screenshot('pre-create');
@@ -481,7 +544,7 @@ export class FlowPage {
         try {
           const newName = await this._getNewestPickerName();
           if (newName) {
-            this._generatedNames.set(basename(outputPath), newName);
+            this._cacheGeneratedName(outputPath, newName);
             Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
           }
         } catch {}
@@ -571,7 +634,7 @@ export class FlowPage {
     try {
       const newName = await this._getNewestPickerName();
       if (newName) {
-        this._generatedNames.set(outputPath, newName);
+        this._cacheGeneratedName(outputPath, newName);
         Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
       }
     } catch (e) {
@@ -621,21 +684,44 @@ export class FlowPage {
         await this._debugPromptState();
 
         // 3d. Clear all existing refs (we'll add exactly what we need)
-        await this._clearAllPromptRefs();
+        const refsCleared = await this._clearAllPromptRefs();
+        if (!refsCleared) {
+          Logger.warn('[Flow] Reuse started with leftover refs still present after cleanup');
+        }
         await this._delay(300);
 
         // 3e. Attach background from picker
         const bgName = basename(backgroundFilePath);
         Logger.info(`[Flow] Attaching background: ${bgName}`);
-        await this._attachFromPicker(bgName);
+        const refsBeforeBg = await this._getPromptRefs();
+        let bgAttached = await this._attachFromPicker(bgName);
+        bgAttached = bgAttached
+          ? await this._confirmPromptRefAttached(refsBeforeBg.length, bgName, 'reuse-background')
+          : false;
+        if (!bgAttached) {
+          Logger.warn(`[Flow] Reuse background picker failed, forcing clipboard/upload fallback: ${bgName}`);
+          bgAttached = await this._uploadFile(backgroundFilePath);
+          bgAttached = bgAttached
+            ? await this._confirmPromptRefAttached(refsBeforeBg.length, bgName, 'reuse-background-fallback')
+            : false;
+        }
+        if (bgAttached) Logger.info(`[Flow] Reuse background ref attached and verified: ${bgName}`);
+        else Logger.warn(`[Flow] Reuse background ref FAILED after verification: ${bgName}`);
+        if (!bgAttached) {
+          throw new Error(`Reuse background reference failed to attach: ${bgName}`);
+        }
 
         // 3f. Attach context images — skip picker for files we know aren't uploaded
         // yet (avoids the wasted ~12s picker-then-scroll-then-fail per unknown file).
+        let contextAttachedCount = 0;
+        let contextRequestedCount = 0;
         for (const ctxPath of contextFilePaths) {
           if (!existsSync(ctxPath)) continue;
+          contextRequestedCount++;
           const ctxName = basename(ctxPath);
-          const cachedName = this._generatedNames.get(ctxPath);
+          const cachedName = this._getCachedGeneratedName(ctxPath);
           let ok = false;
+          const refsBeforeCtx = await this._getPromptRefs();
 
           if (cachedName) {
             Logger.info(`[Flow] Attaching context: ${cachedName}`);
@@ -644,9 +730,34 @@ export class FlowPage {
             Logger.info(`[Flow] Context not in session cache, uploading: ${ctxName}`);
             await this._uploadBgToCanvas(ctxPath);
             ok = await this._attachFromPicker(ctxName);
-            if (ok) this._generatedNames.set(ctxPath, ctxName);
+            if (ok) this._cacheGeneratedName(ctxPath, ctxName);
           }
+
+          let ctxVerified = ok
+            ? await this._confirmPromptRefAttached(refsBeforeCtx.length, cachedName || ctxName, 'reuse-context')
+            : false;
+
+          if (!ctxVerified && cachedName && cachedName !== ctxName) {
+            Logger.warn(`[Flow] Reuse cached picker click did not add prompt ref, trying basename: ${ctxName}`);
+            ok = await this._attachFromPicker(ctxName);
+            ctxVerified = ok
+              ? await this._confirmPromptRefAttached(refsBeforeCtx.length, ctxName, 'reuse-context-basename')
+              : false;
+          }
+
+          if (!ctxVerified) {
+            Logger.warn(`[Flow] Reuse picker failed for context, pasting via clipboard: ${ctxName}`);
+            ok = await this._uploadFile(ctxPath);
+            ctxVerified = ok
+              ? await this._confirmPromptRefAttached(refsBeforeCtx.length, ctxName, 'reuse-context-fallback')
+              : false;
+            if (ctxVerified) this._cacheGeneratedName(ctxPath, ctxName);
+          }
+
+          if (ctxVerified) contextAttachedCount++;
+          else Logger.warn(`[Flow] Reuse context ref FAILED: ${ctxName}`);
         }
+        Logger.info(`[Flow] Reuse reference attach summary: background=${bgAttached ? 'ok' : 'failed'}, context=${contextAttachedCount}/${contextRequestedCount}`);
 
         // 3g. Replace prompt text
         await this._typePrompt(prompt);
@@ -714,7 +825,7 @@ export class FlowPage {
         try {
           const newName = await this._getNewestPickerName();
           if (newName) {
-            this._generatedNames.set(outputPath, newName);
+            this._cacheGeneratedName(outputPath, newName);
             Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
           }
         } catch (e) {
@@ -984,10 +1095,19 @@ export class FlowPage {
 
         // Method 1: Exact match by img alt text
         for (const img of imgs) {
+          const alt = (img.alt || '').toLowerCase().trim();
+          if (alt && alt === nameToFind) {
+            const container = img.closest('[cursor]') || img.parentElement;
+            if (container) { container.click(); return 'alt-equals'; }
+          }
+        }
+
+        // Method 1b: Contained filename in img alt text
+        for (const img of imgs) {
           const alt = (img.alt || '').toLowerCase();
           if (alt && alt.includes(nameToFind)) {
             const container = img.closest('[cursor]') || img.parentElement;
-            if (container) { container.click(); return 'alt-exact'; }
+            if (container) { container.click(); return 'alt-contains'; }
           }
         }
 
@@ -1278,19 +1398,29 @@ export class FlowPage {
    */
   async _getPromptRefs() {
     return await this.page.evaluate(() => {
-      // Prompt area refs are small thumbnail images near/inside the prompt box
-      // They typically sit in a container above or inside the contenteditable div
-      // Look for small images (thumbnails) in the bottom prompt area (y > 50% of viewport)
-      const viewH = window.innerHeight;
+      // Prompt refs are small thumbnails near/inside the composer. Do not rely
+      // on y > 50% viewport: long prompts can push thumbnails higher.
+      const editor = document.querySelector('div[contenteditable="true"]');
+      const editorRect = editor ? editor.getBoundingClientRect() : null;
       const refs = [];
       const imgs = document.querySelectorAll('img');
       for (const img of imgs) {
         const r = img.getBoundingClientRect();
-        // Ref thumbnails: 20-200px wide, in the bottom half of the page (prompt area)
+        // Ref thumbnails: 20-200px wide. Main canvas images are larger.
         if (r.width < 20 || r.width > 200 || r.height < 20 || r.height > 200) continue;
-        if (r.y < viewH * 0.5) continue; // Must be in bottom half (prompt area)
         // Skip if inside a dialog/picker
         if (img.closest('dialog') || img.closest('[role="dialog"]')) continue;
+        const altLower = (img.alt || '').toLowerCase();
+        if (altLower.includes('profil') || altLower.includes('profile') ||
+            altLower.includes('avatar') || altLower.includes('logo') ||
+            altLower.includes('preview') || altLower.includes('aperÃ§u')) continue;
+
+        if (editorRect) {
+          const overlapsEditorX = r.right >= editorRect.left - 250 && r.left <= editorRect.right + 250;
+          const nearEditorY = r.bottom >= editorRect.top - 350 && r.top <= editorRect.bottom + 350;
+          if (!overlapsEditorX || !nearEditorY) continue;
+        }
+
         refs.push({
           index: refs.length,
           alt: img.alt || '',
@@ -1391,17 +1521,58 @@ export class FlowPage {
   async _clearAllPromptRefs() {
     let refs = await this._getPromptRefs();
     Logger.info(`[Flow] Clearing ${refs.length} prompt refs`);
-    // Remove from end to start to avoid index shifting
-    for (let i = refs.length - 1; i >= 0; i--) {
-      await this._removePromptRefByIndex(i);
-      await this._delay(300);
+
+    for (let pass = 1; pass <= 3 && refs.length > 0; pass++) {
+      Logger.info(`[Flow] Clear refs pass ${pass}: ${refs.length} ref(s)`);
+      // Remove from end to start to avoid index shifting
+      for (let i = refs.length - 1; i >= 0; i--) {
+        await this._removePromptRefByIndex(i);
+        await this._delay(300);
+      }
+      await this._delay(500);
+      refs = await this._getPromptRefs();
     }
-    // Verify
-    refs = await this._getPromptRefs();
+
     if (refs.length > 0) {
       Logger.warn(`[Flow] ${refs.length} refs remain after clearing`);
+      for (const ref of refs) {
+        Logger.warn(`[Flow] Remaining ref: "${ref.alt || 'unknown'}" (${Math.round(ref.width)}x${Math.round(ref.height)})`);
+      }
     }
     return refs.length === 0;
+  }
+
+  async _confirmPromptRefAttached(previousCount, imageName, role = 'ref') {
+    const started = Date.now();
+    let refs = [];
+    while (Date.now() - started < 7000) {
+      await this._delay(700);
+      refs = await this._getPromptRefs();
+      if (refs.length > previousCount) {
+        const suffix = Date.now() - started > 1000 ? ' after wait' : '';
+        Logger.info(`[Flow] Verified ${role} ref in prompt${suffix}: ${imageName} (${previousCount} -> ${refs.length})`);
+        return true;
+      }
+    }
+
+    const visible = refs.map(ref => ref.alt || 'unknown').join(', ');
+    Logger.warn(`[Flow] ${role} ref not visible after attach attempt: ${imageName} (${previousCount} -> ${refs.length}); visible refs: ${visible || 'none'}`);
+    return false;
+  }
+
+  async _assertPromptReady(expectedRefs, minPromptLength = 10, label = 'pre-create') {
+    const { refs, promptText } = await this._debugPromptState();
+    const visibleRefs = refs.map(ref => ref.alt || 'unknown').join(', ');
+    Logger.info(`[Flow] ${label} composer check: refs=${refs.length}/${expectedRefs}, prompt=${promptText.length} chars, visible refs=${visibleRefs || 'none'}`);
+
+    if (promptText.length < minPromptLength) {
+      throw new Error(`[Flow] ${label} failed: prompt text missing before Create`);
+    }
+    if (refs.length < expectedRefs) {
+      throw new Error(`[Flow] ${label} failed: expected ${expectedRefs} prompt ref(s), found ${refs.length}`);
+    }
+
+    return true;
   }
 
   /**
@@ -1724,6 +1895,32 @@ export class FlowPage {
     await this.page.keyboard.insertText(prompt);
     await this._delay(PROMPT_TYPE_DELAY);
     Logger.debug('Prompt typed');
+  }
+
+  async _clearPromptText() {
+    await this.page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (el) { el.focus(); el.click(); }
+    }, PROMPT_INPUT_CSS);
+    await this._delay(PROMPT_FOCUS_DELAY);
+    await this.page.keyboard.press('Control+a');
+    await this._delay(PROMPT_SELECT_ALL_DELAY);
+    await this.page.keyboard.press('Delete');
+    await this._delay(PROMPT_DELETE_DELAY);
+    Logger.debug('Prompt text cleared');
+  }
+
+  async _insertPromptTextPreservingRefs(prompt) {
+    const editor = this.page.locator(PROMPT_INPUT_CSS).first();
+    await editor.click({ timeout: 8000 });
+    await this._delay(PROMPT_FOCUS_DELAY);
+    await this.page.keyboard.insertText(prompt);
+    await this._delay(PROMPT_TYPE_DELAY);
+    const insertedLength = await this.page.evaluate((css) => {
+      const el = document.querySelector(css);
+      return el ? (el.textContent || '').trim().length : 0;
+    }, PROMPT_INPUT_CSS);
+    Logger.info(`[Flow] Prompt inserted preserving refs: ${insertedLength} chars`);
   }
 
   async _clickCreate() {

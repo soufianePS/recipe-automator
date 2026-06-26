@@ -126,13 +126,13 @@ export async function _uploadFile(filePath) {
   const pasteSuccess = await this._pasteImageToPrompt(base64, mimeType, fileName);
 
   if (pasteSuccess) {
-    Logger.debug(`Pasted to prompt: ${fileName}`);
-    return;
+    Logger.info(`[Flow] Clipboard attached "${fileName}" to prompt`);
+    return true;
   }
 
   // --- Fallback: upload to canvas + attach via picker ---
   Logger.info(`[Flow] Paste failed for ${fileName}, falling back to upload+picker`);
-  await this._uploadToCanvasAndAttach(filePath, fileName);
+  return await this._uploadToCanvasAndAttach(filePath, fileName);
 }
 
 /**
@@ -140,6 +140,10 @@ export async function _uploadFile(filePath) {
  * Returns true if image appeared in prompt, false otherwise.
  */
 export async function _pasteImageToPrompt(base64, mimeType, fileName) {
+  const refsBefore = typeof this._getPromptRefs === 'function'
+    ? await this._getPromptRefs()
+    : [];
+
   // Focus the prompt textbox
   await this.page.evaluate((css) => {
     const el = document.querySelector(css);
@@ -183,19 +187,12 @@ export async function _pasteImageToPrompt(base64, mimeType, fileName) {
 
   // Paste
   await this.page.keyboard.press('Control+v');
+  if (typeof this._confirmPromptRefAttached === 'function') {
+    return await this._confirmPromptRefAttached(refsBefore.length, fileName, 'clipboard');
+  }
+
   await this._delay(3000);
-
-  // Verify image appeared in prompt area (thumbnail)
-  const appeared = await this.page.evaluate(() => {
-    const imgs = document.querySelectorAll('img');
-    for (const img of imgs) {
-      const r = img.getBoundingClientRect();
-      if (r.width > 20 && r.width < 200 && r.y > 550) return true;
-    }
-    return false;
-  });
-
-  return appeared;
+  return true;
 }
 
 /**
@@ -268,6 +265,8 @@ export async function _uploadToCanvasAndAttach(filePath, fileName) {
 
   if (attached) {
     Logger.info(`[Flow] Fallback picker: attached "${fileName}" via ${attached}`);
+    await this._delay(500);
+    return true;
   } else {
     // Close picker, wait, and retry once (image may not be ready yet)
     try { await this.page.keyboard.press('Escape'); } catch {}
@@ -299,13 +298,18 @@ export async function _uploadToCanvasAndAttach(filePath, fileName) {
 
     if (retry) {
       Logger.info(`[Flow] Fallback picker retry: attached "${fileName}" via ${retry}`);
+      await this._delay(500);
+      return true;
     } else {
       try { await this.page.keyboard.press('Escape'); } catch {}
       Logger.warn(`[Flow] Fallback picker failed for "${fileName}" after retry`);
+      await this._delay(500);
+      return false;
     }
   }
 
   await this._delay(500);
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════

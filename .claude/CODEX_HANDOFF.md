@@ -215,3 +215,199 @@ Last pushed commit before the SEO column work:
 The manual SEO keyword column work was implemented after that push and may still need commit/push unless already done later.
 
 There may be a local `src/dashboard/dashboard.js` status caused by line endings/touch only. Check `git diff -- src/dashboard/dashboard.js`; if empty, do not include it in commits.
+
+---
+
+# Codex Handoff Update - 2026-06-26
+
+This section records the latest session work so Claude/future agents can continue without rediscovering the same Flow, SEO, and Pinterest issues.
+
+## Current Local State
+
+As of this update, `git status --short` shows local modifications in:
+
+- `src/dashboard/dashboard.js`
+- `src/modules/base-orchestrator.js`
+- `src/modules/verified-generator/orchestrator.js`
+- `src/shared/pages/flow-cleanup.js`
+- `src/shared/pages/flow.js`
+
+Do not assume these are all committed. Check `git diff` before editing or pushing.
+
+## Tested Recipe Run
+
+Latest successful verification run:
+
+- Sheet row: `113`
+- Site/tab: `leagueofcooking` / `League of cooking Gen`
+- Recipe: `Pumpkin Spice Sourdough Bread`
+- Focus keyword from column Z: `Fall Sourdough Bread Recipes`
+- WordPress draft: `https://leagueofcooking.com/wp-admin/post.php?post=5431&action=edit`
+- WPRM recipe ID observed: `5429`
+- Result: batch completed successfully.
+
+Keyword verification result for draft `5431`:
+
+- Blog body: keyword present.
+- WordPress REST meta: keyword present.
+- Media metadata: `7/7` attached media contained keyword in slug/title/alt/caption/description.
+- Pinterest descriptions in the sheet: `3/3` contained the keyword.
+- Pinterest descriptions were about `650` characters in that test.
+
+## Flow Reference Attachment Fixes
+
+The urgent Flow issue was that refs were not always actually present in the composer before clicking Create.
+
+Files:
+
+- `src/shared/pages/flow.js`
+- `src/shared/pages/flow-cleanup.js`
+
+Important behavior now:
+
+- Flow clears the composer, attaches background/context refs first, inserts prompt text after refs, then checks composer readiness before Create.
+- `_assertPromptReady(expectedRefs, minPromptLength, label)` verifies both prompt text and reference thumbnails before generation.
+- `_getPromptRefs()` was improved to detect thumbnails near the prompt editor instead of relying on fragile viewport position.
+- If a background/context ref is required but not attached, generation should fail before Create instead of silently producing an image without refs.
+- Prompt text may be compacted before insertion to improve Flow composer reliability.
+
+Observed good logs look like:
+
+```text
+[Flow] Prompt compacted for composer reliability: 4412 -> 1770 chars
+pre-create composer check: refs=3/3, prompt=1796 chars
+pre-create composer check: refs=2/2, prompt=1730 chars
+pre-create composer check: refs=4/4, prompt=1798 chars
+```
+
+If debugging future Flow failures, check for the `pre-create composer check` line before trusting any generated image.
+
+## Step Reference Policy
+
+User requested this final rule:
+
+- First cooking step must NOT use Pinterest finished-dish refs.
+- Pinterest refs are only for the final serving step and hero image.
+- Step 1 should use the ingredients image only when available.
+- Intermediate steps should use previous step images for continuity.
+- Final serving step uses Pinterest finished-dish ref plus previous step images.
+- Hero uses Pinterest finished-dish ref plus final serving image.
+
+Current implementation in `src/modules/verified-generator/orchestrator.js`:
+
+- Step 1 sets `pinterestRefs = []` and logs `Refs attached: ... (ingredients only)`.
+- Final step still loads `state.vgPinterestRefs`.
+- Hero still loads `heroPinterest` from `state.vgPinterestRefs`.
+
+Do not re-add Pinterest refs to step 1 unless the user explicitly reverses this decision.
+
+## Manual SEO Keywords Column Z
+
+Manual keywords from Google Sheet column `Z` are parsed with comma, semicolon, newline, and tab support.
+
+Important helper behavior in `src/modules/verified-generator/orchestrator.js`:
+
+- `parseManualKeywords()` splits on `[,;\n\t]+`.
+- `mergeKeywords()` also supports tab/newline-separated pasted lists.
+- If column Z is empty, generation should behave like before.
+- If column Z has keywords, they are injected into the first recipe/content prompt and enforced again after parsing the AI response.
+
+Placement expectations:
+
+- Blog SEO: `focus_keyword`, `meta_title`, `meta_description`.
+- Blog content: intro/conclusion should naturally include keywords.
+- Image SEO: hero, ingredients, every step image metadata.
+- Pinterest: descriptions, image metadata, hashtags/tags.
+
+## Pinterest Description Rule
+
+The user wants each Pinterest pin description to be long, useful, unique, and SEO-focused.
+
+Current rule:
+
+- Target length: `500-700` characters.
+- Must include the focus keyword / manual exact phrases when provided.
+- Must include a description specific to the pin, not generic filler only.
+- Each of the 3 pins must have its own angle/title/description/image prompt.
+- Hashtags stay at the end.
+
+Current safeguard:
+
+- `expandPinterestDescription()` normalizes descriptions after Gemini output.
+- It adds a distinct angle per pin:
+  - Pin 1: finished look / serving / save-worthy idea.
+  - Pin 2: flavor / texture / why to try it.
+  - Pin 3: planning / shopping / quick discovery.
+- It expands short descriptions until they are around the target range.
+- It trims to max `700` characters including hashtags.
+
+Gemini prompt rule was also updated from `450-650` to `500-700`.
+
+## Visual Step Count / Gemini Step Coverage
+
+There was a problem on a friend PC where Gemini produced more recipe steps but Flow/WP only had fewer images/steps.
+
+The orchestrator now logs count checks and synthesizes missing visual steps when needed:
+
+```text
+[VerifiedGen] Count check before visual validation: recipe.steps=X, visual_plan.visual_steps=Y, pinterest_pins=Z
+[VerifiedGen] Count check after visual validation: recipe.steps=X, visual_plan.visual_steps=N
+```
+
+If `visual_plan.visual_steps` is shorter than `recipe.steps`, `ensureVisualStepCoverage()` adds missing visual steps so Flow and WordPress stay complete.
+
+## Internal Link Correction Tool
+
+A Multi Site / Planifier internal-link correction flow was added earlier in this workstream.
+
+Purpose:
+
+- Find internal links in blog content pointing to draft/admin URLs such as `wp-admin/post.php?post=...&action=edit` or `?p=id`.
+- Convert/fix them to public permalinks where possible.
+- Show progress in a popup and recap corrected links.
+
+Relevant files to inspect:
+
+- `src/modules/planifier/internal-link-auditor.js`
+- `src/routes.js`
+- `src/dashboard/planifier.js`
+
+If the user cannot find the button, check the Multi Site / Planifier UI rendering and route wiring.
+
+## Pinterest Board Mapping Reminder
+
+Manual category-to-board mapping exists in Planifier.
+
+Expected behavior:
+
+- User can map each site category to a Pinterest board manually.
+- Executor should use explicit mapping first.
+- If no mapping exists, it may try automatic board name matching.
+- If no board can be matched for the category, it should skip instead of choosing a random board.
+
+This avoids posting recipes to unrelated Pinterest boards.
+
+## Quick Checks After Future Edits
+
+Run at least:
+
+```powershell
+node --check src\modules\verified-generator\orchestrator.js
+node --check src\shared\pages\flow.js
+node --check src\shared\pages\flow-cleanup.js
+node --check src\modules\base-orchestrator.js
+```
+
+For a real Flow validation, watch for:
+
+```text
+pre-create composer check: refs=A/B, prompt=N chars
+```
+
+For SEO validation after a recipe run, verify:
+
+- Column Z keyword is read.
+- Pin descriptions are `500-700` chars.
+- Pin descriptions contain the focus keyword.
+- WP media metadata contains the keyword.
+- Blog body/meta contains the keyword.
