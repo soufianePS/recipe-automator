@@ -483,9 +483,21 @@ export class FlowPage {
         // Last resort: paste via clipboard
         Logger.warn(`[Flow] Picker failed for context, pasting via clipboard: ${ctxName}`);
         ctxAttached = await this._uploadFile(ctxPath);
-        ctxVerified = ctxAttached
-          ? await this._confirmPromptRefAttached(refsBeforeCtx.length, ctxName, 'context-fallback')
-          : false;
+        if (ctxAttached) {
+          const refsAfterFallback = await this._getPromptRefs();
+          const added = refsAfterFallback.length - refsBeforeCtx.length;
+          ctxVerified = added > 0;
+          if (added > 1) {
+            Logger.warn(`[Flow] Context fallback added ${added} refs for one file: ${ctxName}`);
+            const targetCount = refsBeforeCtx.length + 1;
+            for (let i = refsAfterFallback.length - 1; i >= targetCount; i--) {
+              await this._removePromptRefByIndex(i);
+              await this._delay(250);
+            }
+          }
+        } else {
+          ctxVerified = false;
+        }
         if (ctxVerified) this._cacheGeneratedName(ctxPath, ctxName);
       }
 
@@ -748,9 +760,21 @@ export class FlowPage {
           if (!ctxVerified) {
             Logger.warn(`[Flow] Reuse picker failed for context, pasting via clipboard: ${ctxName}`);
             ok = await this._uploadFile(ctxPath);
-            ctxVerified = ok
-              ? await this._confirmPromptRefAttached(refsBeforeCtx.length, ctxName, 'reuse-context-fallback')
-              : false;
+            if (ok) {
+              const refsAfterFallback = await this._getPromptRefs();
+              const added = refsAfterFallback.length - refsBeforeCtx.length;
+              ctxVerified = added > 0;
+              if (added > 1) {
+                Logger.warn(`[Flow] Reuse context fallback added ${added} refs for one file: ${ctxName}`);
+                const targetCount = refsBeforeCtx.length + 1;
+                for (let i = refsAfterFallback.length - 1; i >= targetCount; i--) {
+                  await this._removePromptRefByIndex(i);
+                  await this._delay(250);
+                }
+              }
+            } else {
+              ctxVerified = false;
+            }
             if (ctxVerified) this._cacheGeneratedName(ctxPath, ctxName);
           }
 
