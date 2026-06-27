@@ -280,6 +280,22 @@ export class BaseOrchestrator {
       // ── FIRST IMAGE: rotate account immediately ──
       if (isFirstImage) {
         Logger.warn('[Flow] Rate limited on first image — rotating to next account...');
+        this.flow.preferredModel = 'Nano Banana 2';
+        try {
+          const result = await generateFn();
+          this._needsAccountRotation = true;
+          await FlowAccountManager.flagRateLimited();
+          Logger.info('[Flow] Continuing first image with Nano Banana 2 - will rotate account after this recipe');
+          return result;
+        } catch (retryErr) {
+          if (retryErr instanceof FlowAccountBlockedError) {
+            Logger.error('[Flow] Account BLOCKED while trying Nano Banana 2 - flagging and skipping');
+            await FlowAccountManager.flagRateLimited();
+            throw new Error('Flow account blocked (unusual activity) - recipe skipped.');
+          }
+          if (!(retryErr instanceof FlowRateLimitError)) throw retryErr;
+          Logger.warn('[Flow] Nano Banana 2 also rate-limited on first image - rotating to next account...');
+        }
         await this._rotateToNextAccount();
         await this._ensureBrowserForAccount();
         this.flow.preferredModel = 'Nano Banana Pro';

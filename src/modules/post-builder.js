@@ -16,6 +16,32 @@ import { Logger } from '../shared/utils/logger.js';
  */
 const _canonicalLinkCache = new Map();
 
+function textValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join(', ');
+  if (typeof value === 'object') {
+    const preferred = [
+      value.text,
+      value.description,
+      value.note,
+      value.name,
+      value.title,
+      value.what && value.where ? `${value.what} (${value.where}${value.count ? `, ${value.count}` : ''})` : '',
+      value.what,
+      value.where,
+      value.count
+    ].map(textValue).filter(Boolean);
+    if (preferred.length) return preferred.join(' - ');
+    return Object.entries(value)
+      .map(([key, val]) => `${key}: ${textValue(val)}`)
+      .filter(Boolean)
+      .join(', ');
+  }
+  return String(value);
+}
+
 function _extractPostId(rawUrl) {
   if (!rawUrl) return null;
   try {
@@ -218,10 +244,10 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
   const conclusion = sanitizeAIText(recipe?.conclusion || '');
   const ingredients = recipe?.ingredients || [];
 
-  const esc = t => (t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const esc = t => textValue(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   // Convert markdown + allow safe HTML for rich text from ChatGPT
   const richText = t => {
-    let s = t || '';
+    let s = textValue(t);
     // Convert markdown bold **text** → <strong>text</strong>
     s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     // Convert markdown italic *text* → <em>text</em>
@@ -752,7 +778,7 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
  * Create a Tasty Recipe via the custom PHP endpoint
  */
 async function createTastyRecipe(settings, recipe, state, wpDisplayName) {
-  const esc = t => (t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const esc = t => textValue(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   // Build ingredients HTML: <ul><li>quantity ingredient</li></ul>
   const ingredients = recipe.ingredients || [];

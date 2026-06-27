@@ -174,6 +174,51 @@ function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
   return description;
 }
 
+function ensurePinterestPinCoverage(pinterestPins, recipe, manualKeywords, targetCount = 3) {
+  const title = recipe.post_title || recipe.title || 'Recipe';
+  const category = recipe.category || 'recipe';
+  const keywords = manualKeywords.length
+    ? manualKeywords
+    : [recipe.focus_keyword, title].filter(Boolean);
+  const pins = Array.isArray(pinterestPins) ? [...pinterestPins] : [];
+  const angles = [
+    {
+      label: 'finished serving',
+      prompt: `A Pinterest vertical image of ${title} as the finished serving, styled for ${category}, appetizing texture, clean food blog composition.`
+    },
+    {
+      label: 'texture close up',
+      prompt: `A Pinterest vertical close-up of ${title}, emphasizing texture, color, and the most craveable detail, clean recipe photography.`
+    },
+    {
+      label: 'easy recipe idea',
+      prompt: `A Pinterest vertical image of ${title} as an easy save-worthy recipe idea, clear focal food, bright readable food blog style.`
+    }
+  ];
+
+  while (pins.length < targetCount) {
+    const i = pins.length;
+    const keyword = keywords[i % Math.max(1, keywords.length)] || title;
+    const angle = angles[i % angles.length];
+    pins.push({
+      title: `${title} - ${keyword}`,
+      description: `${title} is a ${angle.label} idea for readers searching ${keyword}. Save it when you want a practical ${category} recipe with a clear result and useful details.`,
+      image_prompt: angle.prompt,
+      keywords: keywords.slice(0, 8),
+      seo: {
+        title: `${title} ${angle.label}`,
+        description: `${title} Pinterest pin for ${keyword}.`,
+        keywords: keywords.slice(0, 8),
+      },
+      base64: null,
+      wpImageId: null,
+      wpImageUrl: null,
+    });
+  }
+
+  return pins.slice(0, targetCount);
+}
+
 function applyManualSeoKeywords(recipe, pinterestPins, manualKeywords) {
   const title = recipe.post_title || recipe.title || 'Recipe';
   const pinterestKeywords = manualKeywords.length
@@ -879,8 +924,19 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
     }
 
-    const response = await aiChat.sendPromptAndGetResponse(prompt, true);
+    let response = await aiChat.sendPromptAndGetResponse(prompt, true);
     if (!response.success) throw new Error(`${useGemini ? 'Gemini' : 'ChatGPT'} failed: ${response.error}`);
+    if (useGemini && !(response.data?.visual_plan || response.data?.visualPlan)) {
+      Logger.warn('[Gemini] Response missing visual_plan after parse - requesting one complete JSON retry');
+      const retryPrompt = [
+        'Your previous JSON response was incomplete and missing "visual_plan".',
+        'Return ONE complete valid JSON object only, with exactly these top-level keys: "recipe", "visual_plan", "pinterest_pins".',
+        'Do not explain. Do not use markdown. Do not truncate. Include all recipe steps and matching visual_plan.visual_steps.',
+        'Keep the same recipe topic and manual SEO keyword requirements from the previous prompt.'
+      ].join('\n');
+      response = await aiChat.sendPromptAndGetResponse(retryPrompt, true);
+      if (!response.success) throw new Error(`Gemini retry failed: ${response.error}`);
+    }
     if (!useGemini && typeof aiChat.deleteCurrentChat === 'function') {
       try {
         Logger.info('[ChatGPT] Recipe JSON response captured; deleting chat from history');
@@ -1153,6 +1209,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       seo: pin.seo || null,
       base64: null, wpImageId: null, wpImageUrl: null
     }));
+    const desiredPinCount = Math.max(3, Number(vgSettings.pinterestPinCount || 3));
+    const beforePinCoverage = pinterestPins.length;
+    pinterestPins = ensurePinterestPinCoverage(pinterestPins, recipe, manualSeoKeywords, desiredPinCount);
+    if (pinterestPins.length !== beforePinCoverage) {
+      Logger.info(`[Pinterest] Completed pin plan coverage: ${beforePinCoverage} -> ${pinterestPins.length}`);
+    }
     ({ recipe, pinterestPins } = applyManualSeoKeywords(recipe, pinterestPins, manualSeoKeywords));
     recipe.pinterest_pins = pinterestPins;
     if (manualSeoKeywords.length) {

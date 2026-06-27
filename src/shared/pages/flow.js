@@ -385,7 +385,14 @@ export class FlowPage {
     //     and Flow may use stale refs instead of the intended ones.
     const refsCleared = await this._clearAllPromptRefs();
     if (!refsCleared) {
-      Logger.warn('[Flow] Starting generation with leftover refs still present; output may use stale references');
+      Logger.warn('[Flow] Leftover refs still present after cleanup - starting a fresh project before attaching refs');
+      await this.closeSession();
+      await this._ensureProject(backgroundFilePath, aspectRatio);
+      await this._setGenerationSettings(aspectRatio);
+      const cleanAfterFreshProject = await this._clearAllPromptRefs();
+      if (!cleanAfterFreshProject) {
+        throw new Error('Flow prompt references could not be cleared in a fresh project');
+      }
     }
 
     // Keep the composer empty while attaching refs. Flow often refuses image
@@ -526,7 +533,13 @@ export class FlowPage {
     await this._clickCreate();
 
     // 11. Wait for generation using % progress indicator
-    await this._waitForGenerationProgress();
+    const generationStarted = await this._waitForGenerationProgress();
+    if (!generationStarted) {
+      if (this.preferredModel === 'Nano Banana Pro') {
+        throw new FlowRateLimitError('Flow generation did not start on Nano Banana Pro; Pro limit may be exhausted');
+      }
+      throw new Error('Flow generation did not start or produce a new image');
+    }
 
     // 12. Screenshot after generation (debug)
     await this._screenshot('post-generate');
@@ -698,7 +711,8 @@ export class FlowPage {
         // 3d. Clear all existing refs (we'll add exactly what we need)
         const refsCleared = await this._clearAllPromptRefs();
         if (!refsCleared) {
-          Logger.warn('[Flow] Reuse started with leftover refs still present after cleanup');
+          Logger.warn('[Flow] Reuse cleanup left stale refs - falling back to normal generation in a fresh project');
+          throw new Error('Reuse prompt references could not be cleared');
         }
         await this._delay(300);
 
@@ -805,7 +819,13 @@ export class FlowPage {
         await this._clickCreate();
 
         // 3k. Wait for generation
-        await this._waitForGenerationProgress();
+        const generationStarted = await this._waitForGenerationProgress();
+        if (!generationStarted) {
+          if (this.preferredModel === 'Nano Banana Pro') {
+            throw new FlowRateLimitError('Flow generation did not start on Nano Banana Pro; Pro limit may be exhausted');
+          }
+          throw new Error('Flow generation did not start or produce a new image');
+        }
         await this._screenshot('reuse-post-generate');
 
         // 3l. Download

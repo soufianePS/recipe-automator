@@ -530,6 +530,18 @@ export async function _waitForGenerationProgress() {
         if (text.includes('générations trop rapidement') || text.includes('generations too quickly')) {
           return 'ratelimit';
         }
+        const isLimitText =
+          text.includes('generation limit') ||
+          text.includes('limit exceeded') ||
+          text.includes('quota') ||
+          text.includes('rate limit') ||
+          text.includes('too many requests') ||
+          (text.includes('limite') && (text.includes('generation') || text.includes('génération') || text.includes('genere') || text.includes('génère'))) ||
+          (text.includes('trop') && text.includes('rapidement')) ||
+          (text.includes('nano banana pro') && (text.includes('limit') || text.includes('limite') || text.includes('quota')));
+        if (isLimitText) {
+          return 'ratelimit';
+        }
         if (text.includes('chec') && text.includes('trop rapidement')) {
           return 'ratelimit';
         }
@@ -574,7 +586,7 @@ export async function _waitForGenerationProgress() {
       // Progress was visible before but now gone = generation complete
       Logger.debug('Generation complete (progress disappeared)');
       await this._delay(POST_GENERATION_RENDER_DELAY);
-      return;
+      return true;
     }
 
     // Also check classic progress indicators as fallback
@@ -594,7 +606,7 @@ export async function _waitForGenerationProgress() {
       if (currentCount > imgCountAtStart) {
         Logger.debug(`No progress % found but new image appeared (${imgCountAtStart} → ${currentCount}) — generation likely complete`);
         await this._delay(POST_GENERATION_RENDER_DELAY);
-        return;
+        return true;
       }
     }
 
@@ -603,6 +615,7 @@ export async function _waitForGenerationProgress() {
 
   Logger.warn(`[Flow] Generation timeout after ${Math.round((Date.now() - start) / 1000)}s — no progress or new image detected`);
   await this._delay(POST_GENERATION_RENDER_DELAY);
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════

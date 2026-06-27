@@ -592,3 +592,192 @@ This means the app should not click `Create` if a required background/context re
 ## Current Local Note
 
 `src/dashboard/dashboard.js` may still show as modified locally with no useful diff. It has intentionally been left out of commits unless a real diff appears.
+
+---
+
+# Codex Handoff Update - 2026-06-27 Late Session
+
+This update records the verified end-to-end test and fixes made after the prior 2026-06-27 handoff.
+
+## Successful End-to-End Test
+
+Tested row:
+
+- Sheet tab: `League of cooking Gen`
+- Row: `115`
+- Recipe: `Air Fryer Zucchini Chips`
+- AI settings during final successful run:
+  - `aiProvider=chatgpt`
+  - `pinGenerator=chatgpt`
+- WordPress draft: `https://leagueofcooking.com/wp-admin/post.php?post=5510&action=edit`
+- Status: Sheet row marked `done`.
+- Category written to Sheet: `Lunch`.
+
+Verified results:
+
+- Recipe JSON generated via the dedicated ChatGPT profile.
+- ChatGPT cleanup deleted recipe/image chats after use.
+- `recipe.steps=5`, `visual_plan.visual_steps=5`, `pinterest_pins=3`.
+- 5 step images + hero + ingredients uploaded to WordPress.
+- 3 Pinterest pin images generated with ChatGPT and uploaded to WordPress.
+- Pinterest template rotation advanced:
+
+```text
+[Pinterest] Template rotation generator: 6 -> 9 (3 pin(s), 16 template(s))
+```
+
+Sheet pin description lengths:
+
+- Pin 1: `697`
+- Pin 2: `694`
+- Pin 3: `696`
+
+All are within the requested `500-700` character range.
+
+WordPress post verification for post `5510`:
+
+- Draft exists.
+- No `wp-admin`, `post.php`, or raw `?p=ID` admin links were found in normal internal links.
+- Internal links point to public permalinks such as `/potato-salad/`, `/lemon-garlic-roast-chicken/`, `/homemade-hot-dogs/`, `/mini-sliders/`, `/chicken-sliders/`.
+- All 9 focus keywords from column Z were found in the rendered post content:
+  - `Air Fryer Squash With Parmesan`
+  - `Crispy Air Fried Zucchini`
+  - `Air Fryer Zucchini With Parmesan`
+  - `Zucchini In The Air Fryer`
+  - `Zucchini Side Dish Recipes Air Fryer`
+  - `Fried Zucchini Recipe Easy Air Fryer`
+  - `Parmesan Crusted Zucchini In Air Fryer`
+  - `Air Fryer Zucchini And Parmesan`
+  - `Best Zucchini Recipes Air Fryer`
+
+## Fixes Added In This Session
+
+### 1. Flow Pro limit / no-start fallback
+
+Files:
+
+- `src/shared/pages/flow-download.js`
+- `src/shared/pages/flow.js`
+- `src/modules/base-orchestrator.js`
+
+Behavior:
+
+- Flow now detects more quota/limit messages, including Nano Banana Pro limit text.
+- `_waitForGenerationProgress()` returns `false` if no progress/new image appears after timeout.
+- If Nano Banana Pro does not start, Flow raises a rate-limit error instead of screenshotting the background/canvas as the output.
+- On the first image, a Pro rate-limit now tries `Nano Banana 2` before rotating accounts.
+
+Expected good log:
+
+```text
+[VerifiedGen] Ingredients: 1× failed on Nano Banana Pro — falling back to Nano Banana 2
+[Flow] Model switched to "Nano Banana 2"
+```
+
+### 2. Gemini truncated JSON no longer accepted
+
+Files:
+
+- `src/shared/utils/parser.js`
+- `src/modules/verified-generator/orchestrator.js`
+
+Behavior:
+
+- `Parser.extractJSON()` no longer auto-closes truncated JSON unless explicitly requested.
+- If Gemini returns parsed JSON without `visual_plan`, the verified generator asks for one complete JSON retry.
+- This prevents partial Gemini output from being accepted as a valid recipe.
+
+### 3. Guaranteed 3 Pinterest pins
+
+File:
+
+- `src/modules/verified-generator/orchestrator.js`
+
+Behavior:
+
+- If the AI returns fewer pins than needed, `ensurePinterestPinCoverage()` synthesizes missing pin plans.
+- The 500-700 character description normalizer still runs afterward.
+
+Good log:
+
+```text
+[Pinterest] Completed pin plan coverage: 1 -> 3
+```
+
+Only appears when the AI returned too few pins.
+
+### 4. WordPress builder accepts object-shaped AI fields
+
+File:
+
+- `src/modules/post-builder.js`
+
+Bug fixed:
+
+```text
+Orchestrator error: s.replace is not a function
+```
+
+Cause:
+
+- ChatGPT sometimes returns nested objects/arrays in fields that the WordPress builder later escapes with `.replace()`.
+
+Fix:
+
+- `textValue()` converts strings, numbers, booleans, arrays, and common object shapes to text before escaping/rendering.
+- The post builder and Tasty/WPRM recipe creator now use `textValue()` in HTML escaping.
+
+### 5. Flow stale ref cleanup is stricter
+
+File:
+
+- `src/shared/pages/flow.js`
+
+Behavior:
+
+- If refs cannot be cleared from the composer, normal generation now closes the session and starts a fresh project before attaching refs.
+- If reuse workflow cannot clear refs, it falls back to normal generation in a fresh project.
+- `_assertPromptReady()` continues to block Create when too few required refs are present.
+
+Observed during row 115:
+
+```text
+pre-create failed: expected 3 prompt ref(s), found 2
+Waiting 3s before retry...
+New project created
+pre-create composer check: refs=3/3
+```
+
+This is the intended safety behavior.
+
+## Remaining Issue To Fix Later
+
+Flow can still add a duplicate reference during fallback picker/upload for a single file.
+
+Observed examples:
+
+```text
+Context fallback added 2 refs for one file: ingredients.jpg
+pre-create composer check: refs=3/2
+...
+pre-create composer check: refs=4/3
+```
+
+This did not block the final row 115 run, and the workflow completed successfully, but it should be corrected later so fallback attachment removes/avoids duplicates more reliably. The previous massive accumulation problem (`refs=20+/expected`) is reduced by fresh-project cleanup, but duplicate fallback refs can still appear in individual generations.
+
+Recommended future fix:
+
+- After each single context fallback attachment, compare `refsAfter - refsBefore`.
+- If more than one ref was added, remove the newest extra ref(s) or start a fresh project before Create.
+- Make `_removePromptRefByIndex()` more robust for refs whose X button is hard to detect.
+
+## Syntax Checks Run
+
+```powershell
+node --check src\shared\pages\flow-download.js
+node --check src\shared\pages\flow.js
+node --check src\modules\base-orchestrator.js
+node --check src\shared\utils\parser.js
+node --check src\modules\verified-generator\orchestrator.js
+node --check src\modules\post-builder.js
+```

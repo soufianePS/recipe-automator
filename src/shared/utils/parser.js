@@ -175,8 +175,9 @@ export const Parser = {
     return lastBalanced;
   },
 
-  extractJSON(text) {
+  extractJSON(text, options = {}) {
     if (!text || typeof text !== 'string') return null;
+    const allowAutoClose = options.allowAutoClose === true;
 
     // Pre-clean: strip Gemini/ChatGPT UI prefixes that get scraped into innerText.
     // Gemini wraps responses with "Gemini a dit" / "Gemini said" labels on
@@ -249,10 +250,12 @@ export const Parser = {
         // Last resort: the JSON is likely TRUNCATED (stream cut off). Auto-close
         // the open braces/strings and retry — salvages a partial recipe instead
         // of failing the whole run.
-        const salvaged = this._recoverJSON(this._autoClose(this._cleanJSON(candidate)));
-        if (salvaged) {
-          Logger.warn(`${label} salvaged after auto-closing a truncated JSON`);
-          return salvaged;
+        if (allowAutoClose) {
+          const salvaged = this._recoverJSON(this._autoClose(this._cleanJSON(candidate)));
+          if (salvaged) {
+            Logger.warn(`${label} salvaged after auto-closing a truncated JSON`);
+            return salvaged;
+          }
         }
         Logger.warn(`${label} recovery failed: ${e.message}`);
       }
