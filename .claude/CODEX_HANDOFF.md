@@ -411,3 +411,184 @@ For SEO validation after a recipe run, verify:
 - Pin descriptions contain the focus keyword.
 - WP media metadata contains the keyword.
 - Blog body/meta contains the keyword.
+
+---
+
+# Codex Handoff Update - 2026-06-27
+
+Latest fixes pushed after the 2026-06-26 handoff.
+
+## Pushed Commits
+
+- `8c3cb06 Avoid salvaging incomplete Gemini JSON`
+- `c345c18 Skip Gemini recipe image refs`
+- `87c7122 Use dedicated ChatGPT profile for recipe JSON`
+- `00ff60e Respect custom pin prompts and long descriptions`
+- `8a7f769 Trim duplicate Flow context refs`
+
+## Gemini Recipe JSON
+
+Gemini recipe generation is now text-only for the large recipe JSON prompt.
+
+Reason:
+
+- Friend's PC showed Gemini UI error `Un problème est survenu (1155)`.
+- Logs showed Gemini started streaming JSON but stopped mid-response.
+- Old listener accepted the truncated JSON and parser auto-closed it, which produced `recipe` without `visual_plan`.
+
+Current behavior:
+
+- `src/shared/utils/gemini-network-listener.js` no longer accepts incomplete JSON after a short silent stream.
+- It waits longer and falls back to DOM extraction instead of handing incomplete JSON to the parser.
+- `src/modules/verified-generator/orchestrator.js` skips attaching Pinterest image refs to Gemini recipe JSON prompts.
+- Log expected:
+
+```text
+[Gemini] Recipe prompt will be text-only; skipping X Pinterest reference image(s)
+```
+
+## ChatGPT Recipe JSON Profile
+
+When `Recipe JSON AI = chatgpt`, it now uses the dedicated ChatGPT pin profile, not the Flow account browser context.
+
+Profile source:
+
+- `settings.chatgptPin.profilePath`
+- fallback: `data/chatgpt-pin-profile`
+
+Expected logs:
+
+```text
+[ChatGPT] launching dedicated recipe/profile context: ...data/chatgpt-pin-profile
+[ChatGPT] Recipe JSON response captured; deleting chat from history
+[ChatGPT] Dedicated recipe/profile context closed
+```
+
+Important:
+
+- Do not keep that Chrome profile open manually while automation runs.
+- The app closes the dedicated ChatGPT context before continuing to Flow/pins.
+
+## ChatGPT Pin Prompt Template
+
+Custom ChatGPT pin prompt templates are now respected exactly.
+
+Old behavior:
+
+- If the user's template did not contain `@prompt`, the app appended:
+
+```text
+--- PIN-SPECIFIC INSTRUCTIONS ---
+...
+```
+
+New behavior:
+
+- If `chatgptPin.promptTemplate` is set, the app uses it as-is.
+- If it contains `@prompt`, the inner generated prompt is inserted there.
+- If it does not contain `@prompt`, nothing extra is appended.
+- Placeholders still resolve: `@title`, `@website`, `@pin_title`, `@pin_description`, `@ingredients`, `@aspectRatio`, etc.
+- The app still prepends:
+
+```text
+Output image format: <aspectRatio>
+```
+
+unless aspect ratio is `auto`.
+
+Files:
+
+- `src/modules/base-orchestrator.js`
+- `src/modules/planifier/pin-regenerator.js`
+
+## Pinterest Description Length
+
+Bug found on row `116`, recipe `Banana Cream Pie`:
+
+- Pin 1 description: `217` chars
+- Pin 2 description: `210` chars
+- Pin 3 description: `201` chars
+
+Cause:
+
+- `expandPinterestDescription()` was only reliably applied when manual column Z keywords existed.
+- Short AI descriptions could pass through unchanged.
+
+Fix:
+
+- `applyManualSeoKeywords()` now also normalizes Pinterest descriptions when manual keywords are empty.
+- Target remains `500-700` chars.
+- If column Z has keywords, those are used.
+- If column Z is empty, fallback keyword source is `recipe.focus_keyword` or recipe title.
+
+Note:
+
+- Existing Sheet rows already written are not auto-repaired.
+- Regenerate/fix pins to update old rows.
+
+## Flow Ref Attachment Test
+
+A real Playwright test was run using the same `FlowPage.generate(...)` method as the recipe pipeline.
+
+Test:
+
+- Step 1: background only.
+- Step 2: same background + step 1 image as context ref.
+
+Confirmed logs:
+
+```text
+pre-create composer check: refs=1/1, prompt=256 chars
+Verified background ref in prompt: ingredients.jpg (0 -> 1)
+Verified context ref in prompt: Food prep image white bowl (1 -> 2)
+pre-create composer check: refs=2/2, prompt=356 chars
+```
+
+Visual result:
+
+- Step 1 generated a bowl with bananas on the black marble background.
+- Step 2 reused the same bowl/surface and added flour, proving the previous-step ref was used.
+
+## Flow Duplicate Ref Fix
+
+During the first Flow ref test, fallback upload/picker could add an extra duplicate ref:
+
+```text
+pre-create composer check: refs=3/2
+```
+
+Fix in `src/shared/pages/flow.js`:
+
+- After context fallback upload, the code recounts prompt refs.
+- If one file added more than one ref, extra refs are removed before Create.
+- Same fix applied to normal generate and `generateWithReuse`.
+
+Second test confirmed clean:
+
+```text
+pre-create composer check: refs=2/2
+```
+
+## Pre-Create Check Verification
+
+A no-generation Playwright test confirmed `_assertPromptReady()` works:
+
+- With only background attached but expected refs = 2, it fails:
+
+```text
+intentional-missing-context composer check: refs=1/2
+expected 2 prompt ref(s), found 1
+```
+
+- After attaching context ref, it passes:
+
+```text
+after-context-attached composer check: refs=2/2
+final check passed: refs=2/2 before Create
+```
+
+This means the app should not click `Create` if a required background/context ref is missing from the Flow prompt composer.
+
+## Current Local Note
+
+`src/dashboard/dashboard.js` may still show as modified locally with no useful diff. It has intentionally been left out of commits unless a real diff appears.
