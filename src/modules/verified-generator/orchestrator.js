@@ -505,6 +505,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       prevImagePath = null, prevStepNum = 0, currentStepNum = 0, expectedChange = ''
     } = opts;
 
+    // Every image gets its own fresh shot at Nano Banana Pro, regardless of
+    // whether an earlier image in this recipe fell back to NB2 — Pro's rate
+    // limit can clear between images, so don't carry a previous image's
+    // fallback forward.
+    this.flow.preferredModel = 'Nano Banana Pro';
+
     const geminiKey = await this._getGeminiApiKey();
     const maxRetries = vgSettings?.maxVerificationRetries || 3;
     let bestImage = null;
@@ -519,10 +525,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
 
       // NANO BANANA 2 FALLBACK — on the LAST attempt, if we've already failed verification
-      // on Pro and haven't switched yet, fall back to Nano Banana 2. Pro may be silently
-      // degraded near its rate limit (returning bad images without a hard rate-limit error).
-      // The model persists for the rest of the recipe via this.flow.preferredModel —
-      // _ensureProModelForNewRecipe() resets back to Pro at the start of the next recipe.
+      // on Pro and haven't switched yet, fall back to Nano Banana 2 for THIS image only.
+      // Pro may be silently degraded near its rate limit (returning bad images without a
+      // hard rate-limit error). The next image still starts fresh on Pro (see the reset
+      // at the top of this function).
       const isLastAttempt = attempt === maxRetries - 1;
       if (isLastAttempt && attempt > 0 && !switchedToNB2 && this.flow.preferredModel === 'Nano Banana Pro') {
         Logger.warn(`[VerifiedGen] ${label}: ${attempt}× failed on Nano Banana Pro — falling back to Nano Banana 2 (Pro may be rate-degraded)`);
@@ -648,9 +654,8 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
     }
 
-    // If we successfully fell back to Nano Banana 2, persist the model for the rest of the recipe
     if (switchedToNB2 && this._lastVerifyResult?.status === 'PASS') {
-      Logger.info(`[VerifiedGen] Nano Banana 2 fallback PASSED for ${label} — continuing with NB2 for the rest of this recipe (Pro will resume on next recipe)`);
+      Logger.info(`[VerifiedGen] Nano Banana 2 fallback PASSED for ${label} — next image will retry Nano Banana Pro`);
     }
 
     // Track stats

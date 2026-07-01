@@ -145,6 +145,32 @@ export class FlowPage {
     return this._generatedNames.get(filePath) || this._generatedNames.get(basename(filePath)) || null;
   }
 
+  /**
+   * Extract Flow's permanent media id from an <img src>, e.g.
+   * "/fx/api/trpc/media.getMediaUrlRedirect?name=3bb17226-c600-4b27-..." or
+   * "https://flow-content.google/image/3bb17226-c600-4b27-...?Expires=...".
+   * This id is stable across reopenings of the picker — unlike Flow's
+   * auto-generated caption (alt text), which can be reused for visually
+   * similar images and cause false cache hits.
+   */
+  _extractMediaId(src) {
+    if (!src) return null;
+    let m = src.match(/[?&]name=([a-zA-Z0-9_-]{6,})/);
+    if (m) return decodeURIComponent(m[1]);
+    m = src.match(/flow-content\.google\/image\/([a-zA-Z0-9_-]{6,})/);
+    if (m) return m[1];
+    return null;
+  }
+
+  /** Find the first Flow media id present in a list of <img src> values. */
+  _pickMediaId(srcs) {
+    for (const src of srcs || []) {
+      const id = this._extractMediaId(src);
+      if (id) return id;
+    }
+    return null;
+  }
+
   _compactPromptForFlow(prompt, maxChars = 1800) {
     const text = String(prompt || '').replace(/\s+/g, ' ').trim();
     if (text.length <= maxChars) return text;
@@ -405,6 +431,10 @@ export class FlowPage {
     //    entirely and paste via clipboard to avoid false matches.
     const bgName = basename(backgroundFilePath);
     const bgNameNoExt = bgName.split('.')[0];
+    // Prefer the cached Flow media id (set right after upload in _ensureProject)
+    // over the raw filename — exact and immune to picker re-render lag, unlike
+    // filename text matching.
+    const bgIdOrName = this._getCachedGeneratedName(backgroundFilePath) || bgName;
     Logger.info(`[Flow] Attaching background from picker: ${bgName}`);
     let bgAttached = false;
     let promptRefsBeforeBg = await this._getPromptRefs();
@@ -414,13 +444,13 @@ export class FlowPage {
       // The file is already on canvas from _ensureProject(), so try exact picker match first.
       // If that fails, paste via clipboard (which also uploads to canvas, but ensures correct ref).
       Logger.info(`[Flow] Short filename "${bgName}" — trying exact picker match`);
-      bgAttached = await this._attachFromPicker(bgName);
+      bgAttached = await this._attachFromPicker(bgIdOrName);
       if (!bgAttached) {
         Logger.info(`[Flow] Picker failed for "${bgName}", pasting via clipboard`);
         bgAttached = await this._uploadFile(backgroundFilePath);
       }
     } else {
-      bgAttached = await this._attachFromPicker(bgName);
+      bgAttached = await this._attachFromPicker(bgIdOrName);
       if (!bgAttached) {
         // Re-upload to canvas and try again (file may have been pushed off picker)
         Logger.warn(`[Flow] Background not found in picker, re-uploading: ${bgName}`);
@@ -467,11 +497,15 @@ export class FlowPage {
         ctxAttached = await this._attachFromPicker(cachedName);
       } else {
         // Never uploaded this session — go straight to upload+attach (avoid the
-        // ~12s picker-then-scroll-then-fail dance for files that aren't there)
+        // ~12s picker-then-scroll-then-fail dance for files that aren't there).
+        // Capture the media id right after upload so any LATER reuse of this
+        // same file matches by id instead of filename text.
         Logger.info(`[Flow] Context not in session cache, uploading to canvas: ${ctxName}`);
+        const srcsBeforeCtxUpload = await this._getAllImgSrcs();
         await this._uploadBgToCanvas(ctxPath);
-        ctxAttached = await this._attachFromPicker(ctxName);
-        if (ctxAttached) this._cacheGeneratedName(ctxPath, ctxName);
+        const ctxMediaId = this._pickMediaId((await this._getAllImgSrcs()).filter(s => !srcsBeforeCtxUpload.includes(s)));
+        ctxAttached = await this._attachFromPicker(ctxMediaId || ctxName);
+        if (ctxAttached) this._cacheGeneratedName(ctxPath, ctxMediaId || ctxName);
       }
 
       let ctxVerified = ctxAttached
@@ -567,10 +601,11 @@ export class FlowPage {
       if (existsSync(outputPath) && statSync(outputPath).size > 5000) {
         Logger.info(`[Flow] Image captured via network sniffer: ${Math.round(statSync(outputPath).size / 1024)}KB`);
         try {
-          const newName = await this._getNewestPickerName();
+          const mediaId = this._pickMediaId(debugSrcs);
+          const newName = mediaId || await this._getNewestPickerName();
           if (newName) {
             this._cacheGeneratedName(outputPath, newName);
-            Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
+            Logger.info(`[Flow] Stored ${mediaId ? 'media id' : 'picker name'}: "${newName}" for ${basename(outputPath)}`);
           }
         } catch {}
         return true;
@@ -655,12 +690,15 @@ export class FlowPage {
 
     if (!downloaded) throw new Error('Failed to download generated image');
 
-    // 13. Learn the picker name of the new image (for future context attachment)
+    // 13. Learn the identity of the new image (for future context attachment).
+    // Prefer Flow's permanent media id (stable across reopenings) over the
+    // auto-generated caption, which can be reused for similar-looking images.
     try {
-      const newName = await this._getNewestPickerName();
+      const mediaId = this._pickMediaId(newSrcs);
+      const newName = mediaId || await this._getNewestPickerName();
       if (newName) {
         this._cacheGeneratedName(outputPath, newName);
-        Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
+        Logger.info(`[Flow] Stored ${mediaId ? 'media id' : 'picker name'}: "${newName}" for ${basename(outputPath)}`);
       }
     } catch (e) {
       Logger.debug('Could not get picker name:', e.message);
@@ -718,9 +756,10 @@ export class FlowPage {
 
         // 3e. Attach background from picker
         const bgName = basename(backgroundFilePath);
+        const bgIdOrName = this._getCachedGeneratedName(backgroundFilePath) || bgName;
         Logger.info(`[Flow] Attaching background: ${bgName}`);
         const refsBeforeBg = await this._getPromptRefs();
-        let bgAttached = await this._attachFromPicker(bgName);
+        let bgAttached = await this._attachFromPicker(bgIdOrName);
         bgAttached = bgAttached
           ? await this._confirmPromptRefAttached(refsBeforeBg.length, bgName, 'reuse-background')
           : false;
@@ -754,9 +793,11 @@ export class FlowPage {
             ok = await this._attachFromPicker(cachedName);
           } else {
             Logger.info(`[Flow] Context not in session cache, uploading: ${ctxName}`);
+            const srcsBeforeCtxUpload = await this._getAllImgSrcs();
             await this._uploadBgToCanvas(ctxPath);
-            ok = await this._attachFromPicker(ctxName);
-            if (ok) this._cacheGeneratedName(ctxPath, ctxName);
+            const ctxMediaId = this._pickMediaId((await this._getAllImgSrcs()).filter(s => !srcsBeforeCtxUpload.includes(s)));
+            ok = await this._attachFromPicker(ctxMediaId || ctxName);
+            if (ok) this._cacheGeneratedName(ctxPath, ctxMediaId || ctxName);
           }
 
           let ctxVerified = ok
@@ -865,12 +906,13 @@ export class FlowPage {
         }
         if (!downloaded) throw new Error('Failed to download generated image (reuse)');
 
-        // 3m. Learn picker name
+        // 3m. Learn the identity of the new image — prefer the stable media id.
         try {
-          const newName = await this._getNewestPickerName();
+          const mediaId = this._pickMediaId(newSrcs);
+          const newName = mediaId || await this._getNewestPickerName();
           if (newName) {
             this._cacheGeneratedName(outputPath, newName);
-            Logger.info(`[Flow] Stored picker name: "${newName}" for ${basename(outputPath)}`);
+            Logger.info(`[Flow] Stored ${mediaId ? 'media id' : 'picker name'}: "${newName}" for ${basename(outputPath)}`);
           }
         } catch (e) {
           Logger.debug('Could not get picker name:', e.message);
@@ -941,8 +983,18 @@ export class FlowPage {
     // Upload background to canvas if not already there
     if (!this._bgFilesOnCanvas.has(bgName)) {
       Logger.info(`[Flow] Uploading background to canvas: ${bgName}`);
+      const srcsBeforeBgUpload = await this._getAllImgSrcs();
       await this._uploadBgToCanvas(backgroundFilePath);
       this._bgFilesOnCanvas.add(bgName);
+      // Cache the background's Flow media id too — re-attaching it before each
+      // generation is currently text/filename based, which can be flaky right
+      // after a model switch (picker re-render lag) and falls back to a full
+      // re-upload. An id match (like context images already use) is exact.
+      try {
+        const srcsAfterBgUpload = await this._getAllImgSrcs();
+        const mediaId = this._pickMediaId(srcsAfterBgUpload.filter(s => !srcsBeforeBgUpload.includes(s)));
+        if (mediaId) this._cacheGeneratedName(backgroundFilePath, mediaId);
+      } catch {}
     }
   }
 
@@ -1129,13 +1181,28 @@ export class FlowPage {
     // Try to find and click the image — with scrolling to reveal off-screen images
     const nameToFind = imageName.toLowerCase();
     const nameNoExt = nameToFind.split('.')[0]; // hash or slug without extension
+    // If imageName is actually a cached Flow media id (e.g. "3bb17226-c600-...",
+    // stored in place of the unreliable auto-caption), match it against img.src
+    // first — it's a permanent, unique id, unlike alt text which Flow can
+    // reuse for visually similar images.
+    const mediaIdToFind = /^[a-zA-Z0-9_-]{6,}$/.test(imageName) ? imageName : null;
 
     for (let scrollAttempt = 0; scrollAttempt < 4; scrollAttempt++) {
-      const clicked = await this.page.evaluate(({ nameToFind, nameNoExt }) => {
+      const clicked = await this.page.evaluate(({ nameToFind, nameNoExt, mediaIdToFind }) => {
         const dialog = document.querySelector('dialog, [role="dialog"]');
         if (!dialog) return null;
 
         const imgs = dialog.querySelectorAll('img');
+
+        // Method 0: Exact match by Flow media id embedded in img.src
+        if (mediaIdToFind) {
+          for (const img of imgs) {
+            if ((img.src || '').includes(mediaIdToFind)) {
+              const container = img.closest('[cursor]') || img.parentElement;
+              if (container) { container.click(); return 'media-id'; }
+            }
+          }
+        }
 
         // Method 1: Exact match by img alt text
         for (const img of imgs) {
@@ -1196,7 +1263,7 @@ export class FlowPage {
         }
 
         return null;
-      }, { nameToFind, nameNoExt });
+      }, { nameToFind, nameNoExt, mediaIdToFind });
 
       if (clicked) {
         Logger.debug(`[Flow] Picker: attached "${imageName}" via ${clicked} (scroll ${scrollAttempt})`);
@@ -1284,22 +1351,13 @@ export class FlowPage {
         // First remaining = newest generated
         return alt;
       }
-      // Fallback: look for text labels near images in dialog
-      if (dialog) {
-        const divs = dialog.querySelectorAll('div');
-        for (const div of divs) {
-          const text = (div.textContent || '').trim();
-          if (!text || text.length < 3 || text.length > 100) continue;
-          const textLower = text.toLowerCase();
-          if (bgNames.includes(textLower)) continue;
-          if (knownGenNames.includes(textLower)) continue;
-          if (textLower.includes('importer') || textLower.includes('recherche') ||
-              textLower.includes('récents') || textLower.includes('arrow_drop')) continue;
-          // Check if this div is next to an image (likely a label)
-          const parent = div.parentElement;
-          if (parent && parent.querySelector('img')) return text;
-        }
-      }
+      // NOTE: deliberately no further fallback here. A div.textContent scan
+      // used to live here, but it concatenates sibling elements' text (other
+      // images' alt + filename labels + button labels) into one garbled
+      // string whenever every visible alt is already "known" (e.g. Flow
+      // reused the same auto-caption for a retried generation). A wrong
+      // cached name causes worse failures downstream than no cached name —
+      // callers fall back to a clean re-upload when nothing is cached.
       return null;
     }, { bgNames, knownGenNames });
 
@@ -1605,15 +1663,38 @@ export class FlowPage {
   }
 
   async _assertPromptReady(expectedRefs, minPromptLength = 10, label = 'pre-create') {
-    const { refs, promptText } = await this._debugPromptState();
-    const visibleRefs = refs.map(ref => ref.alt || 'unknown').join(', ');
+    let { refs, promptText } = await this._debugPromptState();
+    let visibleRefs = refs.map(ref => ref.alt || 'unknown').join(', ');
     Logger.info(`[Flow] ${label} composer check: refs=${refs.length}/${expectedRefs}, prompt=${promptText.length} chars, visible refs=${visibleRefs || 'none'}`);
 
     if (promptText.length < minPromptLength) {
       throw new Error(`[Flow] ${label} failed: prompt text missing before Create`);
     }
+
+    // Too MANY refs is as dangerous as too few: stale "ghost" refs left over
+    // from a previous generation (when _clearAllPromptRefs failed to remove
+    // one) silently ride along as unintended extra visual influences on the
+    // NEXT image — a likely cause of near-duplicate/contaminated outputs.
+    // Refs are attached in order (background, then context) for THIS
+    // generation, so any leftover ghosts sit at the FRONT. Strip exactly the
+    // excess from the front before giving up.
+    if (refs.length > expectedRefs) {
+      const excess = refs.length - expectedRefs;
+      Logger.warn(`[Flow] ${label}: ${excess} stale ref(s) detected (refs=${refs.length}/${expectedRefs}) — removing before Create`);
+      for (let i = 0; i < excess; i++) {
+        await this._removePromptRefByIndex(0);
+        await this._delay(250);
+      }
+      ({ refs, promptText } = await this._debugPromptState());
+      visibleRefs = refs.map(ref => ref.alt || 'unknown').join(', ');
+      Logger.info(`[Flow] ${label} composer re-check after cleanup: refs=${refs.length}/${expectedRefs}, prompt=${promptText.length} chars, visible refs=${visibleRefs || 'none'}`);
+    }
+
     if (refs.length < expectedRefs) {
       throw new Error(`[Flow] ${label} failed: expected ${expectedRefs} prompt ref(s), found ${refs.length}`);
+    }
+    if (refs.length > expectedRefs) {
+      throw new Error(`[Flow] ${label} failed: ${refs.length} prompt ref(s) still present after cleanup, expected ${expectedRefs} — refusing to Create with stale refs`);
     }
 
     return true;
@@ -1920,6 +2001,20 @@ export class FlowPage {
     // 4. Close settings
     await this.page.keyboard.press('Escape');
     await this._delay(SETTINGS_CLOSE_DELAY);
+
+    // The settings popover closing can leave the prompt composer without an
+    // active focus target for a few seconds, during which ref-attach attempts
+    // silently fail (picker click succeeds, clipboard paste succeeds, but no
+    // ref appears — "visible refs: none" — until a full re-upload forces it).
+    // Re-focus the composer explicitly so the next ref-attach isn't racing
+    // against that.
+    try {
+      await this.page.evaluate((css) => {
+        const el = document.querySelector(css);
+        if (el) { el.focus(); el.click(); }
+      }, PROMPT_INPUT_CSS);
+      await this._delay(500);
+    } catch {}
 
     this.preferredModel = targetModel;
     Logger.success(`[Flow] Model switched to "${targetModel}"`);
