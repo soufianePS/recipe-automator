@@ -823,7 +823,20 @@ INGREDIENTS IMAGE:
 - Arranged in clean grid or circular pattern with clear spacing between containers.
 - The background surface should be visible between the containers.
 
-SECTION 3 - "pinterest_pins": 3 pins with title, description, image_prompt.
+SECTION 3 - "pinterest_pins": 3 pins with title, description, image_prompt. Each pin targets a DIFFERENT Pinterest searcher intent — do not just reword the same title 3 times.
+
+PIN TITLE RULES (front-load the keyword/hook in the first 30-35 characters, target 40-60 chars total, hard cap 100):
+- Pin 1 = SEARCH intent. Plain, literal title = dish name + primary keyword, written the way someone actively typing a search would phrase it. No gimmicks. Example: "Fig Balsamic Salmon with Garlic Butter Sauce".
+- Pin 2 = CURIOSITY/emotional intent, for someone passively scrolling, not searching. Use exactly ONE angle: a secret/trick reveal ("The Secret to Crispy Salmon Every Time"), a problem-to-solution ("Never Overcook Salmon Again"), or a comparison ("Why This Beats Pan-Seared Salmon"). Must NOT restate Pin 1's title.
+- Pin 3 = BENEFIT/occasion intent. Lead with a concrete number, timeframe, or occasion that signals practical value: "20-Minute Salmon Dinner for Busy Weeknights", "5-Ingredient Fig Balsamic Salmon", "Fourth of July Salmon Idea".
+- All 3 titles must read as genuinely different sentences, not the same phrase with one word swapped.
+- Use fresh, specific sensory words (crispy, glossy, tender, smoky, buttery) instead of generic filler (delicious, amazing, mouthwatering).
+- Hard bans: the word "click", ALL CAPS, exclamation-point stacking, or promising something the recipe doesn't actually deliver.
+
+PIN DESCRIPTION RULES:
+- Each description must use a DIFFERENT keyword or phrase than its OWN title — add new searchable surface, don't restate the title.
+- Write natural sentences (2-3), never a stacked/stuffed keyword list.
+- End with 5-8 real, commonly-searched Pinterest food hashtags relevant to the dish (not the exact recipe title as a hashtag).
 
 INGREDIENT RECONCILIATION RULE (CRITICAL — common failure):
 - The "ingredients" array is generated AFTER "steps" in the JSON below for a reason. Write the steps first, completely, with all the techniques and ingredient mentions you naturally use. THEN derive "ingredients[]" by scanning every step text and listing every ingredient you referenced — each with a real quantity and unit.
@@ -911,7 +924,11 @@ OUTPUT THIS EXACT JSON (no markdown, no explanation):
       "forbidden": ["raw ingredients", "extra bowls", "utensils"]
     }
   },
-  "pinterest_pins": [{"title": "", "description": "", "image_prompt": ""}]
+  "pinterest_pins": [
+    {"title": "SEARCH intent: dish name + primary keyword, plain and literal, 40-60 chars", "description": "2-3 natural sentences using a DIFFERENT keyword angle than this title, then 5-8 hashtags", "image_prompt": ""},
+    {"title": "CURIOSITY intent: secret/problem-solution/comparison hook, must NOT restate pin 1's title, 40-60 chars", "description": "2-3 natural sentences using a DIFFERENT keyword angle than this title, then 5-8 hashtags", "image_prompt": ""},
+    {"title": "BENEFIT/occasion intent: leads with a number, timeframe, or occasion, 40-60 chars", "description": "2-3 natural sentences using a DIFFERENT keyword angle than this title, then 5-8 hashtags", "image_prompt": ""}
+  ]
 }
 
 {{template_instructions}}`;

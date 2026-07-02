@@ -26,6 +26,7 @@ let _executorTickTimer = null;
 let _agingTickTimer = null;
 let _serverCtx = null;
 let _executorRunning = false;   // re-entrancy guard for the executor tick itself
+let _busySince = null;          // timestamp the CURRENT automationRunning=true streak began (null = not busy)
 const WEEKLY_TICK_INTERVAL_MS = 30 * 60 * 1000;  // check twice per hour
 const EXECUTOR_TICK_INTERVAL_MS = 60 * 1000;     // check every minute
 const AGING_TICK_INTERVAL_MS = 6 * 60 * 60 * 1000;  // every 6h — auto-progress Pinterest accounts through warmup tiers
@@ -51,9 +52,14 @@ function todayKey() {
 }
 
 function addDays(dateStr, n) {
+  // Must stay in UTC throughout — todayKey() is UTC-based (toISOString), so
+  // building the intermediate Date from LOCAL y/m/d components (as this used
+  // to do) silently shifts the result by a day on any non-UTC server
+  // timezone (e.g. UTC+1 turned "yesterday" into "two days ago", causing the
+  // executor's lookback window to skip a whole day of missed-slot catch-up).
   const [y, m, d] = dateStr.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + n);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
   return dt.toISOString().slice(0, 10);
 }
 
@@ -91,7 +97,16 @@ async function discoverSites() {
  *   2. No other automation running (serverCtx.automationRunning false)
  *   3. No previous executor tick still running (re-entrancy)
  *   4. Found a pending item with scheduledAt <= now
- *   5. Item not more than missedSlotDropAfterMinutes late (else mark missed)
+ *   5. Item not more than missedSlotDropAfterMinutes late (else mark missed) —
+ *      but lateness accrued while automationRunning was busy with a healthy,
+ *      still-running job does NOT count against this threshold. Only
+ *      lateness that had already accrued BEFORE the current busy streak
+ *      began counts as genuine staleness (see _busySince tracking below).
+ *
+ * If nothing is currently due, the tick also catches up on any slot already
+ * marked "missed" (oldest first, one per idle tick) before falling through to
+ * campaign slots — so a day with a busy stretch still finishes every slot
+ * instead of leaving genuinely-stale ones dropped forever.
  *
  * Items "outside the active hour window" still fire if pending and due — the
  * window only affects PLANNING, not execution. Once an item is in the plan,
@@ -100,7 +115,15 @@ async function discoverSites() {
 async function executorTick() {
   if (_executorRunning) return;
   if (!_serverCtx) return;
-  if (_serverCtx.automationRunning) return;
+  if (_serverCtx.automationRunning) {
+    // Record when this busy streak started (first tick that observes it),
+    // so once it ends we can tell "waited its turn" apart from "went stale".
+    if (_busySince === null) _busySince = Date.now();
+    return;
+  }
+  // Snapshot + clear: the NEXT busy streak (if any) starts counting fresh.
+  const busySince = _busySince;
+  _busySince = null;
 
   try {
     const config = await loadConfig();
@@ -122,19 +145,29 @@ async function executorTick() {
         .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
       if (!due) continue;
 
-      const lateMin = (now - new Date(due.scheduledAt).getTime()) / 60000;
-      if (lateMin > dropAfterMin) {
+      const dueAtMs = new Date(due.scheduledAt).getTime();
+      const lateMin = (now - dueAtMs) / 60000; // real wall-clock lateness, for logging only
+      // How late was this item BEFORE we got busy with something else? That's
+      // the only lateness that indicates genuine staleness (crash/downtime).
+      // Time spent queued behind a healthy running job never counts.
+      const staleLateMin = busySince
+        ? Math.max(0, (busySince - dueAtMs) / 60000)
+        : lateMin;
+      if (staleLateMin > dropAfterMin) {
         // Skip: too late — mark missed (anti-burst on crash recovery)
-        Logger.warn(`[Planifier] item ${due.id} is ${Math.round(lateMin)} min late — marking missed`);
+        Logger.warn(`[Planifier] item ${due.id} is ${Math.round(staleLateMin)} min stale (${Math.round(lateMin)} min wall-clock) — marking missed`);
         try {
           await Planifier.updatePlanItem(date, due.id, { status: 'missed' });
           await appendHistory({
             type: due.type, site: due.site, accountId: due.accountId,
             itemId: due.id, date, status: 'missed',
-            message: `Slot ${Math.round(lateMin)} min late, exceeded drop threshold of ${dropAfterMin} min`,
+            message: `Slot ${Math.round(staleLateMin)} min stale (${Math.round(lateMin)} min wall-clock), exceeded drop threshold of ${dropAfterMin} min`,
           });
         } catch {}
         return;  // try again next tick
+      }
+      if (busySince && lateMin > dropAfterMin) {
+        Logger.info(`[Planifier] item ${due.id} is ${Math.round(lateMin)} min wall-clock late but only queued behind a running job — firing now`);
       }
 
       // Run it. We import the executor lazily to avoid a require-cycle since
@@ -149,7 +182,29 @@ async function executorTick() {
       return;
     }
 
-    // No local plan items due — try campaign slots (from pin-campaigns sheet)
+    // Nothing currently due. Before moving on to campaign slots, catch up on
+    // any slot previously marked "missed" (oldest first) so a busy day still
+    // finishes completely instead of permanently dropping work — one per idle
+    // tick, same guards (automationRunning/re-entrancy) as a normal fire.
+    for (const date of dates) {
+      const plan = await loadPlan(date);
+      if (!plan) continue;
+      const missed = plan.items
+        .filter(i => i.status === 'missed')
+        .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+      if (!missed) continue;
+
+      _executorRunning = true;
+      Logger.info(`[Planifier] CATCHING UP on missed slot: ${missed.type} ${missed.site}${missed.accountId ? '/'+missed.accountId : ''} (was due at ${missed.scheduledAt})`);
+      const { runPlanItem } = await import('./action-executor.js');
+      runPlanItem(date, missed.id, _serverCtx, { manual: false })
+        .then(r => Logger.info(`[Planifier] catch-up ${missed.id} done — ${JSON.stringify(r.result || {}).slice(0,200)}`))
+        .catch(e => Logger.error(`[Planifier] catch-up ${missed.id} failed — ${e.message}`))
+        .finally(() => { _executorRunning = false; });
+      return;
+    }
+
+    // No local plan items due or missed — try campaign slots (from pin-campaigns sheet)
     try {
       const { campaignsTick } = await import('./campaigns-executor.js');
       await campaignsTick(_serverCtx, config);

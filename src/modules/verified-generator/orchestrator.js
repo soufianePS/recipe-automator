@@ -128,12 +128,13 @@ function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
   const primaryKeyword = manualKeywords[0] || keywords[0] || '';
   const keywordSentence = keywords.length
     ? `Save this ${recipeTitle} idea when you want ${keywords.join(', ')}.`
-    : `Save this ${recipeTitle} idea for your next baking day.`;
-  const titleSentence = pin.title ? `${pin.title} is a useful recipe to keep on hand.` : '';
+    : `Save this ${recipeTitle} idea for whenever you need it.`;
+  const titleSentence = pin.title ? `Pin this if "${pin.title}" is exactly the idea you were looking for.` : '';
+  // Matches the 3-intent split enforced in the pin-title prompt: search, curiosity, benefit/occasion.
   const angles = [
-    `This pin focuses on the finished look, cozy serving idea, and the reason this recipe belongs in your saved meal inspiration.`,
-    `This pin highlights the flavor, texture, and why the recipe is worth trying when you want a reliable homemade result.`,
-    `This pin is written for planning, shopping, and quick recipe discovery, with practical details that make the full post easy to use.`,
+    `Save it now so it is ready the next time you are searching for exactly this.`,
+    `The kind of trick that is worth remembering, not just scrolling past.`,
+    `A practical save for planning the week, not just admiring the photo.`,
   ];
   const hashtags = mergeKeywords([], manualKeywords, 8)
     .map(k => `#${k.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 35)}`)
