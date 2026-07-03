@@ -484,6 +484,10 @@ GLOBAL RULES:
 - Use "{{topic}}" exactly as the Article Title.
 - The "category" field MUST be one of these: {{categories}}.
 
+PRIMARY KEYWORD REPETITION (CRITICAL SEO):
+- "{{topic}}" is the primary SEO keyword for this post. The EXACT phrase must appear: once in the FIRST paragraph of the intro, once in meta_title, once in meta_description, as the start of focus_keyword, 4-6 more times spread across the section bodies (why_this_works, steps, tips, storage, faq), and once in the conclusion.
+- Every mention must sit naturally inside a sentence a human would write. Also use 2-3 close variants (reworded forms, singular/plural) between exact mentions so the repetition reads natural, never robotic or stuffed.
+
 PUNCTUATION & HUMAN VOICE RULES (critical for anti-AI detection):
 - NEVER use semicolons ( ; ) anywhere. Humans rarely use them. Replace with a period + new sentence OR with "and" / "but".
 - Replace most commas inside paragraphs with linking words ("and", "but", "so", "then", "because", "while"). A few natural commas are fine (e.g. "For lunch, dinner, or snacks").
@@ -635,6 +639,7 @@ STRUCTURE RANDOMIZATION RULE (CRITICAL anti-scaled-content signal):
 
 SEO RULES:
 - Generate SEO for hero image and ingredients image and each step image.
+- IMAGE METADATA KEYWORD RULE (CRITICAL): every image seo object (hero_seo, ingredients_seo, each step seo) MUST contain the exact phrase "{{topic}}": in alt_text (e.g. "{{topic}} fresh from the oven" or "browning the butter for {{topic}}"), in title, in the kebab-case filename (e.g. "{{topic}}-step-2" lowercased and hyphenated), and naturally inside the description. Alt texts must still describe what the photo actually shows — keyword plus real description, never keyword alone.
 - Meta description must be under 155 characters.
 - Add a period at the end of each equipment description.
 - Add "?" at the end of each FAQ question.
@@ -830,12 +835,15 @@ PIN TITLE RULES (front-load the keyword/hook in the first 30-35 characters, targ
 - Pin 2 = CURIOSITY/emotional intent, for someone passively scrolling, not searching. Use exactly ONE angle: a secret/trick reveal ("The Secret to Crispy Salmon Every Time"), a problem-to-solution ("Never Overcook Salmon Again"), or a comparison ("Why This Beats Pan-Seared Salmon"). Must NOT restate Pin 1's title.
 - Pin 3 = BENEFIT/occasion intent. Lead with a concrete number, timeframe, or occasion that signals practical value: "20-Minute Salmon Dinner for Busy Weeknights", "5-Ingredient Fig Balsamic Salmon", "Fourth of July Salmon Idea".
 - All 3 titles must read as genuinely different sentences, not the same phrase with one word swapped.
+- Every title MUST carry at least ONE SEO booster/hook word that fits the dish naturally: Easy, Best, Quick, Simple, Homemade, Creamy, Crispy, One-Pan, 30-Minute, Make-Ahead, No-Bake... Pick the one a real Pinterest searcher would type (e.g. "Easy Sweet Potato Gnocchi" — the booster can lead or sit mid-title).
 - Use fresh, specific sensory words (crispy, glossy, tender, smoky, buttery) instead of generic filler (delicious, amazing, mouthwatering).
 - Hard bans: the word "click", ALL CAPS, exclamation-point stacking, or promising something the recipe doesn't actually deliver.
 
 PIN DESCRIPTION RULES:
 - Each description must use a DIFFERENT keyword or phrase than its OWN title — add new searchable surface, don't restate the title.
-- Write natural sentences (2-3), never a stacked/stuffed keyword list.
+- Each description MUST include the exact phrase "{{topic}}" once, woven naturally into a sentence (it's the search term people type).
+- If manual SEO keywords are provided below, each description must also weave 2-3 of those exact phrases in naturally — inside real sentences, never as a stacked list.
+- Write natural sentences (2-3), never a stacked/stuffed keyword list. Keep each description under 480 characters total including hashtags.
 - End with 5-8 real, commonly-searched Pinterest food hashtags relevant to the dish (not the exact recipe title as a hashtag).
 
 INGREDIENT RECONCILIATION RULE (CRITICAL — common failure):

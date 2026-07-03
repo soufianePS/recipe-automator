@@ -116,6 +116,23 @@ function ensureSeoObject(seo, fallbackTitle, manualKeywords, limit = 8) {
   return out;
 }
 
+/**
+ * Guarantee the recipe title (= sheet topic, the primary SEO keyword) appears
+ * in an image seo object's alt_text / title / description. The prompt asks the
+ * model to do this; this is the deterministic backstop for WP media metadata.
+ */
+function injectTitleIntoImageSeo(seo, recipeTitle) {
+  const t = String(recipeTitle || '').trim();
+  if (!seo || !t) return seo;
+  const has = v => String(v || '').toLowerCase().includes(t.toLowerCase());
+  if (!has(seo.alt_text)) seo.alt_text = seo.alt_text ? `${t} — ${seo.alt_text}` : t;
+  if (!has(seo.title)) seo.title = seo.title ? `${t} — ${seo.title}` : t;
+  if (!has(seo.description)) {
+    seo.description = `${String(seo.description || '').trim()} Part of this ${t} recipe.`.trim();
+  }
+  return seo;
+}
+
 function trimPinterestBody(text, maxLength) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxLength) return normalized;
@@ -130,7 +147,19 @@ function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
   // block, and pushes past Pinterest's 500-char description limit. Everything
   // below is only a fallback for missing/thin descriptions.
   if (base.length >= 120 && base.includes('#')) {
-    return trimPinterestBody(base, 500);
+    let body = base;
+    // Sheet column Z keywords are mandatory in every pin description. The
+    // prompt asks for them, but if the model dropped the primary phrase,
+    // splice one natural sentence in just before the hashtag block.
+    const primary = (manualKeywords[0] || '').trim();
+    if (primary && !textIncludesPhrase(body, primary)) {
+      const hashIdx = body.search(/#\w/);
+      const sentence = `Save this ${primary} idea for later.`;
+      body = hashIdx > 0
+        ? `${body.slice(0, hashIdx).trim()} ${sentence} ${body.slice(hashIdx)}`
+        : `${body} ${sentence}`;
+    }
+    return trimPinterestBody(body, 500);
   }
   const keywords = keywordWindow(manualKeywords, index * 3, 4);
   const primaryKeyword = manualKeywords[0] || keywords[0] || '';
@@ -386,7 +415,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
    * + shuffles order (within constraints). Prevents "scaled content abuse"
    * detection from Google when all posts have identical H2 structures.
    */
-  _buildStructureRandomization() {
+  _buildStructureRandomization(recipeTitle = '') {
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
     const pickN = (arr, n) => {
       const copy = [...arr];
@@ -399,8 +428,22 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       return out;
     };
 
-    // H2 name variants per required section
-    const pools = {
+    // H2 name variants per required section. Most pools mix recipe-name
+    // variants (SEO: the sheet topic repeats in headings) with generic ones so
+    // structure still varies post-to-post. The instructions pool ALWAYS names
+    // the recipe ("How to Make It" alone wastes the highest-value H2).
+    const name = String(recipeTitle || '').trim();
+    const pools = name ? {
+      why_this_works: [`Why This ${name} Recipe Works`, `Why You'll Love This ${name}`, `The Secret to Perfect ${name}`, `What Makes This ${name} Work`, "The Science Behind It"],
+      ingredients: [`Ingredients for ${name}`, `${name} Ingredients`, "What You'll Need", "Shopping List", "Ingredient List"],
+      equipment: ["Kitchen Equipment", "Tools You'll Need", "Equipment", "What You'll Use", "The Gear"],
+      instructions: [`How to Make ${name}`, `How to Make ${name} Step by Step`, `Let's Make ${name}`, `How to Make ${name} at Home`, `Making ${name}: Step-by-Step`],
+      tips: [`Pro Tips for the Best ${name}`, `Tips for Perfect ${name}`, "Pro Tips", "Chef's Notes", "Tips and Tricks"],
+      substitutions: ["Substitutions & Variations", "Substitutions", "Ingredient Swaps", "Make It Your Own", "Variations to Try"],
+      storage: [`How to Store ${name}`, `Storing and Reheating ${name}`, "Storage Instructions", "How to Store & Reheat", "Storage Tips"],
+      faq: [`${name} FAQ`, `Common Questions About ${name}`, "Frequently Asked Questions", "Questions I Get Asked", "Reader Questions"],
+      conclusion: ["Final Thoughts", "Before You Go", "In Conclusion", "A Final Note", "Let Me Know"]
+    } : {
       why_this_works: ["Why This Recipe Works", "Why You'll Love It", "The Secret to This Recipe", "What Makes It Work", "The Science Behind It"],
       ingredients: ["Ingredients", "What You'll Need", "The Ingredients", "Shopping List", "Ingredient List"],
       equipment: ["Kitchen Equipment", "Tools You'll Need", "Equipment", "What You'll Use", "The Gear"],
@@ -860,7 +903,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       Logger.info(`[Gemini] Recipe prompt will be text-only; skipping ${pinterestRefPaths.length} Pinterest reference image(s) to avoid Gemini UI 1155/truncated JSON`);
     }
     if (manualSeoKeywords.length > 0) {
-      templateInstructions += `\n\nMANUAL SEO KEYWORDS FROM SHEET COLUMN Z (CRITICAL - EXACT PHRASES):\n${manualSeoKeywords.map(k => `- ${k}`).join('\n')}\nYou MUST use these exact phrases, preserving spelling and word order. Do not rewrite, singularize, pluralize, or paraphrase them.\nRequired placement rules:\n1. recipe.focus_keyword MUST start with the first keyword phrase exactly.\n2. recipe.meta_title and recipe.meta_description MUST include the first keyword phrase exactly.\n3. recipe.intro MUST include at least the first 2 keyword phrases exactly, naturally inside sentences.\n4. recipe.conclusion MUST include at least 2 different keyword phrases exactly.\n5. hero_seo.description, ingredients_seo.description, and each step.seo.description MUST include 1-3 exact keyword phrases.\n6. Every pinterest_pins[].description MUST be 500-700 characters, 3-5 short sentences, include 2-4 exact keyword phrases, then 5-8 hashtags at the end.\n7. Each pinterest_pins[] item MUST have its own distinct angle: different title, different description emphasis, and different image_prompt composition.\n8. Every pinterest_pins[].seo.description MUST include 2-4 exact keyword phrases.\n9. Distribute keyword phrases across blog text, image SEO metadata, and Pinterest metadata without keyword stuffing.`;
+      templateInstructions += `\n\nMANUAL SEO KEYWORDS FROM SHEET COLUMN Z (CRITICAL - EXACT PHRASES):\n${manualSeoKeywords.map(k => `- ${k}`).join('\n')}\nYou MUST use these exact phrases, preserving spelling and word order. Do not rewrite, singularize, pluralize, or paraphrase them.\nRequired placement rules:\n1. recipe.focus_keyword MUST start with the first keyword phrase exactly.\n2. recipe.meta_title and recipe.meta_description MUST include the first keyword phrase exactly.\n3. recipe.intro MUST include at least the first 2 keyword phrases exactly, naturally inside sentences.\n4. recipe.conclusion MUST include at least 2 different keyword phrases exactly.\n5. hero_seo.description, ingredients_seo.description, and each step.seo.description MUST include 1-3 exact keyword phrases.\n6. Every pinterest_pins[].description MUST stay 2-3 natural sentences (under 480 characters total including hashtags), weave in 2-3 exact keyword phrases so they read like normal speech (never a stacked keyword list), then end with 5-8 hashtags.\n7. Each pinterest_pins[] item MUST have its own distinct angle: different title, different description emphasis, and different image_prompt composition.\n8. Every pinterest_pins[].seo.description MUST include 2-4 exact keyword phrases.\n9. Distribute keyword phrases across blog text, image SEO metadata, and Pinterest metadata without keyword stuffing.`;
       Logger.info(`[SEO] Injecting ${manualSeoKeywords.length} manual keyword(s) into recipe prompt`);
     }
     const introTemplates = settings.introTemplates || [];
@@ -886,7 +929,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
 
     // ── Structure randomization: shuffle H2 titles + pick optional sections ──
     // Anti-scaled-content signal — each post looks editorially unique to Google
-    const { instructions: structureInstructions, titles: sectionTitles } = this._buildStructureRandomization();
+    const { instructions: structureInstructions, titles: sectionTitles } = this._buildStructureRandomization(state.recipeTitle);
     templateInstructions += structureInstructions;
     // Persist randomized titles so post-builder can render with the same H2s
     await StateManager.updateState({ sectionTitles });
@@ -1237,6 +1280,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         seo: ensureSeoObject(step.seo, step.title || `Step ${i + 1}`, keywordWindow(manualSeoKeywords, i + 5, 4), 6)
       }));
     }
+    // Sheet topic (= primary keyword) must be present in every WP image's
+    // alt/title/description — hero, ingredients, and each step.
+    const seoTopic = recipe.post_title || state.recipeTitle || '';
+    injectTitleIntoImageSeo(recipe.hero_seo, seoTopic);
+    injectTitleIntoImageSeo(recipe.ingredients_seo, seoTopic);
+    steps.forEach(step => injectTitleIntoImageSeo(step.seo, seoTopic));
 
     await StateManager.updateState({
       status: STATES.CREATING_FOLDERS,
