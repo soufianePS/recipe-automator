@@ -346,9 +346,9 @@ export function buildDayPlan(dateStr, config, options = {}) {
 
       for (let i = 0; i < sessionTarget; i++) {
         if (warmingEnabled) {
-          // Warming session: extended browse + saves to "I Like It" + 1
-          // warming pin (no outbound link). No willPost concept — the warming
-          // pin is the only thing posted (from warming-pin-list).
+          // Warming session: extended BROWSE-ONLY category session (search,
+          // scroll, closeups). Never saves pins, never posts anything — see
+          // warming-executor.js. No willPost concept.
           sessionProtos.push({
             type: ACTION_TYPES.WARMING_SESSION,
             site: siteName,

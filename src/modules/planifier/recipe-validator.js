@@ -358,16 +358,16 @@ export async function validateRecipe(recipeItem) {
       headers: { 'User-Agent': 'Mozilla/5.0 (RecipeAutomator-Validator)' },
     });
     if (!res.ok) {
-      const r = { valid: true, issues: [{ kind: 'fetch-failed', msg: `HTTP ${res.status} on ${publicUrl}` }], source: 'fetch-error', fetchedAt: Date.now() };
-      _validationCache.set(cacheKey, r);
-      return r;
+      // FAIL CLOSED: a public URL we can't fetch must not be pinned — a missed
+      // slot is cheaper than a pin to a dead page. NOT cached, so a transient
+      // blip doesn't block this recipe for 24h; the next attempt re-validates.
+      return { valid: false, issues: [{ kind: 'fetch-failed', msg: `HTTP ${res.status} on ${publicUrl}` }], source: 'fetch-error', fetchedAt: Date.now() };
     }
     html = await res.text();
   } catch (e) {
     Logger.warn(`[Validator] fetch failed for ${recipeItem.topic}: ${e.message}`);
-    const r = { valid: true, issues: [{ kind: 'fetch-failed', msg: e.message }], source: 'fetch-error', fetchedAt: Date.now() };
-    _validationCache.set(cacheKey, r);
-    return r;
+    // Same FAIL CLOSED rule as HTTP errors above; uncached for quick retry.
+    return { valid: false, issues: [{ kind: 'fetch-failed', msg: e.message }], source: 'fetch-error', fetchedAt: Date.now() };
   }
 
   const recipe = _parseRecipeFromHtml(html);

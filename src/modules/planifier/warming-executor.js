@@ -1,16 +1,17 @@
 /**
  * Warming Executor — runs a "warming" Pinterest session.
  *
- * Different from a normal pinterest-session in 3 ways:
+ * Different from a normal pinterest-session in 2 ways:
  *   1. Longer total session (15-25 min vs 8-15)
  *   2. CATEGORY-FOCUSED cycles: for each cycle, pick a random category from
  *      the site's wpCategories ("Breakfast, Lunch, Dinner, Dessert"),
- *      search Pinterest for it, scroll, click pins, and save 1-2 to the
- *      same-name Pinterest board ("Dinner" → board "Dinner"). This builds
+ *      search Pinterest for it, scroll, and open pin closeups. This builds
  *      a coherent topical interest graph for the account that mirrors the
  *      site's content structure.
- *   3. (Future) Generate + post ONE warming pin with no outbound link to
- *      reinforce the "real food enthusiast" signal. Wired in next iteration.
+ *
+ * BROWSE-ONLY: warming sessions never save other people's pins (SAVES=0,
+ * owner request 2026-07-03) and never post anything. Do not re-add saves or
+ * "warming pins" without an explicit owner decision.
  *
  * Setup requirements (per Pinterest account, user does manually once):
  *   - Pinterest boards named EXACTLY like the site's wpCategories

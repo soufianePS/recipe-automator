@@ -425,9 +425,12 @@ export async function _isRecipePublished(draftUrl, wpAuth = null) {
       return { ok: false, status: 'not-public', reason: `WP returned ${res.status} (post not publicly visible: draft/future/private/trashed)` };
     }
     if (!res.ok) {
-      // Genuine infra error (5xx, etc.) — fail-open so a WP outage doesn't block everything.
-      Logger.warn(`[Executor] recipe status check ${restUrl} → HTTP ${res.status}; fail-open (infra)`);
-      return { ok: true, status: 'unknown' };
+      // Infra error (5xx, etc.) — FAIL CLOSED: skip this slot and retry later.
+      // A missed pin slot is cheaper than pinning a URL we can't verify
+      // (Pinterest account safety > slot throughput). Not cached, so the next
+      // tick re-checks.
+      Logger.warn(`[Executor] recipe status check ${restUrl} → HTTP ${res.status}; skipping (WP unreachable, will retry)`);
+      return { ok: false, status: 'wp-unreachable', reason: `WP returned HTTP ${res.status} — cannot verify publish status, skipping` };
     }
     const json = await res.json();
     const status = json?.status || 'unknown';
@@ -436,8 +439,9 @@ export async function _isRecipePublished(draftUrl, wpAuth = null) {
       ? { ok: true, status }
       : { ok: false, status, reason: `recipe status is "${status}", not publish` };
   } catch (e) {
-    Logger.warn(`[Executor] recipe status check failed for post ${postId}: ${e.message}; fail-open (infra)`);
-    return { ok: true, status: 'unknown' };
+    // Network failure/timeout — same FAIL CLOSED rule as HTTP 5xx above.
+    Logger.warn(`[Executor] recipe status check failed for post ${postId}: ${e.message}; skipping (WP unreachable, will retry)`);
+    return { ok: false, status: 'wp-unreachable', reason: `status check failed (${e.message}) — cannot verify publish status, skipping` };
   }
 }
 
