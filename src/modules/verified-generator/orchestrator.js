@@ -124,6 +124,14 @@ function trimPinterestBody(text, maxLength) {
 
 function expandPinterestDescription(pin, recipeTitle, manualKeywords, index) {
   const base = String(pin.description || '').trim();
+  // The verified prompt asks the model for complete descriptions (2-3 natural
+  // sentences ending in 5-8 hashtags). When we got one, use it as-is: wrapping
+  // it below restates the title (which the prompt bans), doubles the hashtag
+  // block, and pushes past Pinterest's 500-char description limit. Everything
+  // below is only a fallback for missing/thin descriptions.
+  if (base.length >= 120 && base.includes('#')) {
+    return trimPinterestBody(base, 500);
+  }
   const keywords = keywordWindow(manualKeywords, index * 3, 4);
   const primaryKeyword = manualKeywords[0] || keywords[0] || '';
   const keywordSentence = keywords.length
