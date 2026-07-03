@@ -42,8 +42,10 @@ const SESSION_MAX_MINUTES = 25;
 // cycles always pick DIFFERENT categories.
 const CYCLES_PER_SESSION_MIN = 2;
 const CYCLES_PER_SESSION_MAX = 2;
-const SAVES_PER_CYCLE_MIN = 1;
-const SAVES_PER_CYCLE_MAX = 2;
+// Saving pins is DISABLED (owner request 2026-07-03): warming sessions still
+// search, scroll, and open closeups, but never save other people's pins.
+const SAVES_PER_CYCLE_MIN = 0;
+const SAVES_PER_CYCLE_MAX = 0;
 const CLOSEUPS_PER_CYCLE_MIN = 2;
 const CLOSEUPS_PER_CYCLE_MAX = 4;
 

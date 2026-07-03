@@ -14,9 +14,11 @@
  *   - Irregular scrolling, random backtracking, idle/hesitation, image zoom.
  *   - Short pauses (1-5s) vs long reading pauses (8-25s).
  *   - Not every action leads to engagement (lots of looking, few saves).
- *   - SAVES are constrained: a pin is only saved after SEARCHING a recipe
- *     from the sheet, and it is saved to the board matching THAT recipe's
- *     category (1-to-1). No random feed saves. Often a session saves nothing.
+ *   - SAVES are DISABLED by default (owner request 2026-07-03) — sessions
+ *     browse, search, and open pins but never save. Set
+ *     rules.browseBehaviors.allowSaves = true to restore the old behavior:
+ *     a pin is only saved after SEARCHING a recipe from the sheet, to the
+ *     board matching THAT recipe's category (1-to-1). No random feed saves.
  *
  * Each emitted event carries an explicit `durSec` = how many seconds the
  * executor should spend on/after that action. Total session ≈ Σ durSec.
@@ -93,8 +95,12 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
   // Highly variable target session length (the core of "varies a lot")
   const targetMinutes = rand(bb.sessionMinutesMin ?? 3, bb.sessionMinutesMax ?? 20);
   const targetSeconds = targetMinutes * 60;
+  // Saving other people's pins is DISABLED by default (owner request
+  // 2026-07-03): sessions browse, search, and open pins but never save.
+  // Set rules.browseBehaviors.allowSaves = true to re-enable.
+  const allowSaves = bb.allowSaves === true;
   // Per-session save budget — often 0 (so "sometimes no saves"); capped 0..max
-  const saveBudget = randInt(0, bb.maxSavesPerSession ?? 5);
+  const saveBudget = allowSaves ? randInt(0, bb.maxSavesPerSession ?? 5) : 0;
 
   // ── Beat implementations (function declarations → mutually hoisted) ──
   function scrollBeat(totalSec, label) {
@@ -167,7 +173,7 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
         counters.zooms++;
         push(ACTIONS.ZOOM, 'Zoom into the result image', rand(2, 5));
       }
-      const wantSave = isTarget || (counters.saves < saveBudget && chance(bb.savePinProbability ?? 75));
+      const wantSave = allowSaves && (isTarget || (counters.saves < saveBudget && chance(bb.savePinProbability ?? 75)));
       if (isRecipe && recipeCategory && wantSave) {
         counters.saves++;
         push(ACTIONS.SAVE, `Save to the board containing "${recipeCategory}"${isTarget ? ' (target recipe — same board we post to)' : ''}`,

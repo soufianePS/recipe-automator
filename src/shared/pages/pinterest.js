@@ -478,10 +478,12 @@ export class PinterestPage {
         Logger.info(`[Pinterest] Clicked: ${switched}`);
         await humanWait(this.page, 3000, 5000);
       }
-      // Strategy 2: hard navigate to a URL that always renders consumer feed
+      // Strategy 2: hard navigate to a URL that always renders pins. Search
+      // results, NOT /ideas/ — the bot must stay off the ideas page (owner
+      // request 2026-07-03), and searching is a normal user action anyway.
       if (!(await this.page.$('[data-test-id="pin"], div[role="listitem"] a[href*="/pin/"]'))) {
-        Logger.info(`[Pinterest] Still no feed — hard nav to /ideas/`);
-        await this.page.goto('https://www.pinterest.com/ideas/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        Logger.info(`[Pinterest] Still no feed — hard nav to search results`);
+        await this.page.goto('https://www.pinterest.com/search/pins/?q=easy%20dinner%20recipes', { waitUntil: 'domcontentloaded', timeout: 20000 });
         await humanWait(this.page, 2500, 4500);
       }
     }
