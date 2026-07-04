@@ -15,7 +15,7 @@
 import { Logger } from '../utils/logger.js';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, statSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, statSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 
 // Import methods from split modules
 import {
@@ -116,7 +116,6 @@ export const FILECHOOSER_TIMEOUT          = 5000;
 // The composer's "Create" click ultimately POSTs a plain-JSON request to this
 // endpoint; we can build+send it ourselves from inside the logged-in page,
 // skipping the flakiest selectors (prompt-type + ref-attach + click).
-export const FLOW_API_BASE          = 'https://aisandbox-pa.googleapis.com/v1';
 export const FLOW_RECAPTCHA_SITEKEY = '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV';
 export const FLOW_RECAPTCHA_ACTION  = 'IMAGE_GENERATION';
 // Only enums we've CONFIRMED against the live API. Anything else → bail to UI.
@@ -150,6 +149,131 @@ export class FlowPage {
     // Any missing/uncertain input makes it bail cleanly to the UI click path.
     this.useNetworkFastPath = process.env.FLOW_FAST_PATH === '1';
     this._net = { installed: false, bearer: null, sessionId: null, projectId: null };
+    // Full no-UI mode state: one project per recipe + path→mediaId upload cache.
+    this._api = { projectId: null, uploads: new Map() };
+  }
+
+  // ─── Full no-UI generation (createProject → uploadImage → generate, all API) ───
+
+  /** Ensure a labs.google page is loaded so cookies + bearer + grecaptcha exist. */
+  async _bootstrapApi() {
+    this._installFlowNetworkCapture();
+    if (!this.page || (this.page.isClosed && this.page.isClosed())) {
+      this.page = await this.context.newPage();
+    }
+    if (!/labs\.google/.test(this.page.url())) {
+      await this.page.goto(FLOW_URL, { waitUntil: 'domcontentloaded' });
+    }
+    // The SPA fires aisandbox calls on load; the capture listener grabs the bearer.
+    for (let i = 0; i < 40 && !this._net.bearer; i++) await this._delay(500);
+    if (!this._net.bearer) { Logger.warn('[Flow/api] bearer not captured — cannot use API mode'); return false; }
+    let recap = false;
+    for (let i = 0; i < 40; i++) {
+      recap = await this.page.evaluate(() => !!(window.grecaptcha && window.grecaptcha.enterprise && typeof window.grecaptcha.enterprise.execute === 'function')).catch(() => false);
+      if (recap) break;
+      await this._delay(500);
+    }
+    if (!recap) { Logger.warn('[Flow/api] grecaptcha not ready — cannot use API mode'); return false; }
+    return true;
+  }
+
+  /** Create a project via trpc (same-origin cookie auth). One per recipe, cached. */
+  async _apiEnsureProject() {
+    if (this._api.projectId) return this._api.projectId;
+    const r = await this.page.evaluate(async () => {
+      try {
+        const res = await fetch('/fx/api/trpc/project.createProject', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ json: { projectTitle: 'auto', toolName: 'PINHOLE' } }),
+        });
+        const t = await res.text(); let id = null; try { id = JSON.parse(t)?.result?.data?.json?.result?.projectId; } catch {}
+        return { status: res.status, id };
+      } catch (e) { return { status: 0, id: null, err: String(e) }; }
+    });
+    if (r.status !== 200 || !r.id) { Logger.warn(`[Flow/api] createProject failed (${r.status})`); return null; }
+    this._api.projectId = r.id;
+    Logger.info(`[Flow/api] project created: ${r.id}`);
+    return r.id;
+  }
+
+  /** Upload an image via API → media id. Cached per path (bg/refs upload once). */
+  async _apiUploadImage(imagePath) {
+    if (!imagePath || !existsSync(imagePath)) return null;
+    if (this._api.uploads.has(imagePath)) return this._api.uploads.get(imagePath);
+    const b64 = readFileSync(imagePath).toString('base64');
+    const r = await this.page.evaluate(async (a) => {
+      try {
+        const res = await fetch('https://aisandbox-pa.googleapis.com/v1/flow/uploadImage', {
+          method: 'POST', headers: { authorization: a.bearer, 'content-type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify({ clientContext: { projectId: a.projectId, tool: 'PINHOLE' }, imageBytes: a.b64 }),
+        });
+        const t = await res.text(); let name = null; try { name = JSON.parse(t)?.media?.name; } catch {}
+        return { status: res.status, name };
+      } catch (e) { return { status: 0, name: null, err: String(e) }; }
+    }, { bearer: this._net.bearer, projectId: this._api.projectId, b64 });
+    if (r.status !== 200 || !r.name) { Logger.warn(`[Flow/api] upload failed for ${basename(imagePath)} (${r.status})`); return null; }
+    this._api.uploads.set(imagePath, r.name);
+    Logger.info(`[Flow/api] uploaded ${basename(imagePath)} → ${r.name}`);
+    return r.name;
+  }
+
+  /** Generate via API (mint recaptcha, fabricate sessionId), download the result. */
+  async _apiGenerateImage(fullPrompt, aspectEnum, modelEnum, mediaIds, outputPath) {
+    const resp = await this.page.evaluate(async (a) => {
+      let token;
+      try { token = await window.grecaptcha.enterprise.execute(a.siteKey, { action: a.action }); }
+      catch (e) { return { error: 'recaptcha ' + String(e) }; }
+      if (!token) return { error: 'no token' };
+      const rc = { recaptchaContext: { token, applicationType: 'RECAPTCHA_APPLICATION_TYPE_WEB' }, projectId: a.projectId, tool: 'PINHOLE', sessionId: ';' + Date.now() };
+      const body = { clientContext: rc, mediaGenerationContext: { batchId: crypto.randomUUID() }, useNewMedia: true,
+        requests: [{ clientContext: rc, imageModelName: a.model, imageAspectRatio: a.aspect,
+          structuredPrompt: { parts: [{ text: a.prompt }] }, seed: Math.floor(Math.random() * 900000) + 1000,
+          imageInputs: a.mediaIds.map(name => ({ imageInputType: 'IMAGE_INPUT_TYPE_REFERENCE', name })) }] };
+      try {
+        const res = await fetch(`https://aisandbox-pa.googleapis.com/v1/projects/${a.projectId}/flowMedia:batchGenerateImages`, {
+          method: 'POST', headers: { authorization: a.bearer, 'content-type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+        return { status: res.status, text: await res.text() };
+      } catch (e) { return { error: 'fetch ' + String(e) }; }
+    }, { bearer: this._net.bearer, projectId: this._api.projectId, siteKey: FLOW_RECAPTCHA_SITEKEY, action: FLOW_RECAPTCHA_ACTION, model: modelEnum, aspect: aspectEnum, prompt: fullPrompt, mediaIds });
+
+    if (!resp || resp.error) { Logger.warn(`[Flow/api] generate error: ${resp?.error || 'null'}`); return false; }
+    if (resp.status !== 200) { Logger.warn(`[Flow/api] generate HTTP ${resp.status}: ${String(resp.text).slice(0, 160)}`); return false; }
+    let data; try { data = JSON.parse(resp.text); } catch { Logger.warn('[Flow/api] response not JSON'); return false; }
+    const fifeUrl = data?.media?.[0]?.image?.generatedImage?.fifeUrl;
+    if (!fifeUrl) { Logger.warn('[Flow/api] no image URL in response'); return false; }
+    let buf;
+    try { const dl = await fetch(fifeUrl); if (!dl.ok) { Logger.warn(`[Flow/api] download HTTP ${dl.status}`); return false; } buf = Buffer.from(await dl.arrayBuffer()); }
+    catch (e) { Logger.warn(`[Flow/api] download failed (${e.message})`); return false; }
+    try { mkdirSync(dirname(outputPath), { recursive: true }); } catch {}
+    try { writeFileSync(outputPath, buf); } catch (e) { if (!existsSync(outputPath)) { Logger.warn(`[Flow/api] write failed (${e.message})`); return false; } }
+    if (!existsSync(outputPath) || statSync(outputPath).size < 5000) { Logger.warn('[Flow/api] saved file too small'); return false; }
+    // Register the generated image as an uploaded media so later steps can ref it
+    // without re-uploading, and cache its name like the UI path does.
+    const newId = data?.media?.[0]?.name;
+    if (newId) { this._cacheGeneratedName(outputPath, newId); this._api.uploads.set(outputPath, newId); }
+    Logger.success(`[Flow/api] image generated (no UI): ${Math.round(statSync(outputPath).size / 1024)}KB`);
+    return true;
+  }
+
+  /**
+   * Full no-UI generation: bootstrap → create/reuse project → upload refs →
+   * generate → download, entirely over the API. Returns false on ANY doubt so
+   * the caller falls back to the UI flow. Only confirmed model/aspect enums.
+   */
+  async _doGenerateApiOnly(prompt, backgroundFilePath, contextFilePaths, aspectRatio, outputPath) {
+    const modelEnum = FLOW_MODEL_ENUM[this.preferredModel];
+    const aspectEnum = FLOW_ASPECT_ENUM[aspectRatio];
+    if (!modelEnum || !aspectEnum) { Logger.info(`[Flow/api] model/aspect not confirmed (${this.preferredModel}/${aspectRatio}) — bail to UI`); return false; }
+    if (!(await this._bootstrapApi())) return false;
+    if (!(await this._apiEnsureProject())) return false;
+    const refPaths = [backgroundFilePath, ...(contextFilePaths || [])].filter(p => p && existsSync(p));
+    const mediaIds = [];
+    for (const p of refPaths) {
+      const id = await this._apiUploadImage(p);
+      if (!id) { Logger.warn(`[Flow/api] ref upload failed (${basename(p)}) — bail to UI`); return false; }
+      mediaIds.push(id);
+    }
+    return await this._apiGenerateImage(prompt, aspectEnum, modelEnum, mediaIds, outputPath);
   }
 
   /**
@@ -177,100 +301,6 @@ export class FlowPage {
         }
       } catch {}
     });
-  }
-
-  _looksLikeMediaId(s) {
-    // Flow media ids are long id/token strings (UUIDs or base64url). A filename
-    // fallback (e.g. "background-hero.jpg") has a dot/space and is rejected.
-    return typeof s === 'string' && /^[A-Za-z0-9_-]{16,}$/.test(s) && !s.includes('.');
-  }
-
-  /**
-   * Try to generate by POSTing the request directly (no Create button).
-   * Returns true only if it fully succeeded (200 + image downloaded).
-   * Returns false on ANY doubt so the caller falls back to the UI path.
-   */
-  async _tryNetworkGenerate(fullPrompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths) {
-    const modelEnum = FLOW_MODEL_ENUM[this.preferredModel];
-    const aspectEnum = FLOW_ASPECT_ENUM[aspectRatio];
-    if (!modelEnum)  { Logger.info(`[Flow/net] model "${this.preferredModel}" not confirmed for fast-path — bail`); return false; }
-    if (!aspectEnum) { Logger.info(`[Flow/net] aspect "${aspectRatio}" not confirmed for fast-path — bail`); return false; }
-
-    // Resolve every reference's media id from the session cache (populated when
-    // the bg/context images were uploaded). Bail if any isn't a real id.
-    const refPaths = [backgroundFilePath, ...(contextFilePaths || [])].filter(p => p && existsSync(p));
-    const mediaIds = [];
-    for (const p of refPaths) {
-      const id = this._getCachedGeneratedName(p);
-      if (!this._looksLikeMediaId(id)) { Logger.info(`[Flow/net] no cached media id for ${basename(p)} — bail to UI`); return false; }
-      mediaIds.push(id);
-    }
-
-    const projectId = this._net.projectId
-      || (this.page.url().match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/) || [])[1];
-    const bearer = this._net.bearer;
-    const sessionId = this._net.sessionId;
-    if (!projectId || !bearer || !sessionId) {
-      Logger.info(`[Flow/net] missing ctx (project=${!!projectId} bearer=${!!bearer} session=${!!sessionId}) — bail to UI`);
-      return false;
-    }
-
-    // Build the payload + mint a fresh reCAPTCHA token, all inside the page so
-    // the token is valid for this origin, then POST it (auth carried manually).
-    const endpoint = `${FLOW_API_BASE}/projects/${projectId}/flowMedia:batchGenerateImages`;
-    const resp = await this.page.evaluate(async (a) => {
-      let token;
-      try { token = await window.grecaptcha.enterprise.execute(a.siteKey, { action: a.action }); }
-      catch (e) { return { error: 'recaptcha: ' + String(e) }; }
-      if (!token) return { error: 'no recaptcha token' };
-      const rc = { recaptchaContext: { token, applicationType: 'RECAPTCHA_APPLICATION_TYPE_WEB' }, projectId: a.projectId, tool: 'PINHOLE', sessionId: a.sessionId };
-      const seed = Math.floor(Math.random() * 900000) + 1000;
-      const batchId = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now());
-      const body = {
-        clientContext: rc,
-        mediaGenerationContext: { batchId },
-        useNewMedia: true,
-        requests: [{
-          clientContext: rc,
-          imageModelName: a.model,
-          imageAspectRatio: a.aspect,
-          structuredPrompt: { parts: [{ text: a.prompt }] },
-          seed,
-          imageInputs: a.mediaIds.map(name => ({ imageInputType: 'IMAGE_INPUT_TYPE_REFERENCE', name })),
-        }],
-      };
-      try {
-        const res = await fetch(a.endpoint, { method: 'POST', headers: { authorization: a.bearer, 'content-type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
-        return { status: res.status, text: await res.text() };
-      } catch (e) { return { error: 'fetch: ' + String(e) }; }
-    }, { endpoint, bearer, sessionId, projectId, siteKey: FLOW_RECAPTCHA_SITEKEY, action: FLOW_RECAPTCHA_ACTION, model: modelEnum, aspect: aspectEnum, prompt: fullPrompt, mediaIds });
-
-    if (!resp || resp.error) { Logger.warn(`[Flow/net] in-page error: ${resp?.error || 'null'} — bail`); return false; }
-    if (resp.status !== 200) { Logger.warn(`[Flow/net] HTTP ${resp.status} — bail to UI (body: ${String(resp.text).slice(0, 160)})`); return false; }
-
-    let data; try { data = JSON.parse(resp.text); } catch { Logger.warn('[Flow/net] response not JSON — bail'); return false; }
-    const gen = data?.media?.[0]?.image?.generatedImage;
-    const fifeUrl = gen?.fifeUrl;
-    if (!fifeUrl) { Logger.warn('[Flow/net] no image URL in response — bail'); return false; }
-
-    // Download the signed image URL (public, no auth) and save.
-    let buf;
-    try {
-      const dl = await fetch(fifeUrl);
-      if (!dl.ok) { Logger.warn(`[Flow/net] image download HTTP ${dl.status} — bail`); return false; }
-      buf = Buffer.from(await dl.arrayBuffer());
-    } catch (e) { Logger.warn(`[Flow/net] image download failed (${e.message}) — bail`); return false; }
-
-    try { mkdirSync(dirname(outputPath), { recursive: true }); } catch {}
-    try { writeFileSync(outputPath, buf); } catch (e) { if (!existsSync(outputPath)) { Logger.warn(`[Flow/net] write failed (${e.message}) — bail`); return false; } }
-    if (!existsSync(outputPath) || statSync(outputPath).size < 5000) { Logger.warn('[Flow/net] saved file too small — bail'); return false; }
-
-    // Cache the NEW image's media id so later steps can reference it, exactly
-    // like the click path does after download.
-    const newId = data?.media?.[0]?.name;
-    if (newId) this._cacheGeneratedName(outputPath, newId);
-    Logger.success(`[Flow/net] fast-path image saved: ${Math.round(statSync(outputPath).size / 1024)}KB`);
-    return true;
   }
 
   _cacheGeneratedName(filePath, pickerName) {
@@ -537,6 +567,19 @@ export class FlowPage {
   // ═══════════════════════════════════════════════════════════
 
   async _doGenerate(prompt, backgroundFilePath, contextFilePaths, aspectRatio, outputPath) {
+    // FULL NO-UI PATH — createProject + uploadImage + generate entirely over the
+    // API (no project UI, no picker, no click). Bails to the UI flow below on
+    // ANY doubt; generate() still validates the resulting file either way.
+    if (this.useNetworkFastPath) {
+      try {
+        const ok = await this._doGenerateApiOnly(prompt, backgroundFilePath, contextFilePaths, aspectRatio, outputPath);
+        if (ok) { Logger.success('[Flow] Generated fully via API (no UI)'); return true; }
+        Logger.warn('[Flow] API-only path failed — falling back to UI flow');
+      } catch (e) {
+        Logger.warn(`[Flow] API-only error (${e.message.split('\n')[0]}) — falling back to UI flow`);
+      }
+    }
+
     const flowPrompt = this._compactPromptForFlow(prompt);
 
     // ─── Single-project approach ───
@@ -707,23 +750,8 @@ export class FlowPage {
     // 8. Screenshot before Create (debug)
     await this._screenshot('pre-create');
 
-    // 8b. NETWORK FAST-PATH — build+POST the generate request directly, skipping
-    //     the Create-button click (the flakiest step). Bails to the UI path on
-    //     ANY doubt; generate() still validates the resulting file either way.
-    if (this.useNetworkFastPath) {
-      try {
-        // Send the FULL prompt (not flowPrompt): the ~1800-char compaction only
-        // exists because typing long text into the composer was unreliable. The
-        // API call carries the whole prompt directly, so richer prompts → better
-        // images. If an over-long prompt is ever rejected, it 4xxs and we bail
-        // to the (compacted) UI path below.
-        const fast = await this._tryNetworkGenerate(prompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths);
-        if (fast) { Logger.success('[Flow] Generated via network fast-path (no button click)'); return true; }
-        Logger.warn('[Flow] Network fast-path bailed — using UI click path');
-      } catch (e) {
-        Logger.warn(`[Flow] Network fast-path error (${e.message.split('\n')[0]}) — using UI click path`);
-      }
-    }
+    // (The network fast-path is now handled fully at the top of _doGenerate via
+    // _doGenerateApiOnly; if we reached here, we're on the UI click fallback.)
 
     // 9. Start network sniffer before Create
     this._startNetworkSniffer();
@@ -2324,6 +2352,8 @@ export class FlowPage {
     this._projectOpen = false;
     this._bgFilesOnCanvas.clear();
     this._generatedNames.clear();
+    // Fresh project + upload cache for the next recipe.
+    this._api = { projectId: null, uploads: new Map() };
   }
 
   _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
