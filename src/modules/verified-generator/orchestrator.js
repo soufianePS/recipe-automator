@@ -646,6 +646,7 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       // true, so every correction retry was discarded and the final "accept
       // best attempt" write restored the WORST first image. (It also made the
       // stats `retries` counter always report 1.)
+      const currentImage = readFileSync(outputPath);
       if (!bestImage) {
         bestImage = currentImage;
       }
