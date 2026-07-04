@@ -190,7 +190,7 @@ export class FlowPage {
    * Returns true only if it fully succeeded (200 + image downloaded).
    * Returns false on ANY doubt so the caller falls back to the UI path.
    */
-  async _tryNetworkGenerate(flowPrompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths) {
+  async _tryNetworkGenerate(fullPrompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths) {
     const modelEnum = FLOW_MODEL_ENUM[this.preferredModel];
     const aspectEnum = FLOW_ASPECT_ENUM[aspectRatio];
     if (!modelEnum)  { Logger.info(`[Flow/net] model "${this.preferredModel}" not confirmed for fast-path — bail`); return false; }
@@ -243,7 +243,7 @@ export class FlowPage {
         const res = await fetch(a.endpoint, { method: 'POST', headers: { authorization: a.bearer, 'content-type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
         return { status: res.status, text: await res.text() };
       } catch (e) { return { error: 'fetch: ' + String(e) }; }
-    }, { endpoint, bearer, sessionId, projectId, siteKey: FLOW_RECAPTCHA_SITEKEY, action: FLOW_RECAPTCHA_ACTION, model: modelEnum, aspect: aspectEnum, prompt: flowPrompt, mediaIds });
+    }, { endpoint, bearer, sessionId, projectId, siteKey: FLOW_RECAPTCHA_SITEKEY, action: FLOW_RECAPTCHA_ACTION, model: modelEnum, aspect: aspectEnum, prompt: fullPrompt, mediaIds });
 
     if (!resp || resp.error) { Logger.warn(`[Flow/net] in-page error: ${resp?.error || 'null'} — bail`); return false; }
     if (resp.status !== 200) { Logger.warn(`[Flow/net] HTTP ${resp.status} — bail to UI (body: ${String(resp.text).slice(0, 160)})`); return false; }
@@ -712,7 +712,12 @@ export class FlowPage {
     //     ANY doubt; generate() still validates the resulting file either way.
     if (this.useNetworkFastPath) {
       try {
-        const fast = await this._tryNetworkGenerate(flowPrompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths);
+        // Send the FULL prompt (not flowPrompt): the ~1800-char compaction only
+        // exists because typing long text into the composer was unreliable. The
+        // API call carries the whole prompt directly, so richer prompts → better
+        // images. If an over-long prompt is ever rejected, it 4xxs and we bail
+        // to the (compacted) UI path below.
+        const fast = await this._tryNetworkGenerate(prompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths);
         if (fast) { Logger.success('[Flow] Generated via network fast-path (no button click)'); return true; }
         Logger.warn('[Flow] Network fast-path bailed — using UI click path');
       } catch (e) {
