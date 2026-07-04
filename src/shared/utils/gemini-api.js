@@ -2,21 +2,25 @@
  * Gemini API — lightweight wrapper for Google Gemini vision API.
  * Uses model rotation: when one model hits rate/quota limit, falls back to next.
  *
- * Free tier limits per key:
- *   gemini-3.1-flash-lite-preview: 15 RPM, 500 RPD (primary — highest volume)
- *   gemini-3-flash-preview:         5 RPM,  20 RPD (best accuracy)
- *   gemini-2.5-flash:               5 RPM,  20 RPD (fallback)
- *   Total with rotation: 25 RPM, 540 RPD per key
+ * All models below are free-tier eligible (verified 2026-07 against the live
+ * API with our keys; exact RPM/RPD now only visible per-project in AI Studio
+ * at https://aistudio.google.com/rate-limit — limits are per PROJECT, not per
+ * key). Flash-lite has the highest free volume (~15 RPM), so it leads.
+ * There is no plain "gemini-3.1-flash" text model — only the -lite variants.
  */
 
 import { readFileSync } from 'fs';
 import { Logger } from './logger.js';
 
-// Models in priority order: highest free volume first, best accuracy second
+// Models in priority order: highest free volume first, best accuracy second.
+// gemini-3.5-flash is deliberately NOT first: it 503s under load and the
+// retry path waits 10s before rotating — leading with it would tax every call.
 const GEMINI_MODELS = [
-  'gemini-3.1-flash-lite-preview',  // 15 RPM, 500 RPD
-  'gemini-3-flash-preview',          //  5 RPM,  20 RPD
-  'gemini-2.5-flash',                //  5 RPM,  20 RPD
+  'gemini-3.1-flash-lite',           // stable — highest free volume
+  'gemini-3.1-flash-lite-preview',   // preview alias — likely shares quota, rotates instantly on 429
+  'gemini-3.5-flash',                // newest/best accuracy on free tier, often high-demand 503
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash',
 ];
 let _currentModelIndex = 0;
 
