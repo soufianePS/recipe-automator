@@ -50,7 +50,8 @@ export async function fetchNutrition(apiKey, ingredients, servings = 1) {
     fiber: 0,
     sugar: 0,
     sodium: 0,
-    cholesterol: 0
+    cholesterol: 0,
+    weight: 0 // grams — sum of serving_size_g, i.e. total raw batch weight
   };
 
   let successCount = 0;
@@ -117,6 +118,7 @@ export async function fetchNutrition(apiKey, ingredients, servings = 1) {
       const num = (v) => (typeof v === 'number' && !isNaN(v)) ? v : 0;
       for (const item of data) {
         totals.calories += num(item.calories);
+        totals.weight += num(item.serving_size_g);
         totals.protein += num(item.protein_g);
         totals.fat += num(item.fat_total_g);
         totals.saturated_fat += num(item.fat_saturated_g);
@@ -149,11 +151,31 @@ export async function fetchNutrition(apiKey, ingredients, servings = 1) {
     Logger.info(`[Nutrition] Estimated calories from macros: ${totals.calories} kcal`);
   }
 
+  // Per-serving weight from summed ingredient weights (raw batch weight —
+  // cooked weight runs a bit lower from moisture loss, close enough for a
+  // label). WPRM sanitizes serving_size to a number and appends its "g"
+  // unit, so "1 serving (of 12)" used to render as the nonsense "Serving:
+  // 1g". A real gram figure renders correctly in both WPRM and Tasty.
+  const perServingWeight = totals.weight > 0 ? Math.round(totals.weight / servingCount) : 0;
+
+  // Plausibility guard: no food exceeds ~9 kcal/g (pure fat); whole dishes
+  // rarely pass ~5. Raw weight understates density, so anything above 6.5
+  // means an API double-count or a bad servings value — publishing an
+  // impossible calorie number is a worse "untested recipe" tell than
+  // omitting the line, so drop calories and let the card hide it.
+  if (totals.calories > 0 && perServingWeight > 0) {
+    const density = (totals.calories / servingCount) / perServingWeight;
+    if (density > 6.5) {
+      Logger.warn(`[Nutrition] Implausible calorie density (${density.toFixed(1)} kcal/g at ${perServingWeight}g/serving) — omitting calories from the card`);
+      totals.calories = 0;
+    }
+  }
+
   // Calculate per-serving values and round.
   // Free tier returns strings for calories/protein → totals stay at 0. Emit "" so the recipe card hides the line instead of showing "0g".
   const perUnit = (total, unit) => total > 0 ? String(Math.round(total / servingCount)) + unit : '';
   const perServing = {
-    serving_size: `1 serving (of ${servingCount})`,
+    serving_size: perServingWeight > 0 ? `${perServingWeight}g` : '',
     calories: totals.calories > 0 ? String(Math.round(totals.calories / servingCount)) : '',
     protein: perUnit(totals.protein, 'g'),
     fat: perUnit(totals.fat, 'g'),

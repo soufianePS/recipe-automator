@@ -717,7 +717,9 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
       prepTime: recipe?.prep_time || 'PT15M',
       cookTime: recipe?.cook_time || 'PT30M',
       totalTime: recipe?.total_time || 'PT45M',
-      recipeYield: String(recipe?.servings || '4'),
+      recipeYield: recipe?.yield_unit
+        ? `${recipe?.servings || '4'} ${recipe.yield_unit}`
+        : String(recipe?.servings || '4'),
       recipeCategory: recipe?.category || 'Main Course',
       recipeIngredient: ingredients.map(i => typeof i === 'string' ? i : `${i.quantity} ${i.name}`),
       recipeInstructions: state.steps.map(s => ({ '@type': 'HowToStep', name: s.title, text: s.description || s.title, ...(s.wpImageUrl ? { image: s.wpImageUrl } : {}) }))
@@ -827,7 +829,7 @@ async function createTastyRecipe(settings, recipe, state, wpDisplayName) {
     prep_time: ptToHuman(recipe.prep_time),
     cook_time: ptToHuman(recipe.cook_time),
     total_time: ptToHuman(recipe.total_time),
-    yield: recipe.servings ? `${recipe.servings} servings` : '',
+    yield: recipe.servings ? `${recipe.servings} ${recipe.yield_unit || 'servings'}` : '',
     category: recipe.category || '',
     cuisine: recipe.cuisine || '',
     method: recipe.method || recipe.cooking_method || '',

@@ -19,6 +19,7 @@ import {
 } from '../../shared/utils/prompts.js';
 import { ScraperPage } from './scraper-page.js';
 import { Downloader } from './downloader.js';
+import { applyRecipeSanityFixes } from '../../shared/utils/recipe-sanity.js';
 import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -327,6 +328,11 @@ export class ScraperOrchestrator extends BaseOrchestrator {
       fun_fact: rewritten.fun_fact || extracted.fun_fact || '',
       equipment: rewritten.equipment || extracted.equipment || []
     };
+
+    // Sanity fixes (yield/servings mismatch, missing preheat) — the ChatGPT
+    // rewrite can drop the source recipe's preheat step or desync servings.
+    // Must run before the steps map below so fixed text reaches the post.
+    applyRecipeSanityFixes(recipe);
 
     const steps = recipe.steps.map((step, i) => ({
       number: step.number || i + 1,

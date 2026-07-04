@@ -23,6 +23,7 @@ import { verifyStepImage, verifyIngredientsImage, verifyHeroImage, verifyPintere
 import { VERIFIED_GENERATOR_DEFAULTS } from './prompts-verified.js';
 import { VGStats } from './vg-stats.js';
 import { fetchNutrition } from '../../shared/utils/nutrition-api.js';
+import { applyRecipeSanityFixes } from '../../shared/utils/recipe-sanity.js';
 import { checkContentQuality, applyContentFixes } from '../../shared/utils/content-quality.js';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, copyFileSync, statSync } from 'fs';
 import { join, dirname, basename, extname } from 'path';
@@ -1132,6 +1133,12 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
         recipeChatContextToClose = null;
       }
     }
+
+    // ── Recipe sanity fixes: yield/servings reconciliation + missing oven
+    //    preheat. Runs AFTER the quality gate (so re-prompted step text can't
+    //    undo the preheat injection) and BEFORE nutrition (so per-serving
+    //    values divide by the reconciled servings count). ──
+    applyRecipeSanityFixes(recipe);
 
     // ── Nutrition API: fetch real nutrition data ──
     // Collect keys from every Flow account (for rotation) + settings fallback.

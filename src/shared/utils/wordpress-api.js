@@ -648,7 +648,9 @@ export const WordPressAPI = {
       recipe: {
         type: 'food', name: postTitle, summary: recipeJSON?.recipe_card_description || intro, notes: cardNotes,
         prep_time: prepTime, cook_time: cookTime, total_time: totalTime,
-        servings: String(servings), servings_unit: '',
+        // yield_unit is set by recipe-sanity when the steps state an item
+        // yield ("makes 12 muffins") — renders as "Servings: 12 muffins"
+        servings: String(servings), servings_unit: recipeJSON?.yield_unit || '',
         image_id: state.heroImage?.wpImageId || 0,
         author_display: 'default',
         ingredients: [{ name: '', ingredients: wprmIngredients }],
