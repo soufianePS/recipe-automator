@@ -383,6 +383,10 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     return {
       ...defaults,
       ...vg,
+      // Surface the top-level dashboard toggle (falls back to a verifiedGenerator
+      // override if someone sets it there) so _generateAndVerify, which only
+      // receives vgSettings, can see it.
+      flowNetworkFastPath: (vg.flowNetworkFastPath ?? settings?.flowNetworkFastPath) === true,
       prompts: { ...defaults.prompts, ...(vg.prompts || {}) }
     };
   }
