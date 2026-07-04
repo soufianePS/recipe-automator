@@ -630,10 +630,15 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
       }
 
       // Save current image as potential best (ALWAYS, even before verification)
-      const currentImage = readFileSync(outputPath);
+      // so the generation-error fallback (above) has something to write. Do NOT
+      // seed bestIssueCount here: it must stay Infinity until a real verified
+      // count lands at the "track best attempt" check below. Seeding it to 0
+      // made `issueCount < bestIssueCount` (issueCount is always >= 0) never
+      // true, so every correction retry was discarded and the final "accept
+      // best attempt" write restored the WORST first image. (It also made the
+      // stats `retries` counter always report 1.)
       if (!bestImage) {
         bestImage = currentImage;
-        bestIssueCount = 0;
       }
 
       // Skip verification if no Gemini key

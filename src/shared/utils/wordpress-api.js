@@ -82,8 +82,16 @@ export const WordPressAPI = {
 
   /**
    * Delete a post and all its associated media (images).
-   * Finds media by: post content (wp-image-XXX), featured image, and attached media.
-   * Only deletes media not used by other posts.
+   * Finds media by: featured image, post content (wp-image-XXX), and media
+   * whose parent is THIS post. These are unambiguously this post's own
+   * attachments, so force-deleting them is safe.
+   *
+   * NOTE: we intentionally do NOT search media by slug substring. That matched
+   * attachments across the whole library by filename/title (e.g. deleting
+   * "banana-bread" also hit "banana-bread-muffins" images), permanently
+   * destroying media still in use by other live posts. Trade-off: a pin image
+   * that isn't attached to this post as a parent may be left orphaned rather
+   * than deleted — an orphan is far cheaper than deleting another post's images.
    */
   async deletePostWithMedia(settings, postId) {
     const { wpUrl, wpUsername, wpAppPassword } = settings;
@@ -112,17 +120,7 @@ export const WordPressAPI = {
       }
     } catch {}
 
-    // Search for pin images by slug pattern
-    const slug = post.slug || '';
-    if (slug) {
-      try {
-        const pinResp = await fetch(`${wpUrl}/wp-json/wp/v2/media?search=${encodeURIComponent(slug)}&per_page=20`, { headers: auth });
-        if (pinResp.ok) {
-          const pins = await pinResp.json();
-          for (const p of pins) mediaIds.add(p.id);
-        }
-      } catch {}
-    }
+    // (Deliberately no slug-substring media search here — see method doc.)
 
     // 2. Delete the post first
     const delResp = await fetch(`${wpUrl}/wp-json/wp/v2/posts/${postId}?force=true`, {
@@ -130,7 +128,7 @@ export const WordPressAPI = {
     });
     if (!delResp.ok) throw new Error(`Failed to delete post ${postId}`);
 
-    // 3. Delete each media (only if not used elsewhere)
+    // 3. Delete this post's own media (featured / in-content / child attachments)
     let deleted = 0;
     for (const mediaId of mediaIds) {
       try {

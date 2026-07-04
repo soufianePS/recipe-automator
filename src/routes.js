@@ -295,12 +295,14 @@ export function setupRoutes(app, ctx) {
   app.delete('/api/backgrounds/:type/:index', async (req, res) => {
     try {
       const { type, index } = req.params;
-      const getter = type === 'hero' ? StateManager.getHeroBackgrounds : StateManager.getStepsBackgrounds;
-      const saver  = type === 'hero' ? StateManager.saveHeroBackgrounds : StateManager.saveStepsBackgrounds;
-
-      if (!getter) {
+      // Validate explicitly: the old `!getter` guard was dead because the
+      // ternary below always resolves to the steps getter for any non-"hero"
+      // type, so `DELETE /api/backgrounds/foo/0` silently deleted a steps bg.
+      if (type !== 'hero' && type !== 'steps') {
         return res.status(400).json({ error: 'Invalid background type' });
       }
+      const getter = type === 'hero' ? StateManager.getHeroBackgrounds : StateManager.getStepsBackgrounds;
+      const saver  = type === 'hero' ? StateManager.saveHeroBackgrounds : StateManager.saveStepsBackgrounds;
 
       const idx = parseInt(index);
       const existing = await getter.call(StateManager);
@@ -519,6 +521,10 @@ export function setupRoutes(app, ctx) {
                           : VerifiedGeneratorOrchestrator;  // default = verified
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
+      // Stamp start time so _isActuallyBusy() can auto-clear a stuck flag if the
+      // orchestrator dies without unwinding. Without this the 15-min safety net
+      // never fires and every "wait for it to finish" endpoint blocks forever.
+      ctx.automationStartedAt = Date.now();
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
 
       res.json({
@@ -2039,6 +2045,7 @@ export function setupRoutes(app, ctx) {
                                    : VerifiedGeneratorOrchestrator;  // default = verified
       ctx.orchestrator = new OrchestratorClass(null, ctx.browserContext, ctx);
       ctx.automationRunning = true;
+      ctx.automationStartedAt = Date.now(); // enable stuck-flag auto-recovery (see /api/start)
       ctx.attachOrchestratorCallbacks(ctx.orchestrator.start(), settings);
 
       Logger.info('Automation resumed');
@@ -2215,13 +2222,25 @@ export function setupRoutes(app, ctx) {
   // ── API: Stats/History ───────────────────────────────────────
 
   app.get('/api/stats', async (req, res) => {
-    const stats = await History.getStats();
-    res.json(stats);
+    try {
+      const stats = await History.getStats();
+      res.json(stats);
+    } catch (e) {
+      // Express 4 does not forward async-handler rejections to error middleware,
+      // so without this the request would hang forever on a read/parse error.
+      Logger.warn(`/api/stats failed: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.get('/api/history', async (req, res) => {
-    const history = await History.getAll();
-    res.json(history);
+    try {
+      const history = await History.getAll();
+      res.json(history);
+    } catch (e) {
+      Logger.warn(`/api/history failed: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // ── API: Open Browser (manage logins) ──────────────────────

@@ -228,11 +228,15 @@ export function assignAccount(key, activeAccounts) {
 
 /**
  * Filter accounts of a site that can currently post pins.
- * (active = full rate; warmup_week_2 = partial; others = no posting)
+ * (active = full rate; warmup_week_2/3 = partial; W1/disabled = no posting)
+ * Must match the canPost:true tiers in ACCOUNT_STATUSES — W3 (canPost:true,
+ * multiplier 0.6) was previously omitted here, so the day-plan builder
+ * scheduled posting sessions for W3 accounts but assignAccount never gave
+ * them any pins, and they posted nothing for the entire days 14-28 tier.
  */
 function getPostingAccounts(siteConfig) {
   return (siteConfig?.pinterestAccounts || [])
-    .filter(a => a.status === 'active' || a.status === 'warmup_week_2');
+    .filter(a => a.status === 'active' || a.status === 'warmup_week_2' || a.status === 'warmup_week_3');
 }
 
 /**

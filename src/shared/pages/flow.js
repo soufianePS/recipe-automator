@@ -218,6 +218,12 @@ export class FlowPage {
       };
     }
 
+    // off-then-on guarantees EXACTLY ONE listener on the current page, even
+    // though this runs for every image while the project page is reused.
+    // Previously we only ever called .on here and .off nowhere, so listeners
+    // stacked (~1 per image) — each active response was then processed N times,
+    // fetching response.body() N times and pushing N duplicate buffers.
+    this.page?.off('response', this._snifferHandler);
     this.page?.on('response', this._snifferHandler);
   }
 
@@ -227,6 +233,8 @@ export class FlowPage {
    */
   _stopNetworkSniffer() {
     this._snifferActive = false;
+    // Detach the listener so it doesn't linger on the reused page between images.
+    this.page?.off('response', this._snifferHandler);
     const images = [...this._networkImages].sort((a, b) => b.timestamp - a.timestamp);
     this._networkImages = [];
     return images;

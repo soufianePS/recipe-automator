@@ -2407,7 +2407,7 @@
             <div style="background:#12122a;border:1px solid ${isRateLimited ? '#f44336' : isActive ? '#4caf50' : '#2a2a4a'};border-radius:10px;padding:16px;margin-bottom:12px;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <input type="text" value="${acct.name}" id="faName_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#fff;padding:4px 8px;border-radius:5px;font-weight:600;font-size:14px;width:200px;" onchange="updateFlowAccount('${acct.id}', {name: this.value})" />
+                  <input type="text" value="${escapeHtml(acct.name || '')}" id="faName_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#fff;padding:4px 8px;border-radius:5px;font-weight:600;font-size:14px;width:200px;" onchange="updateFlowAccount('${acct.id}', {name: this.value})" />
                   <span style="font-size:11px;color:${statusColor};font-weight:700;">${statusLabel}</span>
                 </div>
                 <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#aaa;cursor:pointer;">
@@ -2417,7 +2417,7 @@
               </div>
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
                 <span style="font-size:12px;color:#666;">Profile:</span>
-                <input type="text" value="${acct.profileDir}" id="faProfile_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#888;padding:3px 8px;border-radius:5px;font-size:12px;flex:1;" onchange="updateFlowAccount('${acct.id}', {profileDir: this.value})" />
+                <input type="text" value="${escapeHtml(acct.profileDir || '')}" id="faProfile_${acct.id}" style="background:#1a1a3a;border:1px solid #2a2a4a;color:#888;padding:3px 8px;border-radius:5px;font-size:12px;flex:1;" onchange="updateFlowAccount('${acct.id}', {profileDir: this.value})" />
               </div>
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
                 <span style="font-size:12px;color:#666;">Gemini Key:</span>

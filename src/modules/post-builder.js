@@ -721,7 +721,13 @@ export async function buildAndPublishPost(state, settings, WordPressAPI, Logger)
         ? `${recipe?.servings || '4'} ${recipe.yield_unit}`
         : String(recipe?.servings || '4'),
       recipeCategory: recipe?.category || 'Main Course',
-      recipeIngredient: ingredients.map(i => typeof i === 'string' ? i : `${i.quantity} ${i.name}`),
+      // Guard object ingredients: a missing quantity used to ship literal
+      // "undefined flour" into the JSON-LD (this fallback schema only runs when
+      // no recipe-card plugin owns the schema). Join present parts; fall back
+      // to raw/description; drop anything empty.
+      recipeIngredient: ingredients
+        .map(i => typeof i === 'string' ? i : ([i.quantity, i.name].filter(Boolean).join(' ') || i.raw || i.description || ''))
+        .filter(Boolean),
       recipeInstructions: state.steps.map(s => ({ '@type': 'HowToStep', name: s.title, text: s.description || s.title, ...(s.wpImageUrl ? { image: s.wpImageUrl } : {}) }))
     };
     if (recipe?.cuisine) schema.recipeCuisine = recipe.cuisine;
