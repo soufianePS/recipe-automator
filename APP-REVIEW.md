@@ -114,6 +114,8 @@ recycle of the oldest article), gradual publish (2-3 drafts/day at random times)
 3. **`warming-session`** — 15-25 min browse-only session for young accounts
    (category searches, scrolls, closeups — saves disabled).
 
+> REVIEWER: The current runtime mostly matches this, but the code comments are stale in `src/modules/planifier/day-plan-builder.js` and `src/modules/planifier/warming-executor.js`: they still describe warming saves / warming pins even though constants set saves to 0. That matters because future edits will follow comments and accidentally re-enable risky behavior.
+
 Every item transitions pending → in_progress → done/error/missed with history and
 Telegram notifications.
 
@@ -189,6 +191,9 @@ Ordered roughly by how much pain they cause:
    structured log file per recipe, so post-mortems on "why did last night's run
    fail" depend on what's still in the buffer. VG stats exist but nothing trends
    selector failures or verification-retry rates over time.
+
+> REVIEWER: This is worse than phrased. `src/shared/utils/logger.js` header claims "file logging + Discord webhook", but the implementation only keeps `MAX_LOGS = 500` in memory and sends Discord batches. There is no file sink. So E4 is not an enhancement; it is fixing a misleading subsystem contract.
+
 10. **Docs drift** — `ARCHITECTURE.md` still documents deleted modes
     (generator/gemini-visual/regen as pipelines).
 
@@ -201,6 +206,9 @@ Ordered roughly by how much pain they cause:
 - **E1. Extend `ui-triggers.js` to Flow and Pinterest** and auto-run
   `check-triggers --no-roundtrip` at the start of every batch (fail fast with a
   Telegram alert naming the exact stale trigger).
+
+> REVIEWER: Correct direction, but the current registry also has its own drift: `src/shared/pages/ui-triggers.js` still mentions `gemini-image-chat.js`, which is not in the repo. Do not just add Flow/Pinterest entries; first make the registry generated or cross-checked against the page object methods actually used by VG and Planifier.
+
 - **E2. Execute the config centralization refactor** (single `data/sites/{site}/site.json`
   with everything: sheet tabs, WP creds, Dolphin, Pinterest accounts, prompts refs).
   Migration script + backward-compat reads for one release.
@@ -246,6 +254,15 @@ would you reorder and why?
 
 ### 🤖 REVIEWER ANSWER
 
+Mostly yes, but the order should be:
+
+1. **E4 persistent structured logs first.** Without durable per-run logs, every other reliability fix is harder to verify. Add JSONL event logging for VG state transitions, Flow attempts, verifier result, selected account/profile, WP post/media IDs, pin eligibility decisions, and final outcome. This is a one-owner desktop app; a boring log file beats a dashboard chart.
+2. **E3 unit tests second.** Test the pure pieces before refactors: `day-plan-builder.js`, `browse-simulator.js`, `pin-pool.js`, `prompt-builder.js`, `boards-validator` mapping helpers, and WP status/link parsing in `action-executor.js`. Use `node:test`; no framework.
+3. **E1 selector preflight third.** It is high value, but only if it covers the actual Flow/Pinterest actions and returns actionable trigger names. A shallow "button exists" probe will not catch Flow's worst failures: wrong model/mode, refs not attached, Create/Stop ambiguity, or download capture drift.
+4. **E2 config centralization fourth.** Important, but it has migration risk and can break every site at once. Do it after logs/tests so you can prove behavior stayed the same.
+
+One P1 item is missing: **secret backup/export discipline**. Not full encryption yet, but at minimum a `scripts/audit-secrets.mjs` that lists where credentials live, verifies required files exist, and warns if sensitive files are accidentally tracked.
+
 
 ### Q2. Selector fragility strategy
 Beyond a health check registry, what's the most robust long-term approach for
@@ -256,6 +273,18 @@ approach worth implementing here, with a sketch.
 
 ### 🤖 REVIEWER ANSWER
 
+Implement an **action-contract layer with accessibility-first locators plus post-action assertions**. Do not implement LLM self-healing locators here. It is over-engineering for a solo Windows box, and it can "heal" to the wrong button silently, which is worse than failing.
+
+Sketch:
+
+- Replace raw selector use in page objects with named actions: `flow.attachReference(kind, path)`, `flow.ensureClassicMode()`, `flow.submitPrompt()`, `pinterest.openCreatePin()`, `pinterest.selectBoard(name)`.
+- Each action owns a locator ladder: role/name first (`getByRole`, labels, visible text), then stable attributes, then CSS fallback. Keep CSS as the last resort.
+- Every action must assert the state change it promised. Examples: after Flow refs attach, count attached thumbnails and record their order; after model selection, assert the selected model text; after clicking Create, assert generation started and the button changed to Stop; after Pinterest board selection, assert the selected board label is visible.
+- On failure, write a screenshot, DOM snapshot, accessibility snapshot, URL, and action name into the run log folder.
+- Make `check-triggers` call the same action contracts in dry-run/preflight mode instead of duplicating selectors in a registry that will drift.
+
+The core idea is not "find a better selector"; it is "prove the UI is now in the state the pipeline depends on." That catches more real failures than selector presence checks.
+
 
 ### Q3. Sheet vs database
 Is E11 (SQLite as source of truth, sheet as UI/import-export) the right call for
@@ -263,6 +292,19 @@ a solo operator running 1-3 sites, or is it over-engineering? Answer with the
 failure modes you'd expect from keeping the sheet as the DB.
 
 ### 🤖 REVIEWER ANSWER
+
+SQLite is the right direction for operational state, but not as a big rewrite. Use it narrowly first for **plans, item history, pin posting history, locks, and run events**. Keep Google Sheets as the human topic queue and reporting surface for now.
+
+Keeping the sheet as the DB will keep producing these failures:
+
+- No real transactions. A recipe can be marked `processing`, WP draft created, pin data partly written, then Apps Script write fails and the row lies.
+- Concurrent writers are unsafe. Planifier, manual dashboard actions, Apps Script, and repair scripts can patch overlapping columns with no compare-and-swap.
+- Public gviz reads are cached/stale and require public sharing. That is both reliability debt and privacy debt.
+- Row identity is weak. Sorting/filtering/manual row edits can make `rowIndex` references point at the wrong recipe later.
+- Type/schema drift is invisible. Dates, booleans, empty strings, status names, and pin indexes are all just cells until they break downstream logic.
+- Rate limits and Apps Script deployment problems become scheduler failures.
+
+What would be over-engineering is moving recipe authoring itself entirely into SQLite today. The owner likes Sheets as the visible queue. Keep that UI, but stop using Sheets as the source of truth for automation events that need locking and auditability.
 
 
 ### Q4. Pinterest anti-detection
@@ -272,6 +314,16 @@ paces pins with rolling gaps. What detection vectors remain that we're blind to,
 and what ONE change would most reduce ban risk?
 
 ### 🤖 REVIEWER ANSWER
+
+Blind spots still left:
+
+- **Creative/link pattern repetition.** Three pins per article, same domain, similar templates, similar descriptions, similar cadence. Pinterest can cluster that even if browser behavior looks human.
+- **Browser automation fingerprints beyond profile identity.** Dolphin helps, but CDP-driven timing, file upload behavior, pointer paths, viewport stability, and session start/stop regularity can still look synthetic.
+- **Domain-level trust.** New/low-authority WP domains receiving repeated outbound pin traffic can be judged as spammy if pages are thin, slow, draft-linked, redirected, or too similar.
+- **Board/topic mismatch.** Category-to-board substring mapping can still post into a weakly related board if categories are broad or board names are messy.
+- **Operational bursts after downtime.** Catch-up logic can compress sessions. Even if gaps are respected, recovery patterns can become bot-like.
+
+The one change with the best ban-risk reduction: **add a per-account/domain safety governor that can downshift or skip posting based on recent outcomes.** Track last 7/30 days per account: posts, skips, failed publishes, Pinterest create failures, 429/checkpoint/login events, close-together sessions, and domain ratio. If risk crosses a threshold, automatically switch that account to browse-only for 24-72 hours and alert Telegram. This is more valuable than adding more random mouse movement because it prevents the system from continuing after the platform is already signaling trouble.
 
 
 ### Q5. Content quality / SEO
@@ -283,11 +335,37 @@ Pinterest SEO perspective? Flag anything that risks an over-optimization penalty
 
 ### 🤖 REVIEWER ANSWER
 
+The biggest risk is **over-optimization by template**. "Exact-topic repetition in body/meta/H2s/image metadata" plus booster words and forced keyword phrases can look mechanically generated. Google does not need to penalize it manually; it can simply fail to rank because it lacks originality, first-hand value, and query satisfaction.
+
+Overdone:
+
+- Exact topic in too many H2s and image fields. Use natural variants and only keep exact match where it helps the reader.
+- Booster words in every pin/title pattern. Repetition across pins creates a detectable style fingerprint.
+- Yoast readability as a hard target. Yoast is a checklist, not a ranking model. It can push bland short sentences and repeated transition phrases.
+- AI-generated image SEO metadata if it repeats the same phrase on every image. Alt text should describe the image, not stuff keywords.
+
+Missing:
+
+- Real differentiators: tested tips, failure modes, substitutions, storage/reheating details, sensory cues, equipment notes, and "why this works" sections that are specific to the dish.
+- SERP intent matching before writing. The prompt should classify whether the query wants quick dinner, authentic version, healthy variant, copycat, holiday, etc. A generic recipe post misses intent.
+- Originality checks across the owner's own sites. With 1-3 food blogs, internal cannibalization and near-duplicate recipe intros will become a bigger SEO problem than missing keywords.
+- Page experience gates: image dimensions, WebP size budget, LCP hero weight, schema validity, and broken internal links before publishing.
+- Pinterest creative diversity measured visually, not just text intent. Pins need different crops/compositions, not three text variations on the same template.
+
 
 ### Q6. Architecture risks we haven't listed
 Read section 5 skeptically: what important weakness did Claude miss?
 
 ### 🤖 REVIEWER ANSWER
+
+Important missing risks:
+
+- **No durable job queue / lock boundary.** `ctx.automationRunning` is an in-memory mutex in `src/server.js` / `action-executor.js`. Restart the server, run a manual script, or open another process and the lock is gone. Plan items and recipe states can disagree.
+- **Comment/code drift inside active modules.** Example: `warming-executor.js` comments still say saves happen while constants disable them; `day-plan-builder.js` comments mention warming pins that are not implemented. This is not harmless documentation drift; it is how risky Pinterest behavior comes back accidentally.
+- **Fail-open still exists in critical areas.** `_isRecipePublished()` correctly fails closed on 401/403/404, but it fails open on WP 5xx/network errors. For Pinterest account safety, network uncertainty should probably skip posting, not post anyway. `recipe-validator.js` also returns `valid: true` on fetch failures, which can hide broken public pages.
+- **Hard-coded shared sheet ID in `sheets-client.js`.** `MULTI_SITE_SHEET_ID` has a literal spreadsheet ID fallback. That blocks clean cloning and makes cross-PC setup fragile.
+- **Dependency/CDN fragility in the dashboard.** `dashboard/planifier.js` explicitly handles FullCalendar CDN failure. A local desktop automation console should not depend on external CDN availability to operate core scheduling UI.
+- **No artifact retention policy.** Flow images, screenshots, temp pin downloads, output recipe folders, browser profiles, and logs can grow without bounds. On a Windows desktop this eventually becomes a disk-space failure, not just clutter.
 
 
 ### Q7. Quick wins
@@ -295,6 +373,12 @@ Name up to 3 improvements not in section 6 that take <1 day each and pay off
 immediately.
 
 ### 🤖 REVIEWER ANSWER
+
+1. **Add a startup health banner/check endpoint.** Verify Dolphin desktop reachable, Google credentials present, Apps Script URL present if legacy sheets are still enabled, active site settings readable, WP REST auth works, Flow profile dir exists, free disk space above a threshold, and dashboard CDN assets reachable or locally vendored.
+
+2. **Change pin posting uncertainty to skip-by-default.** In `_isRecipePublished()` and `recipe-validator.js`, treat WP fetch timeout/5xx as "skip post, retry later" for Pinterest sessions. A missed pin slot is cheaper than pinning a dead or private URL.
+
+3. **Add artifact cleanup with retention settings.** Delete old `data/tmp/pins`, stale screenshots, old generated run artifacts, and oversized logs after N days, while preserving final recipe output and sacred Playwright profiles. Run it on server boot and expose a dry-run button in Settings.
 
 
 ---
