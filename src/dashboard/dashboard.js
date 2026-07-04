@@ -1070,6 +1070,7 @@
         document.getElementById('sDownloadFolder').value = settings.downloadFolder || '';
         // Content Quality & Nutrition
         document.getElementById('sContentQualityEnabled').checked = settings.contentQualityEnabled !== false;
+        document.getElementById('sFlowNetworkFastPath').checked = settings.flowNetworkFastPath === true;
         document.getElementById('sReadabilityTarget').value = settings.readabilityTarget || 60;
         document.getElementById('sNutritionApiKey').value = settings.nutritionApiKey || '';
         document.getElementById('sWpUrl').value = settings.wpUrl || '';
@@ -1383,6 +1384,7 @@
         downloadFolder: document.getElementById('sDownloadFolder').value.trim(),
         // Content Quality & Nutrition
         contentQualityEnabled: document.getElementById('sContentQualityEnabled').checked,
+        flowNetworkFastPath: document.getElementById('sFlowNetworkFastPath').checked,
         readabilityTarget: parseInt(document.getElementById('sReadabilityTarget').value) || 60,
         nutritionApiKey: document.getElementById('sNutritionApiKey').value.trim(),
         wpUrl: document.getElementById('sWpUrl').value.trim().replace(/\/+$/, ''),

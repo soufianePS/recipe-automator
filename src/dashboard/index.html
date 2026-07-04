@@ -676,6 +676,13 @@
                 <div class="prompt-hint">Checks readability and AI patterns per section after ChatGPT generates content. Only re-prompts bad sections.</div>
               </div>
               <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" id="sFlowNetworkFastPath" style="width:auto;" />
+                  Flow network fast-path (experimental)
+                </label>
+                <div class="prompt-hint">Generates Flow images with a direct API call instead of clicking Create — faster and far fewer selector failures. Safely falls back to clicking if anything is uncertain. Nano Banana Pro + Portrait only.</div>
+              </div>
+              <div class="form-group">
                 <label>Readability Target (Flesch score, 60-70 recommended)</label>
                 <input type="number" id="sReadabilityTarget" placeholder="60" min="30" max="100" />
               </div>
