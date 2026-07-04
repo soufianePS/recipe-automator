@@ -564,6 +564,11 @@ export class VerifiedGeneratorOrchestrator extends BaseOrchestrator {
     // fallback forward.
     this.flow.preferredModel = 'Nano Banana Pro';
 
+    // Network fast-path (direct API POST, no Create-button click). OFF unless
+    // explicitly enabled in settings or via FLOW_FAST_PATH=1. Bails to the UI
+    // path on any doubt, so enabling it can only speed things up, not break them.
+    this.flow.useNetworkFastPath = vgSettings?.flowNetworkFastPath === true || process.env.FLOW_FAST_PATH === '1';
+
     const geminiKey = await this._getGeminiApiKey();
     const maxRetries = vgSettings?.maxVerificationRetries || 3;
     let bestImage = null;

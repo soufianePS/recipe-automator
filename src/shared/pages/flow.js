@@ -111,6 +111,18 @@ export const PROGRESS_FALLBACK_DELAY      = 1000;
 export const PROGRESS_WAIT_POLL_DELAY     = 500;
 export const FILECHOOSER_TIMEOUT          = 5000;
 
+// ─── Network fast-path (direct API call, no Create-button click) ───
+// Reverse-engineered + verified 2026-07-04 (see memory flow-network-api-replay).
+// The composer's "Create" click ultimately POSTs a plain-JSON request to this
+// endpoint; we can build+send it ourselves from inside the logged-in page,
+// skipping the flakiest selectors (prompt-type + ref-attach + click).
+export const FLOW_API_BASE          = 'https://aisandbox-pa.googleapis.com/v1';
+export const FLOW_RECAPTCHA_SITEKEY = '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV';
+export const FLOW_RECAPTCHA_ACTION  = 'IMAGE_GENERATION';
+// Only enums we've CONFIRMED against the live API. Anything else → bail to UI.
+export const FLOW_MODEL_ENUM  = { 'Nano Banana Pro': 'GEM_PIX_2' };
+export const FLOW_ASPECT_ENUM = { PORTRAIT: 'IMAGE_ASPECT_RATIO_PORTRAIT' };
+
 // ═══════════════════════════════════════════════════════════
 // CLASS DEFINITION
 // ═══════════════════════════════════════════════════════════
@@ -132,6 +144,133 @@ export class FlowPage {
     // Network sniffer — captures generated images from network responses
     this._networkImages = [];    // captured image buffers during generation
     this._snifferActive = false; // whether we're currently listening
+
+    // Network fast-path — build+POST the generate request directly (no click).
+    // OFF by default; enable per-instance (orchestrator) or via FLOW_FAST_PATH=1.
+    // Any missing/uncertain input makes it bail cleanly to the UI click path.
+    this.useNetworkFastPath = process.env.FLOW_FAST_PATH === '1';
+    this._net = { installed: false, bearer: null, sessionId: null, projectId: null };
+  }
+
+  /**
+   * Install a one-time context listener that harvests the three things the
+   * direct API call needs but that only exist in live traffic: the OAuth
+   * Bearer token, the sessionId, and the projectId. All appear during normal
+   * project setup (sessions / logging / upload calls), so by the time we try
+   * the fast path they're captured. Read-only — never blocks or mutates traffic.
+   */
+  _installFlowNetworkCapture() {
+    if (this._net.installed || !this.context) return;
+    this._net.installed = true;
+    this.context.on('request', async (req) => {
+      try {
+        const url = req.url();
+        if (!url.includes('aisandbox-pa.googleapis.com')) return;
+        const h = await req.allHeaders();
+        if (h['authorization']) this._net.bearer = h['authorization'];
+        const pm = url.match(/\/projects\/([0-9a-f-]{36})\//) || url.match(/[?&]projectId=([0-9a-f-]{36})/);
+        if (pm) this._net.projectId = pm[1];
+        const pd = req.postData();
+        if (pd && pd.includes('sessionId')) {
+          const sm = pd.match(/"sessionId":"([^"]*)"/);
+          if (sm && sm[1]) this._net.sessionId = sm[1];
+        }
+      } catch {}
+    });
+  }
+
+  _looksLikeMediaId(s) {
+    // Flow media ids are long id/token strings (UUIDs or base64url). A filename
+    // fallback (e.g. "background-hero.jpg") has a dot/space and is rejected.
+    return typeof s === 'string' && /^[A-Za-z0-9_-]{16,}$/.test(s) && !s.includes('.');
+  }
+
+  /**
+   * Try to generate by POSTing the request directly (no Create button).
+   * Returns true only if it fully succeeded (200 + image downloaded).
+   * Returns false on ANY doubt so the caller falls back to the UI path.
+   */
+  async _tryNetworkGenerate(flowPrompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths) {
+    const modelEnum = FLOW_MODEL_ENUM[this.preferredModel];
+    const aspectEnum = FLOW_ASPECT_ENUM[aspectRatio];
+    if (!modelEnum)  { Logger.info(`[Flow/net] model "${this.preferredModel}" not confirmed for fast-path — bail`); return false; }
+    if (!aspectEnum) { Logger.info(`[Flow/net] aspect "${aspectRatio}" not confirmed for fast-path — bail`); return false; }
+
+    // Resolve every reference's media id from the session cache (populated when
+    // the bg/context images were uploaded). Bail if any isn't a real id.
+    const refPaths = [backgroundFilePath, ...(contextFilePaths || [])].filter(p => p && existsSync(p));
+    const mediaIds = [];
+    for (const p of refPaths) {
+      const id = this._getCachedGeneratedName(p);
+      if (!this._looksLikeMediaId(id)) { Logger.info(`[Flow/net] no cached media id for ${basename(p)} — bail to UI`); return false; }
+      mediaIds.push(id);
+    }
+
+    const projectId = this._net.projectId
+      || (this.page.url().match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/) || [])[1];
+    const bearer = this._net.bearer;
+    const sessionId = this._net.sessionId;
+    if (!projectId || !bearer || !sessionId) {
+      Logger.info(`[Flow/net] missing ctx (project=${!!projectId} bearer=${!!bearer} session=${!!sessionId}) — bail to UI`);
+      return false;
+    }
+
+    // Build the payload + mint a fresh reCAPTCHA token, all inside the page so
+    // the token is valid for this origin, then POST it (auth carried manually).
+    const endpoint = `${FLOW_API_BASE}/projects/${projectId}/flowMedia:batchGenerateImages`;
+    const resp = await this.page.evaluate(async (a) => {
+      let token;
+      try { token = await window.grecaptcha.enterprise.execute(a.siteKey, { action: a.action }); }
+      catch (e) { return { error: 'recaptcha: ' + String(e) }; }
+      if (!token) return { error: 'no recaptcha token' };
+      const rc = { recaptchaContext: { token, applicationType: 'RECAPTCHA_APPLICATION_TYPE_WEB' }, projectId: a.projectId, tool: 'PINHOLE', sessionId: a.sessionId };
+      const seed = Math.floor(Math.random() * 900000) + 1000;
+      const batchId = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now());
+      const body = {
+        clientContext: rc,
+        mediaGenerationContext: { batchId },
+        useNewMedia: true,
+        requests: [{
+          clientContext: rc,
+          imageModelName: a.model,
+          imageAspectRatio: a.aspect,
+          structuredPrompt: { parts: [{ text: a.prompt }] },
+          seed,
+          imageInputs: a.mediaIds.map(name => ({ imageInputType: 'IMAGE_INPUT_TYPE_REFERENCE', name })),
+        }],
+      };
+      try {
+        const res = await fetch(a.endpoint, { method: 'POST', headers: { authorization: a.bearer, 'content-type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+        return { status: res.status, text: await res.text() };
+      } catch (e) { return { error: 'fetch: ' + String(e) }; }
+    }, { endpoint, bearer, sessionId, projectId, siteKey: FLOW_RECAPTCHA_SITEKEY, action: FLOW_RECAPTCHA_ACTION, model: modelEnum, aspect: aspectEnum, prompt: flowPrompt, mediaIds });
+
+    if (!resp || resp.error) { Logger.warn(`[Flow/net] in-page error: ${resp?.error || 'null'} — bail`); return false; }
+    if (resp.status !== 200) { Logger.warn(`[Flow/net] HTTP ${resp.status} — bail to UI (body: ${String(resp.text).slice(0, 160)})`); return false; }
+
+    let data; try { data = JSON.parse(resp.text); } catch { Logger.warn('[Flow/net] response not JSON — bail'); return false; }
+    const gen = data?.media?.[0]?.image?.generatedImage;
+    const fifeUrl = gen?.fifeUrl;
+    if (!fifeUrl) { Logger.warn('[Flow/net] no image URL in response — bail'); return false; }
+
+    // Download the signed image URL (public, no auth) and save.
+    let buf;
+    try {
+      const dl = await fetch(fifeUrl);
+      if (!dl.ok) { Logger.warn(`[Flow/net] image download HTTP ${dl.status} — bail`); return false; }
+      buf = Buffer.from(await dl.arrayBuffer());
+    } catch (e) { Logger.warn(`[Flow/net] image download failed (${e.message}) — bail`); return false; }
+
+    try { mkdirSync(dirname(outputPath), { recursive: true }); } catch {}
+    try { writeFileSync(outputPath, buf); } catch (e) { if (!existsSync(outputPath)) { Logger.warn(`[Flow/net] write failed (${e.message}) — bail`); return false; } }
+    if (!existsSync(outputPath) || statSync(outputPath).size < 5000) { Logger.warn('[Flow/net] saved file too small — bail'); return false; }
+
+    // Cache the NEW image's media id so later steps can reference it, exactly
+    // like the click path does after download.
+    const newId = data?.media?.[0]?.name;
+    if (newId) this._cacheGeneratedName(outputPath, newId);
+    Logger.success(`[Flow/net] fast-path image saved: ${Math.round(statSync(outputPath).size / 1024)}KB`);
+    return true;
   }
 
   _cacheGeneratedName(filePath, pickerName) {
@@ -568,6 +707,19 @@ export class FlowPage {
     // 8. Screenshot before Create (debug)
     await this._screenshot('pre-create');
 
+    // 8b. NETWORK FAST-PATH — build+POST the generate request directly, skipping
+    //     the Create-button click (the flakiest step). Bails to the UI path on
+    //     ANY doubt; generate() still validates the resulting file either way.
+    if (this.useNetworkFastPath) {
+      try {
+        const fast = await this._tryNetworkGenerate(flowPrompt, aspectRatio, outputPath, backgroundFilePath, contextFilePaths);
+        if (fast) { Logger.success('[Flow] Generated via network fast-path (no button click)'); return true; }
+        Logger.warn('[Flow] Network fast-path bailed — using UI click path');
+      } catch (e) {
+        Logger.warn(`[Flow] Network fast-path error (${e.message.split('\n')[0]}) — using UI click path`);
+      }
+    }
+
     // 9. Start network sniffer before Create
     this._startNetworkSniffer();
 
@@ -947,6 +1099,9 @@ export class FlowPage {
    * If the background file changes, uploads the new one to the existing canvas.
    */
   async _ensureProject(backgroundFilePath, aspectRatio) {
+    // Start harvesting bearer/sessionId/projectId from setup traffic (for the
+    // network fast-path). No-op after the first install and when fast-path is off.
+    if (this.useNetworkFastPath) this._installFlowNetworkCapture();
     const bgName = basename(backgroundFilePath);
 
     // Check if project is still alive
