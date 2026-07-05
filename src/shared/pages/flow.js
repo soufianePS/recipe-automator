@@ -157,6 +157,8 @@ export class FlowPage {
 
   /** Ensure a labs.google page is loaded so cookies + bearer + grecaptcha exist. */
   async _bootstrapApi() {
+    if (this._net.bearer && this._api.projectId) return true; // already bootstrapped this recipe
+    Logger.info('[Flow/api] bootstrapping no-UI session (page load + auth)...');
     this._installFlowNetworkCapture();
     if (!this.page || (this.page.isClosed && this.page.isClosed())) {
       this.page = await this.context.newPage();
@@ -174,6 +176,7 @@ export class FlowPage {
       await this._delay(500);
     }
     if (!recap) { Logger.warn('[Flow/api] grecaptcha not ready — cannot use API mode'); return false; }
+    Logger.info('[Flow/api] session ready (bearer + reCAPTCHA ok)');
     return true;
   }
 
@@ -219,6 +222,7 @@ export class FlowPage {
 
   /** Generate via API (mint recaptcha, fabricate sessionId), download the result. */
   async _apiGenerateImage(fullPrompt, aspectEnum, modelEnum, mediaIds, outputPath) {
+    Logger.info(`[Flow/api] requesting generation → ${basename(outputPath)} (${mediaIds.length} ref(s), ${modelEnum}, ${(fullPrompt || '').length} chars)`);
     const resp = await this.page.evaluate(async (a) => {
       let token;
       try { token = await window.grecaptcha.enterprise.execute(a.siteKey, { action: a.action }); }
