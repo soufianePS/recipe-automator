@@ -186,11 +186,21 @@ async function executorTick() {
     // any slot previously marked "missed" (oldest first) so a busy day still
     // finishes completely instead of permanently dropping work — one per idle
     // tick, same guards (automationRunning/re-entrancy) as a normal fire.
+    //
+    // BUT only catch up slots missed RECENTLY. Without this cap, starting the
+    // server hours/days later re-ran ancient missed slots on boot (e.g.
+    // yesterday's 09:58 slot firing at 03:25 the next day), which looks like the
+    // planifier "firing on startup". Anything older than catchUpMaxAgeMinutes
+    // stays missed and is never run. Default 120 min; set to 0 to disable
+    // catch-up entirely (only run slots at their real scheduled time).
+    const catchUpMaxAgeMin = config.rules?.catchUpMaxAgeMinutes ?? 120;
     for (const date of dates) {
       const plan = await loadPlan(date);
       if (!plan) continue;
       const missed = plan.items
-        .filter(i => i.status === 'missed')
+        .filter(i => i.status === 'missed'
+          && catchUpMaxAgeMin > 0
+          && (now - new Date(i.scheduledAt).getTime()) / 60000 <= catchUpMaxAgeMin)
         .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
       if (!missed) continue;
 
