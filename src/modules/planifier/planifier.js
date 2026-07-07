@@ -24,6 +24,7 @@ import { Logger } from '../../shared/utils/logger.js';
 let _weeklyTickTimer = null;
 let _executorTickTimer = null;
 let _agingTickTimer = null;
+let _dailySummaryTickTimer = null;
 let _serverCtx = null;
 let _executorRunning = false;   // re-entrancy guard for the executor tick itself
 let _busySince = null;          // timestamp the CURRENT automationRunning=true streak began (null = not busy)
@@ -187,20 +188,24 @@ async function executorTick() {
     // finishes completely instead of permanently dropping work — one per idle
     // tick, same guards (automationRunning/re-entrancy) as a normal fire.
     //
-    // BUT only catch up slots missed RECENTLY. Without this cap, starting the
-    // server hours/days later re-ran ancient missed slots on boot (e.g.
-    // yesterday's 09:58 slot firing at 03:25 the next day), which looks like the
-    // planifier "firing on startup". Anything older than catchUpMaxAgeMinutes
-    // stays missed and is never run. Default 120 min; set to 0 to disable
-    // catch-up entirely (only run slots at their real scheduled time).
+    // Cap applies ONLY to slots left over from a PREVIOUS calendar day (e.g.
+    // yesterday's 09:58 slot still sitting there at 03:25 the next day) — those
+    // are capped to catchUpMaxAgeMinutes (default 120) so ancient slots don't
+    // re-fire on boot days later, which looks like the planifier "firing on
+    // startup". Slots missed EARLIER TODAY are always eligible for catch-up
+    // regardless of how many hours ago they went stale — a crash/downtime
+    // stretch of, say, 4+ hours during the active window used to permanently
+    // drop most of the day's planned pins; now they're retried any time later
+    // the same day. Set catchUpMaxAgeMinutes to 0 to disable cross-day
+    // catch-up entirely (same-day catch-up is never disabled by this setting).
     const catchUpMaxAgeMin = config.rules?.catchUpMaxAgeMinutes ?? 120;
     for (const date of dates) {
       const plan = await loadPlan(date);
       if (!plan) continue;
+      const isToday = date === todayDate;
       const missed = plan.items
         .filter(i => i.status === 'missed'
-          && catchUpMaxAgeMin > 0
-          && (now - new Date(i.scheduledAt).getTime()) / 60000 <= catchUpMaxAgeMin)
+          && (isToday || (catchUpMaxAgeMin > 0 && (now - new Date(i.scheduledAt).getTime()) / 60000 <= catchUpMaxAgeMin)))
         .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
       if (!missed) continue;
 
@@ -285,6 +290,71 @@ async function agingTick() {
     Logger.info(`[Planifier] aging tick: ${promotions.length} account(s) promoted`);
   } catch (e) {
     Logger.warn(`[Planifier] agingTick error: ${e.message}`);
+  }
+}
+
+/**
+ * Aggregate how a day's Pinterest pin slots actually went: how many were
+ * planned (willPost:true), how many fired but still didn't post a pin
+ * (browse-only fallback, with the reason), and how many never fired at all
+ * (missed). Reads the plan (for planned/missed counts) plus history.json
+ * (for the per-slot outcome recorded by runPlanItem/runPinterestSession).
+ */
+async function buildDaySummary(date) {
+  const plan = await loadPlan(date);
+  if (!plan) return null;
+  const pinSlots = plan.items.filter(i => i.type === 'pinterest-session' && i.willPost);
+  const planned = pinSlots.length;
+  const missed = pinSlots.filter(i => i.status === 'missed').length;
+
+  const history = await loadHistory();
+  const dayRuns = history.items.filter(h =>
+    h.date === date && h.type === 'pinterest-session' && (h.status === 'done' || h.status === 'error'));
+
+  let posted = 0;
+  const skipReasons = {};
+  for (const h of dayRuns) {
+    if (h.result?.posted) { posted++; continue; }
+    const reason = h.result?.reason || h.error || 'unknown';
+    skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+  }
+  const ranButNoPost = dayRuns.length - posted;
+  return { date, planned, posted, missed, ranButNoPost, skipReasons };
+}
+
+/**
+ * Once per day, shortly after the active window closes, log a plain summary
+ * of how many of the day's planned pins actually got posted vs. missed vs.
+ * ran-but-fell-back-to-browse-only (with reasons) — so a shortfall like
+ * "planned 10, only 2 posted" is diagnosable from the log instead of
+ * requiring a manual dig through scattered per-session log lines.
+ */
+async function dailySummaryTick() {
+  try {
+    const config = await loadConfig();
+    if (!config.enabled) return;
+    const now = new Date();
+    const activeHourEnd = config.rules?.activeHourEnd ?? 22;
+    if (now.getHours() < activeHourEnd) return;  // day's slots aren't all done yet
+    const date = todayKey();
+    if (config._lastSummaryDate === date) return;  // already logged today
+
+    const summary = await buildDaySummary(date);
+    if (!summary) return;
+
+    Logger.info(`[Planifier] Daily pin summary ${date}: planned ${summary.planned}, posted ${summary.posted}, missed ${summary.missed}, ran-but-no-pin ${summary.ranButNoPost}${Object.keys(summary.skipReasons).length ? ` — reasons: ${JSON.stringify(summary.skipReasons)}` : ''}`);
+    await appendHistory({
+      type: 'daily-summary', site: null, accountId: null, date,
+      status: 'summary',
+      message: `planned ${summary.planned}, posted ${summary.posted}, missed ${summary.missed}, ran-but-no-pin ${summary.ranButNoPost}`,
+      result: summary,
+    });
+
+    const fresh = await loadConfig();
+    fresh._lastSummaryDate = date;
+    await saveConfig(fresh);
+  } catch (e) {
+    Logger.warn(`[Planifier] dailySummaryTick error: ${e.message}`);
   }
 }
 
@@ -409,12 +479,18 @@ export const Planifier = {
       // the server was off applies immediately.
       agingTick().catch(() => {});
     }
+    if (!_dailySummaryTickTimer) {
+      _dailySummaryTickTimer = setInterval(() => dailySummaryTick().catch(() => {}), WEEKLY_TICK_INTERVAL_MS);
+      Logger.info('[Planifier] daily pin summary tick armed (every 30 min, logs once/day after active hours end)');
+      dailySummaryTick().catch(() => {});
+    }
   },
 
   stop() {
     if (_weeklyTickTimer) { clearInterval(_weeklyTickTimer); _weeklyTickTimer = null; }
     if (_executorTickTimer) { clearInterval(_executorTickTimer); _executorTickTimer = null; }
     if (_agingTickTimer) { clearInterval(_agingTickTimer); _agingTickTimer = null; }
+    if (_dailySummaryTickTimer) { clearInterval(_dailySummaryTickTimer); _dailySummaryTickTimer = null; }
   },
 
   // ── Config ──────────────────────────────────────────────────

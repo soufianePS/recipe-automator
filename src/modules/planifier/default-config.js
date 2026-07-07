@@ -49,6 +49,12 @@ export const PLANIFIER_DEFAULTS = {
 
     // Anti-burst safety
     missedSlotDropAfterMinutes: 30,  // if slot > N min late at tick, mark missed
+    // How stale a PREVIOUS-DAY leftover "missed" slot can be and still get
+    // retried (in minutes). Only applies cross-day — a slot missed earlier
+    // TODAY is always retried regardless of this value, so a crash/downtime
+    // stretch during the active window doesn't permanently lose that day's
+    // planned pins. Set to 0 to disable cross-day catch-up entirely.
+    catchUpMaxAgeMinutes: 120,
 
     // Humanization
     sessionsWithoutPostPct: 18,      // % of pinterest sessions that only browse

@@ -103,6 +103,74 @@ export function clearLiveWpStatusCache(siteName, postIds) {
 }
 
 /**
+ * Whether draftUrl contains a parseable numeric ?post=N. Unlike a transient
+ * WP fetch error, a missing/malformed post id will never resolve — used to
+ * fail closed (reject) rather than fail open (let through) in the pin picker.
+ */
+function _hasParseablePostId(draftUrl) {
+  if (!draftUrl) return false;
+  try {
+    const postId = new URL(draftUrl).searchParams.get('post');
+    return !!postId && /^\d+$/.test(postId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Marker prefix stored in col X (validation) when a recipe's draftUrl is
+ * permanently broken and a title search on WordPress found no confident
+ * match. Distinguishes a "give up, needs a human" flag from an ordinary
+ * recipe-quality "invalid" validation, and — unlike ordinary validation —
+ * is skipped unconditionally on every future loop (see pickNextEligiblePin),
+ * not just when the caller opts into skipInvalid.
+ */
+const BROKEN_LINK_MARKER = 'BROKEN_LINK:';
+
+/**
+ * Look up a post on WordPress by title via authenticated REST search, for
+ * recipes whose stored draftUrl is broken/unparseable. Only returns a match
+ * when exactly one candidate's title matches (case-insensitively) — an
+ * ambiguous or empty result is treated as "not found" rather than guessing.
+ */
+async function _searchWpPostByTitle(settings, title) {
+  const { wpUrl, wpUsername, wpAppPassword } = settings;
+  if (!wpUrl || !title) return null;
+  const norm = (s) => (s || '').toLowerCase().trim();
+  const auth = (wpUsername && wpAppPassword)
+    ? 'Basic ' + Buffer.from(`${wpUsername}:${wpAppPassword}`).toString('base64')
+    : null;
+  try {
+    const params = new URLSearchParams({ search: title, per_page: '10', _fields: 'id,link,title,status' });
+    if (auth) params.set('status', 'any'); // include drafts/private when authed
+    const restUrl = `${wpUrl.replace(/\/$/, '')}/wp-json/wp/v2/posts?${params.toString()}`;
+    const res = await fetch(restUrl, {
+      headers: auth ? { Authorization: auth } : {},
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!Array.isArray(json) || json.length === 0) return null;
+    const matches = json.filter(p => norm(p.title?.rendered || p.title) === norm(title));
+    if (matches.length !== 1) return null; // 0 = not found, >1 = ambiguous — don't guess
+    const post = matches[0];
+    return { id: post.id, status: post.status, editLink: `${wpUrl.replace(/\/$/, '')}/wp-admin/post.php?post=${post.id}&action=edit` };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Overwrite col C (draftUrl) for a row once a broken link has been resolved
+ * via title search, so future loops read the corrected URL directly.
+ */
+async function _updateDraftUrlInSheet(siteName, rowIndex, newDraftUrl) {
+  const settings = await loadSiteSettingsForPlanifier(siteName);
+  const range = `${settings.sheetTabName}!C${rowIndex}`;
+  await SheetsAPI.writeRange(settings.sheetId, range, [[newDraftUrl]], settings);
+}
+
+/**
  * Fetch live WordPress post status (publish/draft/future/private/pending/trash)
  * using authenticated REST. Used by the recipes dashboard to show real status
  * regardless of what's cached in sheet col R. Cached 5 min per (site, postId).
@@ -793,12 +861,51 @@ export async function pickNextEligiblePin(planifierConfig, siteName, accountId, 
   //   3. Fresh fetch (writes back to sheet for next time)
   const checkedRecipes = new Map();
   const liveStatusByRow = new Map();
+  const settingsForSite = await loadSiteSettings(siteName);
   for (const c of candidates) {
+    // A row already flagged BROKEN_LINK on a previous loop: don't re-try the
+    // title search every time (it already failed once) — skip unconditionally
+    // until a human fixes it and clears col X.
+    const cachedIssue = c.recipe.validation?.issues?.[0]?.msg || '';
+    if (!c.recipe.validation?.valid && cachedIssue.startsWith(BROKEN_LINK_MARKER)) {
+      Logger.info(`[PinPool] Skipping ${c.recipe.topic} pin#${c.pin.pinIndex} — flagged ${BROKEN_LINK_MARKER} (needs manual fix, see col X)`);
+      continue;
+    }
+
     // HARD RULE: only pin recipes that are LIVE-PUBLISHED on WordPress. Skip
     // draft / future (scheduled) / private / pending / trashed so a pin never
     // links to a non-public URL. Defense-in-depth with the post-time
     // _isRecipePublished guard. live===null = transient WP error → let it fall
     // through to that final guard rather than blocking the whole queue.
+    //
+    // Exception: a draftUrl with no parseable numeric ?post=N is NOT transient
+    // — it will never resolve on its own. Instead of giving up immediately,
+    // try to find the real post by title search; if that resolves, patch the
+    // sheet so future loops read the fixed URL directly. If it doesn't
+    // resolve, flag the row (BROKEN_LINK) so we stop wasting time on it and
+    // the exact problem is visible for a human to fix.
+    if (!_hasParseablePostId(c.recipe.draftUrl)) {
+      const found = await _searchWpPostByTitle(settingsForSite, c.recipe.topic);
+      if (found) {
+        Logger.info(`[PinPool] Resolved broken draftUrl for "${c.recipe.topic}" via title search → post #${found.id} (status: ${found.status})`);
+        try {
+          await _updateDraftUrlInSheet(siteName, c.recipe.rowIndex, found.editLink);
+          c.recipe.draftUrl = found.editLink;
+        } catch (e) {
+          Logger.warn(`[PinPool] Could not write resolved draftUrl back to sheet: ${e.message}`);
+        }
+        // fall through to the live-status check below with the corrected URL
+      } else {
+        const msg = `${BROKEN_LINK_MARKER} no ?post=N in draftUrl ("${c.recipe.draftUrl || '(empty)'}") and title search for "${c.recipe.topic}" found no confident match — fix the sheet's draftUrl (col C) manually`;
+        Logger.warn(`[PinPool] ${c.recipe.topic} pin#${c.pin.pinIndex} — ${msg}`);
+        try {
+          await writeValidationToSheet(siteName, c.recipe.rowIndex, { valid: false, issues: [{ kind: 'broken-link', msg }] });
+        } catch (e) {
+          Logger.warn(`[PinPool] Could not write BROKEN_LINK flag to sheet: ${e.message}`);
+        }
+        continue;
+      }
+    }
     let live = liveStatusByRow.get(c.recipe.rowIndex);
     if (live === undefined) { live = await fetchLiveWpStatus(siteName, c.recipe.draftUrl); liveStatusByRow.set(c.recipe.rowIndex, live); }
     if (live && live !== 'publish') {

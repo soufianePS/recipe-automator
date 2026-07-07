@@ -95,8 +95,26 @@ async function _connectDolphin(profileId) {
   const context = browser.contexts()[0] || (await browser.newContext());
   const page = context.pages()[0] || (await context.newPage());
   const cleanup = async () => {
+    try {
+      for (const ctx of browser.contexts()) {
+        for (const p of ctx.pages()) {
+          try { await p.close(); } catch {}
+        }
+      }
+    } catch {}
     try { await browser.close(); } catch {}
-    try { await dolphin.stopProfile(profileId); Logger.info(`[Executor] Dolphin profile ${profileId} stopped`); } catch (e) { Logger.warn(`[Executor] stopProfile failed: ${e.message}`); }
+    try {
+      await dolphin.stopProfile(profileId);
+      Logger.info(`[Executor] Dolphin profile ${profileId} stopped`);
+    } catch (e) {
+      Logger.warn(`[Executor] stopProfile failed, retrying once: ${e.message}`);
+      try {
+        await dolphin.stopProfile(profileId);
+        Logger.info(`[Executor] Dolphin profile ${profileId} stopped (retry)`);
+      } catch (e2) {
+        Logger.warn(`[Executor] stopProfile retry failed — profile ${profileId} may still be running: ${e2.message}`);
+      }
+    }
   };
   return { browser, context, page, dolphin, profileId, cleanup };
 }
@@ -212,6 +230,27 @@ async function runPinterestSession(item, config, serverCtx = null) {
     }
   } catch (e) { Logger.warn(`[Executor] categories unavailable: ${e.message}`); }
 
+  // HARD GUARD: recipe must be PUBLISH on WP — pinning to drafts/futures sends
+  // Pinterest traffic to a 404 or login wall, hurts domain trust. Checked HERE
+  // (before Dolphin even starts) rather than after the browse session, so a
+  // recipe with a bad/missing draftUrl doesn't burn a 20+ min Dolphin session
+  // only to be rejected at the very end.
+  if (pickedPin) {
+    const pubCheck = await _isRecipePublished(pickedPin.recipe.draftUrl, wpAuth);
+    if (!pubCheck.ok) {
+      Logger.warn(`[Executor] Skipping pin before browse session: ${pubCheck.reason}`);
+      return {
+        ok: true,
+        posted: false,
+        skipped: true,
+        recipe: pickedPin.recipe.topic,
+        pinIndex: pickedPin.pin.pinIndex,
+        reason: `recipe-not-published (${pubCheck.status})`,
+        browseEvents: 0,
+      };
+    }
+  }
+
   // Pre-roll the session (deterministic — what the user previewed).
   // If we're going to post a pin, tell the simulator to warm up specifically on
   // THAT recipe (search it + save to its category board) before posting.
@@ -247,21 +286,6 @@ async function runPinterestSession(item, config, serverCtx = null) {
 
     if (pickedPin) {
       Logger.info(`[Executor] Now posting pin: ${pickedPin.recipe.topic} / pin#${pickedPin.pin.pinIndex}`);
-      // HARD GUARD: recipe must be PUBLISH on WP — pinning to drafts/futures
-      // sends Pinterest traffic to a 404 or login wall, hurts domain trust.
-      const pubCheck = await _isRecipePublished(pickedPin.recipe.draftUrl, wpAuth);
-      if (!pubCheck.ok) {
-        Logger.warn(`[Executor] Skipping pin: ${pubCheck.reason}`);
-        return {
-          ok: true,
-          posted: false,
-          skipped: true,
-          recipe: pickedPin.recipe.topic,
-          pinIndex: pickedPin.pin.pinIndex,
-          reason: `recipe-not-published (${pubCheck.status})`,
-          browseEvents: plan.events.length,
-        };
-      }
       Logger.info(`[Executor] Recipe status check: publish ✓`);
       // A dead pin image (e.g. recipe regenerated → old pin URL 404s) must NOT
       // crash the whole session. The human browse already happened; just skip
