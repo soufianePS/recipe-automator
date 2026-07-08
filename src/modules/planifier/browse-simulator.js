@@ -235,30 +235,62 @@ export function simulateSession(config, siteName, override = {}, recipeTitles = 
   }
 
   // ── Session flow ────────────────────────────────────────────────
-  // 1. Open + settle on the home feed
-  push(ACTIONS.OPEN, 'Open Pinterest → land on home feed', rand(3, 7));
-  push(ACTIONS.WAIT, 'Wait for feed to render, glance at top', rand(2, 5));
-
-  // 2. Initial feed scroll
-  scrollBeat(rand(bb.initialFeedScrollSecondsMin ?? 15, bb.initialFeedScrollSecondsMax ?? 60), 'Initial feed scroll');
-
-  // 2b. If this session will POST a pin, warm up specifically on THAT recipe
-  // first: search it, open a result, and save it to its category board — the
-  // same board we then post our own pin to. Happens before the main loop and
-  // therefore before the post.
   if (targetRecipe) {
-    searchBeat(targetRecipe);
-  }
+    // FAST PATH (owner request 2026-07-08): a session that's about to post a
+    // pin shouldn't run the full multi-minute browse simulation first — just
+    // open, search the exact recipe we're posting, glance at a result briefly,
+    // then hand off to posting. Bounded to ~30s-2min total instead of the
+    // 3-20min a pure browse-only session takes.
+    push(ACTIONS.OPEN, 'Open Pinterest → land on home feed', rand(2, 4));
+    push(ACTIONS.SEARCH, `Search "${targetRecipe.title}" (recipe from sheet) — TARGET recipe (warm-up before posting)`,
+      rand(6, 10), { keyword: targetRecipe.title, isRecipe: true, recipeCategory: targetRecipe.category, target: true });
+    counters.searches++; counters.recipeSearches++;
+    push(ACTIONS.SCROLL, 'Scroll search results', rand(10, 25), { irregular: true });
+    counters.scrollBursts++;
+    push(ACTIONS.CLOSEUP, 'Open a search-result pin', rand(2, 4));
+    counters.closeups++;
+    push(ACTIONS.WAIT, 'Read the result', rand(6, 18), { reading: true });
+    if (allowSaves) {
+      push(ACTIONS.SAVE, `Save to the board containing "${targetRecipe.category}" (target recipe — same board we post to)`,
+        rand(4, 8), { boardHint: targetRecipe.category, target: true });
+      counters.saves++;
+    }
+    push(ACTIONS.BACK, 'Back to results', rand(1, 3));
 
-  // 3. Main loop — fill the (variable) target duration with weighted beats
-  let guard = 0;
-  while (t < targetSeconds && guard++ < 200) {
-    runBeat(pickBeat());
-  }
+    // Safety clamp: keep the whole quick warm-up inside [30s, 120s] no matter
+    // how the random draws above stacked up, by nudging the "read" event
+    // (the most natural place to absorb slack) rather than any fixed step.
+    const MIN_TOTAL = 30, MAX_TOTAL = 120;
+    const readEvent = events.find(e => e.detail === 'Read the result');
+    if (t < MIN_TOTAL && readEvent) {
+      const add = MIN_TOTAL - t;
+      readEvent.durSec = Number((readEvent.durSec + add).toFixed(1));
+      t += add;
+    } else if (t > MAX_TOTAL && readEvent) {
+      const cut = Math.min(readEvent.durSec - 2, t - MAX_TOTAL);
+      if (cut > 0) { readEvent.durSec = Number((readEvent.durSec - cut).toFixed(1)); t -= cut; }
+    }
 
-  // 4. Wind down + close
-  scrollBeat(rand(bb.finalFeedScrollSecondsMin ?? 15, bb.finalFeedScrollSecondsMax ?? 45), 'Final wind-down scroll');
-  push(ACTIONS.CLOSE, 'Close browser (session complete)', 0);
+    push(ACTIONS.CLOSE, 'Close browser (session complete)', 0);
+  } else {
+    // Normal browse-only session — full variable-length human simulation.
+    // 1. Open + settle on the home feed
+    push(ACTIONS.OPEN, 'Open Pinterest → land on home feed', rand(3, 7));
+    push(ACTIONS.WAIT, 'Wait for feed to render, glance at top', rand(2, 5));
+
+    // 2. Initial feed scroll
+    scrollBeat(rand(bb.initialFeedScrollSecondsMin ?? 15, bb.initialFeedScrollSecondsMax ?? 60), 'Initial feed scroll');
+
+    // 3. Main loop — fill the (variable) target duration with weighted beats
+    let guard = 0;
+    while (t < targetSeconds && guard++ < 200) {
+      runBeat(pickBeat());
+    }
+
+    // 4. Wind down + close
+    scrollBeat(rand(bb.finalFeedScrollSecondsMin ?? 15, bb.finalFeedScrollSecondsMax ?? 45), 'Final wind-down scroll');
+    push(ACTIONS.CLOSE, 'Close browser (session complete)', 0);
+  }
 
   return {
     events,
