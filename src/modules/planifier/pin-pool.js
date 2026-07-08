@@ -64,7 +64,14 @@ async function _readSheetReliable(sheetId, tabName) {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId, range: `${tabName}!A1:ZZ`, valueRenderOption: 'UNFORMATTED_VALUE',
     });
-    return res.data.values || [];
+    const rows = res.data.values || [];
+    // UNFORMATTED_VALUE returns non-string types too (numbers, booleans) for
+    // any cell that isn't plain text — e.g. a numeric-looking value, a
+    // checkbox, or a date. Every column reader in this file calls
+    // `(row[idx] || '').trim()`, which throws on anything but a string. Column
+    // D (timestamp, index 3) is the one column parseGvizDate deliberately
+    // wants as a raw number — leave it alone. Stringify every other cell.
+    return rows.map(row => row.map((cell, i) => (i === 3 ? cell : (cell === undefined || cell === null ? '' : String(cell)))));
   }
   return SheetsAPI.readSheet(sheetId, tabName);
 }
