@@ -363,10 +363,29 @@ async function runPinterestSession(item, config, serverCtx = null) {
       // Persist posted_at. For extras (campaign-generated, not in sheet F/J/N)
       // we only patch pin-history. For regular pins (slot 0-2) we update the
       // recipe sheet U/V/W cell as before.
+      let sheetWriteFailed = false;
       if (pickedPin.pin.isExtra) {
         Logger.info(`[Executor] Extra pin — skipping sheet U/V/W update (will patch pin-history instead)`);
       } else {
-        await markPinPosted(item.site, pickedPin.recipe.rowIndex, pickedPin.pin.pinIndex);
+        // The pin has ALREADY posted to Pinterest at this point — a failure
+        // here is a bookkeeping problem, not a posting failure. Don't let it
+        // masquerade as a generic session error (which would hide that the
+        // post succeeded); instead surface it loudly so the sheet gets fixed,
+        // since an unrecorded postedAt means this exact pin will look
+        // eligible again and can get posted a second time next run.
+        try {
+          await markPinPosted(item.site, pickedPin.recipe.rowIndex, pickedPin.pin.pinIndex);
+        } catch (e) {
+          sheetWriteFailed = true;
+          Logger.error(`[Executor] POSTED TO PINTEREST but sheet write failed for ${item.site} row ${pickedPin.recipe.rowIndex} pin#${pickedPin.pin.pinIndex} — this pin may get posted AGAIN next run unless fixed manually: ${e.message}`);
+          try {
+            const tg = config.notifications?.telegram;
+            if (tg?.enabled && tg?.botToken && tg?.chatId) {
+              const { sendTelegram } = await import('../../shared/utils/telegram-notifier.js');
+              await sendTelegram(tg, `⚠️ Pin posted to Pinterest but sheet mark-as-posted failed (${item.site}, row ${pickedPin.recipe.rowIndex}, pin#${pickedPin.pin.pinIndex}). It may get re-posted — check the sheet.`);
+            }
+          } catch {}
+        }
       }
       // Audit: patch the pin-history row for this image with pinterest_url +
       // posted_at + account_id. Best-effort — never blocks the return.
@@ -379,7 +398,7 @@ async function runPinterestSession(item, config, serverCtx = null) {
       } catch (e) {
         Logger.warn(`[PinHistory] post-patch failed (non-fatal): ${e.message}`);
       }
-      return { ok: true, posted: true, pinUrl: result.pinUrl, recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex };
+      return { ok: true, posted: true, pinUrl: result.pinUrl, recipe: pickedPin.recipe.topic, pinIndex: pickedPin.pin.pinIndex, sheetWriteFailed };
     }
 
     return {

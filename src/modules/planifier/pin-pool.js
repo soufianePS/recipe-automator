@@ -959,8 +959,39 @@ export async function markPinPosted(siteName, rowIndex, pinIndex, when = null) {
   if (!col) throw new Error(`Invalid pinIndex: ${pinIndex}`);
   const ts = when || new Date().toISOString();
   const range = `${settings.sheetTabName}!${col}${rowIndex}`;
-  await SheetsAPI.writeRange(settings.sheetId, range, [[ts]], settings, { bgColor: POSTED_COLOR });
-  Logger.info(`[PinPool] marked ${siteName} row ${rowIndex} pin#${pinIndex} posted at ${ts}`);
+  const cellIdx = colIdx(col);
+
+  // The Apps Script write endpoint has been observed to silently drop or
+  // mis-assign rapid writes (confirmed while investigating broken draftUrls —
+  // 5 of 6 sequential writes to the tastymama sheet didn't land). If a
+  // "posted" write here doesn't actually stick, the sheet keeps showing the
+  // pin as unposted and the SAME pin gets picked and posted again next run.
+  // So: write, then re-read the cell and confirm it actually landed before
+  // trusting it — retry a few times rather than silently moving on.
+  let verified = false;
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3 && !verified; attempt++) {
+    try {
+      await SheetsAPI.writeRange(settings.sheetId, range, [[ts]], settings, { bgColor: POSTED_COLOR });
+    } catch (e) {
+      lastError = e;
+    }
+    try {
+      const rows = await SheetsAPI.readSheet(settings.sheetId, settings.sheetTabName);
+      const actual = (rows[rowIndex - 2]?.[cellIdx] || '').trim();
+      if (actual && actual.slice(0, 10) === ts.slice(0, 10)) { verified = true; }
+    } catch (e) {
+      lastError = e;
+    }
+    if (!verified && attempt < 3) {
+      Logger.warn(`[PinPool] markPinPosted didn't verify for ${siteName} row ${rowIndex} pin#${pinIndex} (attempt ${attempt}/3) — retrying`);
+      await new Promise(r => setTimeout(r, 1500 * attempt));
+    }
+  }
+  if (!verified) {
+    throw new Error(`markPinPosted: write to ${range} did not verify after 3 attempts — the pin may get re-posted next run if this isn't fixed${lastError ? `: ${lastError.message}` : ''}`);
+  }
+  Logger.info(`[PinPool] marked ${siteName} row ${rowIndex} pin#${pinIndex} posted at ${ts} (verified)`);
 }
 
 /**
