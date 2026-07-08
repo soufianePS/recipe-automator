@@ -22,6 +22,21 @@
  */
 
 function doPost(e) {
+  // Two separate automations (different sites/users) share this one script
+  // and spreadsheet. Without a lock, two writes landing at nearly the same
+  // moment can interleave and drop or cross-write each other's values —
+  // e.g. a "mark pin posted" write silently failing, which then causes the
+  // same pin to be re-picked and posted again on the next run. The lock
+  // forces writes to happen one at a time.
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000); // wait up to 30s for another write to finish
+  } catch (lockErr) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: 'Could not acquire lock (another write is taking too long): ' + String(lockErr) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   try {
     const body = JSON.parse(e.postData.contents);
     const action = body.action || 'writeRange';
@@ -39,6 +54,8 @@ function doPost(e) {
     return ContentService
       .createTextOutput(JSON.stringify({ ok: false, error: String(err && err.message || err) }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
   }
 }
 

@@ -227,6 +227,70 @@ export async function patchRow(tabName, matchColumn, matchValue, patch, opts = {
   return { updated: updates.length };
 }
 
+const _sheetIdCache = new Map(); // `${spreadsheetId}|${tabName}` -> numeric sheetId
+
+/** Resolve a tab name to its numeric sheetId (needed for formatting calls). */
+async function _resolveSheetId(spreadsheetId, tabName) {
+  const key = `${spreadsheetId}|${tabName}`;
+  if (_sheetIdCache.has(key)) return _sheetIdCache.get(key);
+  const sheets = await getSheetsClient();
+  const res = await sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties' });
+  for (const s of res.data.sheets || []) {
+    _sheetIdCache.set(`${spreadsheetId}|${s.properties.title}`, s.properties.sheetId);
+  }
+  if (!_sheetIdCache.has(key)) throw new Error(`Tab "${tabName}" not found in spreadsheet ${spreadsheetId}`);
+  return _sheetIdCache.get(key);
+}
+
+function _hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { red: ((n >> 16) & 255) / 255, green: ((n >> 8) & 255) / 255, blue: (n & 255) / 255 };
+}
+
+/**
+ * Write a value to a single cell AND set its background color, via the real
+ * authenticated Sheets API (no Apps Script involved). This is the reliable
+ * replacement for the legacy gviz+AppsScript write path (sheets-api.js),
+ * which has been observed to silently drop or mis-assign writes.
+ *
+ * @param {string} tabName
+ * @param {string} a1Cell — e.g. "V92" (single cell, no tab prefix)
+ * @param {*} value
+ * @param {string|null} [bgColor] — CSS hex like "#c6efce", or null to clear
+ */
+export async function writeCellWithColor(tabName, a1Cell, value, bgColor, opts = {}) {
+  const spreadsheetId = opts.spreadsheetId || MULTI_SITE_SHEET_ID;
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${tabName}!${a1Cell}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[value == null ? '' : value]] },
+  });
+  if (bgColor !== undefined) {
+    const sheetId = await _resolveSheetId(spreadsheetId, tabName);
+    const m = /^([A-Z]+)(\d+)$/.exec(a1Cell);
+    if (!m) throw new Error(`Bad A1 cell: ${a1Cell}`);
+    const colIdx = m[1].split('').reduce((acc, c) => acc * 26 + (c.charCodeAt(0) - 64), 0) - 1;
+    const rowIdx = Number(m[2]) - 1;
+    const color = bgColor ? _hexToRgb(bgColor) : { red: 1, green: 1, blue: 1 };
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [{
+          repeatCell: {
+            range: { sheetId, startRowIndex: rowIdx, endRowIndex: rowIdx + 1, startColumnIndex: colIdx, endColumnIndex: colIdx + 1 },
+            cell: { userEnteredFormat: { backgroundColor: color } },
+            fields: 'userEnteredFormat.backgroundColor',
+          },
+        }],
+      },
+    });
+  }
+}
+
 function _colLetter(idx) {
   // 0 → A, 25 → Z, 26 → AA, 27 → AB
   let result = '';

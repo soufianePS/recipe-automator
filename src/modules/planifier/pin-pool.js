@@ -15,6 +15,7 @@
  */
 
 import { SheetsAPI } from '../../shared/utils/sheets-api.js';
+import { credentialsAvailable, writeCellWithColor, getSheetsClient } from '../../shared/utils/sheets-client.js';
 import { WordPressAPI } from '../../shared/utils/wordpress-api.js';
 import { Logger } from '../../shared/utils/logger.js';
 import { validateRecipe } from './recipe-validator.js';
@@ -47,11 +48,43 @@ const DELETED_FLAG_COL = 'Y';
 const colIdx = (c) => c.toUpperCase().charCodeAt(0) - 65;
 
 /**
+ * Read a full sheet tab as an array of row arrays. Prefers the real
+ * authenticated Sheets API (instant, no caching) over the legacy public gviz
+ * endpoint (SheetsAPI.readSheet), which has been observed to serve stale
+ * data for 90+ seconds after a write — long enough for the pin-picker to
+ * still see a just-posted pin as "unposted" and post it again. Falls back
+ * to gviz only if google-credentials.json isn't configured on this install.
+ */
+async function _readSheetReliable(sheetId, tabName) {
+  if (credentialsAvailable()) {
+    const sheets = await getSheetsClient();
+    // UNFORMATTED_VALUE: date-typed cells come back as a raw serial number
+    // (handled by parseGvizDate) instead of a locale-dependent formatted
+    // string — deterministic regardless of the spreadsheet's locale/timezone.
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId, range: `${tabName}!A1:ZZ`, valueRenderOption: 'UNFORMATTED_VALUE',
+    });
+    return res.data.values || [];
+  }
+  return SheetsAPI.readSheet(sheetId, tabName);
+}
+
+/**
  * Parse Google's gviz date format: "Date(YYYY,M-1,D[,h,m,s])".
  * Returns "YYYY-MM-DD" or null.
  */
 function parseGvizDate(raw) {
-  if (!raw) return null;
+  if (raw === undefined || raw === null || raw === '') return null;
+  // The real Sheets API v4 (UNFORMATTED_VALUE, used by _readSheetReliable
+  // when credentials are configured) returns date-typed cells as a plain
+  // number — days since the Sheets epoch (Dec 30 1899) — instead of gviz's
+  // "Date(y,m,d)" string wrapper. Handle both since which one we get depends
+  // on whether google-credentials.json is set up on this install.
+  if (typeof raw === 'number') {
+    const ms = Date.UTC(1899, 11, 30) + raw * 86400000;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
   const s = String(raw).trim();
   // Already ISO?
   let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -166,6 +199,10 @@ async function _searchWpPostByTitle(settings, title) {
  */
 async function _updateDraftUrlInSheet(siteName, rowIndex, newDraftUrl) {
   const settings = await loadSiteSettingsForPlanifier(siteName);
+  if (credentialsAvailable()) {
+    await writeCellWithColor(settings.sheetTabName, `C${rowIndex}`, newDraftUrl, undefined, { spreadsheetId: settings.sheetId });
+    return;
+  }
   const range = `${settings.sheetTabName}!C${rowIndex}`;
   await SheetsAPI.writeRange(settings.sheetId, range, [[newDraftUrl]], settings);
 }
@@ -321,7 +358,7 @@ export async function readSitePool(siteName, planifierConfig) {
     return [];
   }
 
-  const rows = await SheetsAPI.readSheet(settings.sheetId, settings.sheetTabName);
+  const rows = await _readSheetReliable(settings.sheetId, settings.sheetTabName);
   const startRow = Number(settings.startRow) || 2;
   const dataStartIdx = startRow - 2;
 
@@ -528,7 +565,7 @@ export async function readAllRecipesForSite(siteName, planifierConfig) {
   if (!settings.sheetId || !settings.sheetTabName) {
     return [];
   }
-  const rows = await SheetsAPI.readSheet(settings.sheetId, settings.sheetTabName);
+  const rows = await _readSheetReliable(settings.sheetId, settings.sheetTabName);
   const startRow = Number(settings.startRow) || 2;
   const dataStartIdx = startRow - 2;
 
@@ -622,7 +659,7 @@ export async function addRecipeToSheet(siteName, topic) {
   if (!settings.sheetId || !settings.sheetTabName) {
     throw new Error(`Site ${siteName} has no sheet configured`);
   }
-  const rows = await SheetsAPI.readSheet(settings.sheetId, settings.sheetTabName);
+  const rows = await _readSheetReliable(settings.sheetId, settings.sheetTabName);
   const idxTopic = colIdx(settings.topicColumn || 'A');
   const startRow = Number(settings.startRow) || 2;
   // Find next empty row (1-indexed sheet rows)
@@ -660,7 +697,7 @@ export async function addRecipeToSheet(siteName, topic) {
 export async function deleteRecipeFromSheet(siteName, rowIndex) {
   const settings = await loadSiteSettingsForPlanifier(siteName);
   // Read the row first to get the draftUrl (and to extract post ID)
-  const rows = await SheetsAPI.readSheet(settings.sheetId, settings.sheetTabName);
+  const rows = await _readSheetReliable(settings.sheetId, settings.sheetTabName);
   const row = rows[rowIndex - 2];
   if (!row) throw new Error(`Row ${rowIndex} not found in ${settings.sheetTabName}`);
   const draftUrl = (row[colIdx('C')] || '').trim();
@@ -958,16 +995,29 @@ export async function markPinPosted(siteName, rowIndex, pinIndex, when = null) {
   const col = POSTED_COLS[pinIndex];
   if (!col) throw new Error(`Invalid pinIndex: ${pinIndex}`);
   const ts = when || new Date().toISOString();
-  const range = `${settings.sheetTabName}!${col}${rowIndex}`;
   const cellIdx = colIdx(col);
 
-  // The Apps Script write endpoint has been observed to silently drop or
-  // mis-assign rapid writes (confirmed while investigating broken draftUrls —
-  // 5 of 6 sequential writes to the tastymama sheet didn't land). If a
-  // "posted" write here doesn't actually stick, the sheet keeps showing the
-  // pin as unposted and the SAME pin gets picked and posted again next run.
-  // So: write, then re-read the cell and confirm it actually landed before
-  // trusting it — retry a few times rather than silently moving on.
+  // The legacy gviz+AppsScript write path (SheetsAPI.writeRange) has been
+  // proven unreliable — confirmed silently dropping/mis-assigning writes on
+  // the shared spreadsheet. Use the real authenticated Sheets API v4 client
+  // instead (data/google-credentials.json), which writes directly with no
+  // Apps Script webhook in between. Falls back to the legacy path only if
+  // credentials aren't configured on this install.
+  if (credentialsAvailable()) {
+    await writeCellWithColor(settings.sheetTabName, `${col}${rowIndex}`, ts, POSTED_COLOR, { spreadsheetId: settings.sheetId });
+    // Cheap sanity check via the same authenticated client (not the flaky
+    // gviz endpoint) — catches permission/range edge cases immediately.
+    const sheets = await getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: settings.sheetId, range: `${settings.sheetTabName}!${col}${rowIndex}` });
+    const actual = (res.data.values?.[0]?.[0] || '').trim();
+    if (!actual || actual.slice(0, 10) !== ts.slice(0, 10)) {
+      throw new Error(`markPinPosted: wrote to ${col}${rowIndex} but read-back didn't match — the pin may get re-posted next run if this isn't fixed`);
+    }
+    Logger.info(`[PinPool] marked ${siteName} row ${rowIndex} pin#${pinIndex} posted at ${ts} (verified via Sheets API)`);
+    return;
+  }
+
+  const range = `${settings.sheetTabName}!${col}${rowIndex}`;
   let verified = false;
   let lastError = null;
   for (let attempt = 1; attempt <= 3 && !verified; attempt++) {
@@ -977,7 +1027,7 @@ export async function markPinPosted(siteName, rowIndex, pinIndex, when = null) {
       lastError = e;
     }
     try {
-      const rows = await SheetsAPI.readSheet(settings.sheetId, settings.sheetTabName);
+      const rows = await _readSheetReliable(settings.sheetId, settings.sheetTabName);
       const actual = (rows[rowIndex - 2]?.[cellIdx] || '').trim();
       if (actual && actual.slice(0, 10) === ts.slice(0, 10)) { verified = true; }
     } catch (e) {
@@ -1001,6 +1051,10 @@ export async function unmarkPinPosted(siteName, rowIndex, pinIndex) {
   const settings = await loadSiteSettingsForPlanifier(siteName);
   const col = POSTED_COLS[pinIndex];
   if (!col) throw new Error(`Invalid pinIndex: ${pinIndex}`);
+  if (credentialsAvailable()) {
+    await writeCellWithColor(settings.sheetTabName, `${col}${rowIndex}`, '', CLEAR_COLOR, { spreadsheetId: settings.sheetId });
+    return;
+  }
   const range = `${settings.sheetTabName}!${col}${rowIndex}`;
   await SheetsAPI.writeRange(settings.sheetId, range, [['']], settings, { bgColor: CLEAR_COLOR });
 }
@@ -1016,15 +1070,13 @@ const VALIDATION_INVALID_COLOR = '#ffe699'; // light orange
  */
 export async function writeValidationToSheet(siteName, rowIndex, validation) {
   const settings = await loadSiteSettingsForPlanifier(siteName);
-  const range = `${settings.sheetTabName}!${VALIDATION_COL}${rowIndex}`;
-  if (!validation) {
-    await SheetsAPI.writeRange(settings.sheetId, range, [['']], settings, { bgColor: '#ffffff' });
+  const cell = `${VALIDATION_COL}${rowIndex}`;
+  const value = !validation ? '' : (validation.valid ? 'valid' : `invalid: ${(validation.issues || []).map(i => i.msg || i.kind).join(' | ').slice(0, 300)}`);
+  const bgColor = !validation ? '#ffffff' : (validation.valid ? VALIDATION_VALID_COLOR : VALIDATION_INVALID_COLOR);
+  if (credentialsAvailable()) {
+    await writeCellWithColor(settings.sheetTabName, cell, value, bgColor, { spreadsheetId: settings.sheetId });
     return;
   }
-  if (validation.valid) {
-    await SheetsAPI.writeRange(settings.sheetId, range, [['valid']], settings, { bgColor: VALIDATION_VALID_COLOR });
-  } else {
-    const summary = (validation.issues || []).map(i => i.msg || i.kind).join(' | ').slice(0, 300);
-    await SheetsAPI.writeRange(settings.sheetId, range, [[`invalid: ${summary}`]], settings, { bgColor: VALIDATION_INVALID_COLOR });
-  }
+  const range = `${settings.sheetTabName}!${cell}`;
+  await SheetsAPI.writeRange(settings.sheetId, range, [[value]], settings, { bgColor });
 }
