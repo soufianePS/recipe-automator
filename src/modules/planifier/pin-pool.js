@@ -62,9 +62,17 @@ async function _readSheetReliable(sheetId, tabName) {
     // (handled by parseGvizDate) instead of a locale-dependent formatted
     // string — deterministic regardless of the spreadsheet's locale/timezone.
     const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId, range: `${tabName}!A1:ZZ`, valueRenderOption: 'UNFORMATTED_VALUE',
+      spreadsheetId: sheetId, range: `${tabName}!A2:ZZ`, valueRenderOption: 'UNFORMATTED_VALUE',
     });
     const rows = res.data.values || [];
+    // Starting the range at row 2 (not row 1) skips the header row, matching
+    // gviz's `headers=1` convention (which every rowIndex = i+2 computation
+    // in this file assumes: rows[0] = sheet row 2). Fetching from A1 here
+    // would silently shift every row's real position by one — which is
+    // exactly what happened: markPinPosted wrote a real post's "posted" mark
+    // onto the row BELOW it, leaving the real pin unmarked (repost risk) and
+    // falsely marking an unrelated recipe's pin as posted.
+    //
     // UNFORMATTED_VALUE returns non-string types too (numbers, booleans) for
     // any cell that isn't plain text — e.g. a numeric-looking value, a
     // checkbox, or a date. Every column reader in this file calls
