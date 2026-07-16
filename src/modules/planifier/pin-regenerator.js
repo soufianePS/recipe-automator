@@ -34,6 +34,7 @@ import { Logger } from '../../shared/utils/logger.js';
 import { WordPressAPI } from '../../shared/utils/wordpress-api.js';
 import { FlowAccountManager } from '../../shared/utils/flow-account-manager.js';
 import { SheetsAPI } from '../../shared/utils/sheets-api.js';
+import { _compareImages } from '../../shared/pages/flow-download.js';
 import { chromium } from 'playwright';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -444,16 +445,38 @@ Output ONLY the description text itself, no preamble, no labels, no quotes.`;
           fullPrompt = `Output image format: ${aspectRatio}\n\n` + fullPrompt;
         }
         log(`Prompt 2 → asking ChatGPT to generate the image (ratio ${aspectRatio}, picker=${isPickerSelectable})...`);
-        const cg = await chatgpt.generatePinImage({
-          prompt: fullPrompt,
-          refImages: [job._templatePath, job._heroPath].filter(Boolean),
-          outputPath,
-          timeoutSeconds: cfg.timeoutSeconds || 300,
-          deleteAfter: cfg.deleteAfterGenerate !== false,  // default true — deletes the whole chat (both prompts)
-          skipToolSelect: !isPickerSelectable,
-          preferredRatio: isPickerSelectable ? aspectRatio : null,
-        });
-        if (!cg.ok) throw new Error(`ChatGPT image gen failed: ${cg.error}`);
+        // Up to 2 attempts: ChatGPT occasionally fails to actually transform
+        // the uploaded template, and the network sniffer that captures the
+        // "generated" image ends up re-capturing the uploaded TEMPLATE image
+        // itself (another blog's real photo, unchanged) instead of a real
+        // output — silently publishing someone else's pin under this recipe.
+        // Guard against that by comparing the result to the template and
+        // treating a near-identical match as a failed generation, not success.
+        const MAX_IMG_ATTEMPTS = 2;
+        let validated = false;
+        for (let attempt = 1; attempt <= MAX_IMG_ATTEMPTS && !validated; attempt++) {
+          const cg = await chatgpt.generatePinImage({
+            prompt: fullPrompt,
+            refImages: [job._templatePath, job._heroPath].filter(Boolean),
+            outputPath,
+            timeoutSeconds: cfg.timeoutSeconds || 300,
+            deleteAfter: cfg.deleteAfterGenerate !== false,  // default true — deletes the whole chat (both prompts)
+            skipToolSelect: !isPickerSelectable,
+            preferredRatio: isPickerSelectable ? aspectRatio : null,
+          });
+          if (!cg.ok) {
+            if (attempt < MAX_IMG_ATTEMPTS) { log(`ChatGPT image gen failed (attempt ${attempt}/${MAX_IMG_ATTEMPTS}): ${cg.error} — retrying`); continue; }
+            throw new Error(`ChatGPT image gen failed: ${cg.error}`);
+          }
+          const templateSimilarity = await _compareImages(job._templatePath, outputPath);
+          log(`Pixel similarity to template: ${templateSimilarity}%`);
+          if (templateSimilarity >= 90) {
+            log(`Generated image is ${templateSimilarity}% identical to the template — ChatGPT didn't actually transform it (attempt ${attempt}/${MAX_IMG_ATTEMPTS})`);
+            if (attempt < MAX_IMG_ATTEMPTS) { log('Retrying generation with a fresh request...'); continue; }
+            throw new Error(`ChatGPT returned the template image unchanged (${templateSimilarity}% match) after ${MAX_IMG_ATTEMPTS} attempts — refusing to publish another blog's photo`);
+          }
+          validated = true;
+        }
         result = true;
       } finally {
         try { await chatgptContext?.close(); } catch {}

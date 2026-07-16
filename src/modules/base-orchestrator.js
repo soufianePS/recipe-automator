@@ -18,6 +18,7 @@ import { WordPressAPI } from '../shared/utils/wordpress-api.js';
 import { Logger } from '../shared/utils/logger.js';
 import { ChatGPTPage } from '../shared/pages/chatgpt.js';
 import { FlowPage, FlowRateLimitError, FlowAccountBlockedError } from '../shared/pages/flow.js';
+import { _compareImages } from '../shared/pages/flow-download.js';
 import {
   buildStyleDirective,
   buildIngredientSuffix, buildStepSuffix, buildHeroSuffix,
@@ -191,23 +192,42 @@ export class BaseOrchestrator {
       // Build ref list: template first (style/layout source), then context (food refs)
       const refImages = [templatePath, ...(contextPaths || [])].filter(Boolean);
 
-      const result = await chatgpt.generatePinImage({
-        prompt: fullPrompt,
-        refImages,
-        outputPath,
-        timeoutSeconds: cfg.timeoutSeconds || 300,
-        deleteAfter: cfg.deleteAfterGenerate !== false,  // default true — chat deleted per pin
-        // Skip UI tool/picker only if user wants a custom ratio not in ChatGPT's dropdown.
-        // For picker-selectable ratios, we click the dropdown for max reliability.
-        skipToolSelect: !isPickerSelectable,
-        preferredRatio: isPickerSelectable ? aspectRatio : null,
-      });
-      if (!result.ok) {
-        Logger.error(`[PinGen-ChatGPT] failed: ${result.error}`);
-        return false;
+      // Up to 2 attempts: ChatGPT occasionally fails to actually transform the
+      // uploaded template, and the network sniffer that captures the
+      // "generated" image ends up re-capturing the uploaded TEMPLATE image
+      // itself (another blog's real photo, unchanged) instead of a real
+      // output — silently publishing someone else's pin under this recipe.
+      // Guard against that by comparing the result to the template and
+      // treating a near-identical match as a failed generation, not success.
+      const MAX_IMG_ATTEMPTS = 2;
+      for (let attempt = 1; attempt <= MAX_IMG_ATTEMPTS; attempt++) {
+        const result = await chatgpt.generatePinImage({
+          prompt: fullPrompt,
+          refImages,
+          outputPath,
+          timeoutSeconds: cfg.timeoutSeconds || 300,
+          deleteAfter: cfg.deleteAfterGenerate !== false,  // default true — chat deleted per pin
+          // Skip UI tool/picker only if user wants a custom ratio not in ChatGPT's dropdown.
+          // For picker-selectable ratios, we click the dropdown for max reliability.
+          skipToolSelect: !isPickerSelectable,
+          preferredRatio: isPickerSelectable ? aspectRatio : null,
+        });
+        if (!result.ok) {
+          Logger.error(`[PinGen-ChatGPT] failed (attempt ${attempt}/${MAX_IMG_ATTEMPTS}): ${result.error}`);
+          if (attempt < MAX_IMG_ATTEMPTS) continue;
+          return false;
+        }
+        const templateSimilarity = await _compareImages(templatePath, outputPath);
+        Logger.info(`[PinGen-ChatGPT] pixel similarity to template: ${templateSimilarity}%`);
+        if (templateSimilarity >= 90) {
+          Logger.error(`[PinGen-ChatGPT] generated image is ${templateSimilarity}% identical to the template — ChatGPT didn't actually transform it (attempt ${attempt}/${MAX_IMG_ATTEMPTS})`);
+          if (attempt < MAX_IMG_ATTEMPTS) continue;
+          return false;
+        }
+        Logger.success(`[PinGen-ChatGPT] image saved → ${outputPath}`);
+        return true;
       }
-      Logger.success(`[PinGen-ChatGPT] image saved → ${outputPath}`);
-      return true;
+      return false;
     } catch (e) {
       Logger.error(`[PinGen-ChatGPT] exception: ${e.message}`);
       return false;
