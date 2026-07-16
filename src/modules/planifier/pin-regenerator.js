@@ -341,7 +341,8 @@ export async function processJob(jobId, serverCtx, planifierConfig) {
           if (account) profileDir = FlowAccountManager.getProfileDir(account);
         }
       } catch {}
-      context = await chromium.launchPersistentContext(profileDir, {
+      const { launchPersistentContextWithRecovery } = await import('../../shared/utils/browser-profile.js');
+      context = await launchPersistentContextWithRecovery(chromium, profileDir, {
         headless: false,
         viewport: null,
         args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
@@ -362,10 +363,11 @@ export async function processJob(jobId, serverCtx, planifierConfig) {
       const profilePath = (cfg.profilePath || '').trim()
         || join(PROJECT_ROOT, 'data', 'chatgpt-pin-profile');
       const { ChatGPTPage } = await import('../../shared/pages/chatgpt.js');
+      const { launchPersistentContextWithRecovery } = await import('../../shared/utils/browser-profile.js');
       log(`Launching ChatGPT Chrome profile: ${profilePath}`);
       let chatgptContext;
       try {
-        chatgptContext = await chromium.launchPersistentContext(profilePath, {
+        chatgptContext = await launchPersistentContextWithRecovery(chromium, profilePath, {
           headless: false,
           viewport: null,
           args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],

@@ -136,6 +136,7 @@ export class BaseOrchestrator {
       || join(__dirname, '..', '..', 'data', 'chatgpt-pin-profile');
     const { chromium } = await import('playwright');
     const { ChatGPTPage } = await import('../shared/pages/chatgpt.js');
+    const { launchPersistentContextWithRecovery } = await import('../shared/utils/browser-profile.js');
     try {
       // ── REUSE OPTIMIZATION ───────────────────────────────────────
       // For a recipe pipeline (3 pins), we open the Chrome profile ONCE
@@ -144,7 +145,7 @@ export class BaseOrchestrator {
       // COMPLETED state handler. Saves ~10s × 2 = 20s per recipe.
       if (!this._chatgptPinCtx) {
         Logger.info(`[PinGen-ChatGPT] launching Chrome profile (reusable for this recipe): ${profilePath}`);
-        this._chatgptPinCtx = await chromium.launchPersistentContext(profilePath, {
+        this._chatgptPinCtx = await launchPersistentContextWithRecovery(chromium, profilePath, {
           headless: false,
           viewport: null,
           args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'],
